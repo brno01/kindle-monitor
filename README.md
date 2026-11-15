@@ -24,4 +24,4 @@ Detalhes de arquitetura, acessos, cuidados e pendências: `CLAUDE.md`. No Obsidi
 O jailbreak é o **moderno** (KPM, Jobman e Scriptlets). KUAL, MRPI e USBNetwork são legado e não funcionam nele. O Wi-Fi pode atualizar o firmware e apagar o jailbreak, então o bloqueio de atualização do Jobman precisa ficar ligado. Não use `;kpm install/uninstall`, `freset`, `;shpm`, "atualizar ambiente" nem recovery do Jobman. Guia oficial: <https://kindlemodding.org>.
 
 ## Estado
-No ar desde 15/11/2026. Sem commits.
+No ar desde 15/11/2026. Código na branch `feat/kindle-monitor` (sem push).
