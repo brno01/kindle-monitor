@@ -1,0 +1,37 @@
+{
+  "_comentario": "Exemplo de config do kindle-monitor. JSON nao aceita comentario, entao toda chave que comeca com _ e ignorada. Copie para config.json e ajuste.",
+
+  "_comentario_host": "Nome exibido no cabecalho e na secao deste host. Se omitido, usa o hostname da maquina.",
+  "host": "atheron",
+
+  "_comentario_discos": "Dois tipos de entrada. {rotulo, caminho}: ponto de montagem medido com os.statvfs. {rotulo, tier_state}: JSON do Cerberus (campos ssd_used_gib e cap_gib, em GiB; 'when' com mais de 3 h mostra o aviso 'parado'; arquivo ausente ou invalido mostra n/d). Use tier_state quando o disco e uma uniao (mergerfs) e o statvfs somaria discos errados. rotulo aparece na tela (ate ~8 caracteres).",
+  "discos": [
+    {"rotulo": "/", "caminho": "/"},
+    {"rotulo": "NAS HD", "caminho": "/srv/nas-hd"},
+    {"rotulo": "NAS SSD", "tier_state": "/var/lib/cerberus-nas/tier-state.json"}
+  ],
+
+  "_comentario_servicos": "Unidades systemd checadas com 'systemctl is-active NOME'. Aparecem como ok ou FALHA (inativa). Use [] para nao mostrar.",
+  "servicos": ["ragnarok.service", "cerberus-balancer.service"],
+
+  "_comentario_balanceador": "Arquivo JSON do balanceador do Ragnarok (campo players_by.ragnarok; chave ausente = 0 jogadores; 'updated' com mais de 120 s = dado PARADO). Use null para desligar (ex.: no nomad).",
+  "balanceador": "/var/lib/cerberus/memory-balancer.json",
+
+  "_comentario_pares": "Outros servidores kindle-monitor a mostrar na mesma tela. url e a base (sem /metricas.json); o servidor busca <url>/metricas.json?pares=0 com timeout de 2 s. Se falhar, a tela mostra 'nome: sem resposta'. Use [] se nao houver.",
+  "pares": [
+    {"nome": "nomad", "url": "http://nomad:8765"}
+  ],
+
+  "_comentario_portas": "Portas TCP do Ragnarok mostradas como pilulas na imagem e como 'Portas: LOGIN ok CHAR ok MAP FALHA' no texto. Conexao com timeout de 0.6 s, em paralelo. rotulo: ate 12 caracteres (letras, digitos, _ . -); host: IP literal ou nome simples; porta: 1 a 65535. Use [] para nao mostrar.",
+  "portas": [
+    {"rotulo": "LOGIN", "host": "10.0.0.60", "porta": 6900},
+    {"rotulo": "CHAR", "host": "10.0.0.60", "porta": 6121},
+    {"rotulo": "MAP", "host": "10.0.0.60", "porta": 5121}
+  ],
+
+  "_comentario_intervalo_historico_s": "Segundos entre as amostras do historico em memoria (CPU, RAM e GPU %, ultimas 60 amostras: com 15 s sao 15 min), usado no grafico da imagem e em /historico.json. Entre 0 e 3600. Nada vai para o disco.",
+  "intervalo_historico_s": 15,
+
+  "_comentario_intervalo_cpu_s": "Segundos entre as duas leituras de /proc/stat para calcular o CPU %. Entre 0 e 5. O resultado fica em cache por ~5 s.",
+  "intervalo_cpu_s": 0.5
+}

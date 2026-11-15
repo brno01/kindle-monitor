@@ -1,0 +1,212 @@
+import struct
+import time
+import unittest
+import zlib
+
+import _caminho  # noqa: F401
+import canvas as cv
+import render_png
+
+
+def completo(**extra):
+    m = {
+        "host": "atheron",
+        "gerado_em": "2026-11-15T14:32:10-03:00",
+        "cpu": {"pct": 56.0},
+        "carga": {"1m": 0.52, "5m": 0.48, "15m": 0.4},
+        "ram": {"total_kb": 32000000, "usado_kb": 12000000, "pct": 37.5},
+        "swap": {"total_kb": 8000000, "usado_kb": 1000000, "pct": 12.5},
+        "uptime": {"segundos": 90061},
+        "temp_cpu": {"c": 55.0},
+        "gpu": {"util_pct": 12, "mem_usada_mb": 3000, "mem_total_mb": 8192, "temp_c": 45},
+        "discos": [
+            {"rotulo": "/", "caminho": "/", "total_b": 500 * 10**9, "usado_b": 200 * 10**9, "pct": 40.0},
+            {"rotulo": "NAS", "caminho": "/mnt/nas", "total_b": 4 * 10**12, "usado_b": 3 * 10**12, "pct": 75.0},
+        ],
+        "servicos": [{"nome": "ragnarok.service", "ativo": True}, {"nome": "cerberus-balancer.service", "ativo": False},
+                     {"nome": "x.service", "erro": "n/d"}],
+        "ragnarok": {"jogadores": 3, "parado": False, "idade_s": 4},
+        "portas": [{"rotulo": "LOGIN", "aberto": True}, {"rotulo": "CHAR", "aberto": True},
+                   {"rotulo": "MAP", "aberto": False}],
+        "pares": [{"nome": "nomad", "ok": True, "metricas": {
+            "host": "nomad", "cpu": {"pct": 20.0}, "ram": {"pct": 61.0}, "gpu": {"util_pct": 3},
+            "uptime": {"segundos": 4000}, "temp_cpu": {"c": 48.0}}},
+            {"nome": "fora", "ok": False}],
+    }
+    m.update(extra)
+    return m
+
+
+def historico(n=60):
+    return {"cpu": [(i * 7) % 100 for i in range(n)], "ram": [40 + i % 5 for i in range(n)],
+            "gpu": [i % 30 for i in range(n)]}
+
+
+def cheio():
+    return completo(
+        discos=[{"rotulo": "disco%d" % i, "caminho": "/", "total_b": 10**12, "usado_b": 5 * 10**11, "pct": 50.0 + i}
+                for i in range(3)],
+        servicos=[{"nome": "servico-numero-%d.service" % i, "ativo": i % 3 != 0} for i in range(8)],
+    )
+
+
+MINIMO = {"host": "h", "gerado_em": "2026-11-15T09:05:00-03:00", "cpu": {"pct": 1.0}, "ram": {"pct": 2.0},
+          "uptime": {"segundos": 60}}
+
+
+def ihdr(dados):
+    assert dados[:8] == b"\x89PNG\r\n\x1a\n"
+    return struct.unpack(">II", dados[16:24])
+
+
+def pixels(dados):
+    larg, alt = ihdr(dados)
+    pos, idat = 8, b""
+    while pos < len(dados):
+        n, tipo = struct.unpack(">I4s", dados[pos:pos + 8])
+        if tipo == b"IDAT":
+            idat += dados[pos + 8:pos + 8 + n]
+        pos += 12 + n
+    bruto = zlib.decompress(idat)
+    return larg, alt, [bruto[y * (larg + 1) + 1:(y + 1) * (larg + 1)] for y in range(alt)]
+
+
+class RenderPngTest(unittest.TestCase):
+    def test_dimensoes_padrao(self):
+        self.assertEqual(ihdr(render_png.render_png(completo(), historico())), (1236, 1648))
+
+    def test_dimensoes_customizadas(self):
+        self.assertEqual(ihdr(render_png.render_png(completo(), historico(), 800, 1100)), (800, 1100))
+
+    def test_dados_minimos(self):
+        for m in (MINIMO, {}, {"erro": "x"}):
+            self.assertEqual(ihdr(render_png.render_png(m, None)), (1236, 1648))
+
+    def test_tudo_com_erro(self):
+        nd = {"erro": "n/d"}
+        m = {"host": "h", "cpu": nd, "ram": nd, "swap": nd, "carga": nd, "uptime": nd, "gpu": nd,
+             "discos": [nd, {"rotulo": "x", "erro": "n/d"}], "servicos": nd, "ragnarok": nd, "portas": nd,
+             "pares": [{"nome": "p", "ok": True, "metricas": {"cpu": nd}}]}
+        self.assertEqual(ihdr(render_png.render_png(m, {"cpu": [None, None]})), (1236, 1648))
+
+    def test_cabecalho_preto_e_rodape_claro(self):
+        larg, alt, linhas = pixels(render_png.render_png(completo(), historico()))
+        self.assertEqual(linhas[3][5], 0)
+        self.assertEqual(linhas[60][larg // 2], 0)
+        self.assertEqual(max(linhas[alt - 2]), 255)
+        self.assertGreaterEqual(min(linhas[alt - 3]), 200)
+        self.assertGreaterEqual(min(linhas[alt - 40][:100]), 200)
+
+    def test_cabecalho_tem_texto_branco(self):
+        _, _, linhas = pixels(render_png.render_png(completo(), historico()))
+        self.assertTrue(any(max(linhas[y][:400]) > 200 for y in range(20, 120)))
+
+    def test_margens_laterais_vazias_abaixo_do_cabecalho(self):
+        larg, alt, linhas = pixels(render_png.render_png(cheio(), historico()))
+        for y in range(render_png.ALTURA_CABECALHO + 1, alt):
+            self.assertEqual(min(linhas[y][:40]), 255, y)
+            self.assertEqual(min(linhas[y][larg - 40:]), 255, y)
+
+    def test_sem_texto_fora_da_imagem(self):
+        for m in (completo(), cheio(), MINIMO, completo(host="h" * 200, servicos=[
+                {"nome": "s" * 300, "ativo": False}], discos=[{"rotulo": "R" * 80, "pct": 5.0}] * 3)):
+            c = cv.Canvas(1236, 1648, estrito=True)
+            render_png.desenhar(c, m, historico())  # levanta ForaDosLimites se algo sair
+
+    def test_tela_cheia_cabe_sem_cortar(self):
+        c = cv.Canvas(1236, 1648, estrito=True)
+        render_png.desenhar(c, cheio(), historico())
+        self.assertEqual(c.pixels[-1], 255)
+
+    def test_cheio_com_muitos_pares_ainda_cabe(self):
+        par = {"nome": "p", "ok": True, "metricas": {"cpu": {"pct": 1.0}, "ram": {"pct": 2.0}}}
+        c = cv.Canvas(1236, 1648, estrito=True)
+        render_png.desenhar(c, cheio() | {"pares": [par] * 5}, historico())
+
+    def test_tamanho_pequeno_estrito(self):
+        c = cv.Canvas(800, 1300, estrito=True)
+        render_png.desenhar(c, cheio(), historico())
+
+    def test_so_usa_poucos_tons_de_chapado(self):
+        _, _, linhas = pixels(render_png.render_png(completo(), historico()))
+        todos = b"".join(linhas)
+        for tom in (0, 255):
+            self.assertIn(tom, todos)
+
+    def test_pilulas_diferem_aberta_e_fechada(self):
+        a = render_png.render_png(completo(portas=[{"rotulo": "LOGIN", "aberto": True}]), None)
+        b = render_png.render_png(completo(portas=[{"rotulo": "LOGIN", "aberto": False}]), None)
+        self.assertNotEqual(a, b)
+
+    def test_parado_muda_a_imagem(self):
+        a = render_png.render_png(completo(), None)
+        b = render_png.render_png(completo(ragnarok={"jogadores": 3, "parado": True, "idade_s": 600}), None)
+        self.assertNotEqual(a, b)
+
+    def test_sem_historico_funciona(self):
+        self.assertEqual(ihdr(render_png.render_png(completo(), None)), (1236, 1648))
+        self.assertEqual(ihdr(render_png.render_png(completo(), {})), (1236, 1648))
+
+    def test_historico_vem_de_metricas_quando_omitido(self):
+        a = render_png.render_png(completo(historico=historico()), None)
+        b = render_png.render_png(completo(), None)
+        self.assertNotEqual(a, b)
+
+    def test_tempo_de_render(self):
+        # best of 3 with a loose bound: a busy host (load 16 seen on the atheron) must not flake this
+        melhor = float("inf")
+        for _ in range(3):
+            t0 = time.monotonic()
+            render_png.render_png(cheio(), historico())
+            melhor = min(melhor, time.monotonic() - t0)
+        self.assertLess(melhor, 2.0)
+
+    def test_nao_ascii_nao_quebra(self):
+        render_png.render_png(completo(host="café 中文 ☃"), None)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+def _faixas_largas(dados):
+    """Quantas faixas verticais de linhas tem uma corrida horizontal longa (barras e divisores)."""
+    larg, alt, linhas = pixels(dados)
+    faixas, dentro = 0, False
+    for y in range(160, alt - 70):
+        longa = min(linhas[y][60:larg - 60]) < 255
+        if longa and not dentro:
+            faixas += 1
+        dentro = longa
+    return faixas
+
+
+class GpuRamPngTest(unittest.TestCase):
+    OFF = {"util_pct": 0, "mem_usada_mb": 0, "mem_total_mb": 2048, "temp_c": 39}
+    ON = {"util_pct": 35, "mem_usada_mb": 900, "mem_total_mb": 2048, "temp_c": 50}
+
+    def test_dimensoes_e_menos_barras_quando_desativada(self):
+        off = render_png.render_png(completo(gpu=self.OFF), historico())
+        on = render_png.render_png(completo(gpu=self.ON), historico())
+        self.assertEqual(ihdr(off), (1236, 1648))
+        self.assertEqual(ihdr(on), (1236, 1648))
+        self.assertEqual(_faixas_largas(on) - _faixas_largas(off), 2)  # barra da GPU e da VRAM
+
+    def test_gpu_desativada_sem_mem_nula(self):
+        g = {"util_pct": 0, "mem_usada_mb": None, "mem_total_mb": None, "temp_c": None}
+        self.assertEqual(ihdr(render_png.render_png(completo(gpu=g), historico())), (1236, 1648))
+
+    def test_uso_de_vram_sem_util_volta_layout_ativo(self):
+        a = {"util_pct": 0, "mem_usada_mb": 100, "mem_total_mb": 2048, "temp_c": 40}
+        on = render_png.render_png(completo(gpu=self.ON), historico())
+        so_vram = render_png.render_png(completo(gpu=a), historico())
+        self.assertEqual(_faixas_largas(on), _faixas_largas(so_vram))
+
+    def test_ram_com_valor_e_disco_tier_state(self):
+        m = completo(ram={"total_kb": 20331012, "usado_kb": 7763836, "pct": 38.2},
+                     discos=[{"rotulo": "NAS SSD", "total_b": 256 * 2**30, "usado_b": 200 * 2**30, "pct": 78.1,
+                              "base": 1024, "parado": True}])
+        self.assertEqual(ihdr(render_png.render_png(m, historico())), (1236, 1648))
+
+    def test_tamanho_binario(self):
+        self.assertEqual(render_png._tamanho(7763836 * 1024, 20331012 * 1024, 1024), "7.4 / 19.4 GB")
