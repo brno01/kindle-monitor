@@ -3,7 +3,7 @@
 ## Visão geral
 - Área: personal
 - O que é: um Kindle Paperwhite 5 (G001 PX11, firmware 5.18.3) com jailbreak moderno funciona como **monitor de recursos em e-ink do atheron**: CPU, RAM, swap, GPU/VRAM, temperaturas, discos, jogadores e portas do Ragnarok, serviços.
-- Estado (15/11/2026): **no ar**. Servidor instalado no atheron, Kindle desenhando a cada 15 s (flash completo a cada 40 ciclos = 10 min), **toque desligado com o monitor ligado e saída só pelo botão de energia**. Código commitado na branch `feat/kindle-monitor` (15/11/2026, sem push; `master` ainda vazia). Commit e push só quando o usuário pedir.
+- Estado (15/11/2026): **no ar**. Servidor instalado no atheron, Kindle desenhando a cada 15 s (flash completo a cada 40 ciclos = 10 min), **toque desligado com o monitor ligado e saída só pelo botão de energia**. Código na `master` e no GitHub **privado** `brno01/kindle-monitor` (15/11/2026). Commit e push só quando o usuário pedir; mudanças novas em branch de feature.
 - O dono do Kindle só fez o jailbreak e não conhece o aparelho por dentro: toda instrução a ele é passo a passo, dizendo o que deve aparecer na tela. Nada é gravado no Kindle sem a autorização dele.
 
 ## Arquitetura
@@ -53,4 +53,3 @@ Kindle: Tailscale userspace (SOCKS5 localhost:1055) + /mnt/us/kindle-monitor/loo
 - Cartão do nomad na tela (rodar o servidor no nomad e listar como par em `config.atheron.json`).
 - Início automático após reiniciar o Kindle (hoje: tocar em "Monitor Ligar").
 - Confirmar com o botão físico que a saída funciona (testado só por injeção de evento no `event0`).
-- Levar `feat/kindle-monitor` para `master` e ao GitHub, quando o usuário pedir.
