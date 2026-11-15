@@ -1,0 +1,26 @@
+{
+  "host": "atheron",
+  "discos": [
+    {"rotulo": "/", "caminho": "/"},
+    {"rotulo": "NAS HD", "caminho": "/srv/nas-hd"},
+    {"rotulo": "NAS SSD", "tier_state": "/var/lib/cerberus-nas/tier-state.json"},
+    {"rotulo": "SSD", "caminho": "/srv/ssd"}
+  ],
+  "servicos": [
+    "cerberus-memory-balancer.service",
+    "cerberus-ro-brain.service",
+    "ollama-gpu.service",
+    "cerberus-updater.service",
+    "incus.service",
+    "tailscaled.service"
+  ],
+  "balanceador": "/var/lib/cerberus/memory-balancer.json",
+  "pares": [],
+  "portas": [
+    {"rotulo": "LOGIN", "host": "10.0.0.60", "porta": 6900},
+    {"rotulo": "CHAR", "host": "10.0.0.60", "porta": 6121},
+    {"rotulo": "MAP", "host": "10.0.0.60", "porta": 5121}
+  ],
+  "intervalo_historico_s": 15,
+  "intervalo_cpu_s": 0.5
+}

@@ -1,0 +1,24 @@
+[Unit]
+Description=kindle-monitor: read-only status screen served to the Kindle (tailnet only)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nobody
+ExecStart=/usr/bin/python3 -I /opt/kindle-monitor/server/monitor_server.py --bind 100.64.0.1 --porta 8765 --config /etc/kindle-monitor/config.json
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
