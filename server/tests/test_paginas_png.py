@@ -85,7 +85,7 @@ class BotoesDesenhadosTest(unittest.TestCase):
         for pagina in botoes.PAGINAS:
             c = tela(completo(), pagina)
             for b in botoes.layout(pagina):
-                if b["tipo"] != "local":
+                if b["tipo"] != "local" or b["id"].startswith("modo:"):
                     continue
                 miolo = px(c, b["x"] + 12, b["y"] + 12)  # canto interno, longe do texto
                 esperado_escuro = b["id"] == "pagina:" + pagina

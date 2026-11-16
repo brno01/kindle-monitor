@@ -3,10 +3,12 @@
 `layout` e puro: o render desenha exatamente estes retangulos e o Kindle mapeia o toque para eles
 (`/botoes.json`, `/botoes.txt`). Coordenadas em pixels do PNG, origem no canto superior esquerdo.
 
+Pagina comandos tambem tem o bloco AJUSTES (botoes locais `modo:<perfil>`, ver perfis.py).
 Paginas: resumo, servicos (paginada, parametro `p`), detalhes e comandos (rotulo "Acoes").
 Os botoes da pagina servicos dependem do estado dos itens (ativo: Reiniciar e Parar; parado: Ligar...);
 a divisao em paginas so depende do catalogo.
 """
+import perfis
 import servicos
 
 PAGINAS = ("resumo", "servicos", "detalhes", "comandos")
@@ -136,13 +138,18 @@ def _botoes_servicos(itens, armado, largura, altura, p):
 def geometria_comandos(largura=1236, altura=1648):
     """Grade 2x2 das acoes rapidas; abaixo dela a pagina empilha Atencao, resumo por grupo e ULTIMOS COMANDOS."""
     w = (largura - 2 * MARGEM - GAP) // 2
-    bh = 190 if altura >= 1600 else 120
+    bh = 140 if altura >= 1600 else 110
     botoes_y = TOPO + 44
+    # bloco AJUSTES logo abaixo da grade: titulo, uma linha de 3 botoes e a descricao do perfil ativo
+    aj_titulo = botoes_y + 2 * bh + GAP + 8
+    aj_y = aj_titulo + 44
+    aj_desc = aj_y + BOTAO_H + 8
     return {"w_botao": w, "h_botao": bh, "rapidas_titulo_y": TOPO, "botoes_y": botoes_y,
-            "linha_h": 64 if altura >= 1600 else 56, "fim_botoes": botoes_y + 2 * bh + GAP}
+            "linha_h": 64 if altura >= 1600 else 56, "ajustes_titulo_y": aj_titulo, "ajustes_y": aj_y,
+            "ajustes_desc_y": aj_desc, "ajustes_desc_h": 44, "fim_botoes": aj_desc + 44}
 
 
-def layout(pagina, armado=None, largura=1236, altura=1648, p=1, itens=None):
+def layout(pagina, armado=None, largura=1236, altura=1648, p=1, itens=None, modo=None):
     """Botoes visiveis da pagina: [{id, rotulo, x, y, w, h, tipo, armado}]. Valores invalidos = padrao."""
     pagina = pagina_valida(pagina)
     itens = itens or []
@@ -156,6 +163,11 @@ def layout(pagina, armado=None, largura=1236, altura=1648, p=1, itens=None):
                 "id": cid, "rotulo": ROTULO_ARMADO if cid == armado else rotulo,
                 "x": MARGEM + (i % 2) * (w + GAP), "y": geo["botoes_y"] + (i // 2) * (geo["h_botao"] + GAP),
                 "w": w, "h": geo["h_botao"], "tipo": "comando", "armado": cid == armado})
+        nw = (largura - 2 * MARGEM - 2 * GAP) // 3
+        for i, nome in enumerate(perfis.NOMES):  # o perfil ativo e destacado pelo render (id == "modo:" + modo)
+            saida.append({"id": "modo:" + nome, "rotulo": perfis.PERFIS[nome]["rotulo"],
+                          "x": MARGEM + i * (nw + GAP), "y": geo["ajustes_y"], "w": nw, "h": BOTAO_H,
+                          "tipo": "local", "armado": False})
     elif pagina == "servicos":
         saida += _botoes_servicos(itens, armado, largura, altura, p)
     nw = (largura - 2 * MARGEM - (len(NAV) - 1) * GAP) // len(NAV)

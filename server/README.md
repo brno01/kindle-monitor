@@ -25,9 +25,19 @@ Opcoes: `--bind` (padrao `127.0.0.1`), `--porta` (padrao `8765`), `--config` (ar
 | `/comando/estado` | lista JSON dos ultimos comandos (mesma de `metricas.comandos`) |
 | `POST /comando` | registra um pedido de comando (ver "Comandos"); exige token |
 
-Parametros (GET): `/tela.png`, `/tela.txt`, `/botoes.json` e `/botoes.txt` aceitam `?pagina=resumo|servicos|detalhes|comandos` (padrao `resumo`) e, na pagina `servicos`, `&p=<n>` (1 a N; invalido = 1, acima do maximo = a ultima). `/tela.png`, `/botoes.json` e `/botoes.txt` aceitam `&armado=<id>`: acao rapida (`gpu-descarregar`, `bots-pausar`, `bots-retomar`, `monitor-reiniciar`; so na pagina comandos) ou `svc:<id>:<verbo>` de um botao da pagina servicos (o id e o verbo tem de estar no catalogo); o botao armado aparece invertido ("Confirmar?" nas linhas de servico, "Toque de novo para confirmar" nas acoes rapidas). Valor invalido e ignorado (usa o padrao), nunca 500. Os botoes de comando chamam `POST /comando` (ver "Comandos"). A pagina comandos mostra ate 8 itens de `metricas["comandos"]` (`{acao, estado, quando, detalhe}`) se existirem. Os ids dos botoes usam so `[a-z0-9:-]`.
+Parametros (GET): `/tela.png`, `/tela.txt`, `/botoes.json` e `/botoes.txt` aceitam `?pagina=resumo|servicos|detalhes|comandos` (padrao `resumo`) e, na pagina `servicos`, `&p=<n>` (1 a N; invalido = 1, acima do maximo = a ultima). `/tela.png`, `/botoes.json` e `/botoes.txt` aceitam `&armado=<id>`: acao rapida (`gpu-descarregar`, `bots-pausar`, `bots-retomar`, `monitor-reiniciar`; so na pagina comandos) ou `svc:<id>:<verbo>` de um botao da pagina servicos (o id e o verbo tem de estar no catalogo); o botao armado aparece invertido ("Confirmar?" nas linhas de servico, "Toque de novo para confirmar" nas acoes rapidas). Os quatro tambem aceitam `&modo=desempenho|balanceado|economia` (perfil de energia ativo; invalido ou ausente = `desempenho`; so muda a pagina comandos, onde o bloco AJUSTES destaca o perfil ativo e descreve o ritmo). Valor invalido e ignorado (usa o padrao), nunca 500. Os botoes de comando chamam `POST /comando` (ver "Comandos"). A pagina comandos mostra ate 8 itens de `metricas["comandos"]` (`{acao, estado, quando, detalhe}`) se existirem. Os ids dos botoes usam so `[a-z0-9:-]`.
 
-**Contrato com o Kindle (v5)**: a barra de navegacao tem 5 botoes locais (`atualizar`, `pagina:resumo`, `pagina:servicos`, `pagina:detalhes`, `pagina:comandos`); na pagina servicos ha tambem `servicos:anterior` e `servicos:proxima` (tipo `local`, so quando existem), que o Kindle trata trocando o `p` da proxima requisicao. Os botoes de linha `svc:<id>:<verbo>` (tipo `comando`) usam o mesmo fluxo de dois toques das acoes rapidas e fazem `POST /comando {"acao":"svc:<id>:<verbo>"}`. O Kindle deve repassar `p` ao pedir `/tela.png` e `/botoes.txt`.
+**Contrato com o Kindle (v5)**: a barra de navegacao tem 5 botoes locais (`atualizar`, `pagina:resumo`, `pagina:servicos`, `pagina:detalhes`, `pagina:comandos`); na pagina servicos ha tambem `servicos:anterior` e `servicos:proxima` (tipo `local`, so quando existem), que o Kindle trata trocando o `p` da proxima requisicao. Os botoes de linha `svc:<id>:<verbo>` (tipo `comando`) usam o mesmo fluxo de dois toques das acoes rapidas e fazem `POST /comando {"acao":"svc:<id>:<verbo>"}`. O Kindle deve repassar `p` (e `modo`) ao pedir `/tela.png` e `/botoes.txt`.
+
+**Perfis de energia (Ajustes)**: a pagina comandos (Acoes) tem o bloco AJUSTES com tres botoes `local` `modo:desempenho`, `modo:balanceado` e `modo:economia`, um toque so. O Kindle guarda o escolhido em `/var/local/kindle-monitor/modo` (ext3, so o nome, 0644; sem arquivo = `desempenho`), le o arquivo a cada ciclo e passa `&modo=<nome>` nos dois pedidos. A tabela abaixo vive em `perfis.py` (rotulos e descricoes) e, em numeros, em `kindle/kindle-monitor/config.sh` (`PERFIL_<nome>="<intervalo_s> <ciclos_ate_o_flash>"`); `tests/test_modos.py` confere que as duas concordam. Trocar de perfil zera o contador do flash e acorda o loop (USR1), entao o efeito e imediato mesmo vindo de `economia`.
+
+| Perfil | Intervalo | Flash completo |
+|---|---|---|
+| `desempenho` (padrao) | 1 s | a cada 600 ciclos (~10 min) |
+| `balanceado` | 60 s | a cada 15 ciclos (~15 min) |
+| `economia` | 300 s | a cada 6 ciclos (~30 min) |
+
+Com intervalos longos o loop dorme de forma interrompivel: qualquer toque (ou troca de perfil, mesmo se cair durante a busca) acorda o loop na hora, e com um botao de comando armado ele acorda de novo apos `ARM_SECONDS` para a tela deixar de mostrar "confirmar". O aviso "sem dados" conta ciclos (`FAIL_NOTICE_AFTER`), entao em `economia` aparece apos ~15 min de falhas.
 
 Outro caminho: 404. Metodo diferente de GET: 405 (menos `POST /comando`). Todas as respostas levam `Cache-Control: no-store`.
 
@@ -55,7 +65,7 @@ As taxas (bytes/s) saem da diferenca entre a amostra atual e a anterior, guardad
 
 Unidades na tela: **base 1024** (1 KB/s = 1024 B/s, 1 MB/s = 1024 KB/s, igual aos GiB da RAM), uma casa decimal: `512 B/s`, `40.0 KB/s`, `12.3 MB/s`. No `/tela.txt` a forma curta: `IO NVMe r 12.3M w 1.2M` e `NET LAN rx 3.4M tx 0.2M` (`B`, `K`, `M`, `G`; o rotulo e encurtado se a linha passar de `--colunas`).
 
-**Cache de imagem:** o PNG renderizado fica num LRU de 8 entradas, chave (id do snapshot, pagina, p, armado, tamanho; na pagina comandos tambem o conteudo de `comandos.ultimos`). A thread de coleta ja renderiza a ultima tela pedida nos ultimos 30 s a cada snapshot novo, entao o pedido seguinte do Kindle costuma ser um acerto de cache. O encoder usa zlib nivel 1 e o canvas mistura texto/cantos por tabela (pixels identicos aos de antes).
+**Cache de imagem:** o PNG renderizado fica num LRU de 8 entradas, chave (id do snapshot, pagina, p, armado, modo, tamanho; na pagina comandos tambem o conteudo de `comandos.ultimos`). A thread de coleta ja renderiza a ultima tela pedida nos ultimos 30 s a cada snapshot novo, entao o pedido seguinte do Kindle costuma ser um acerto de cache. O encoder usa zlib nivel 1 e o canvas mistura texto/cantos por tabela (pixels identicos aos de antes).
 
 Cada coletor falha isolado: o que der erro aparece como `n/d` na tela e nunca derruba a requisicao. Sem GPU NVIDIA ou sem sensor de temperatura, a linha simplesmente nao aparece.
 
@@ -124,7 +134,7 @@ Em producao so entram `botoes.py` (layout dos botoes), `png.py` (encoder PNG com
 ```
 uv run --with pillow python tools/gerar_fonte.py        # reescreve server/fonte_dados.py
 ```
-Para ver o resultado sem subir o servidor: `python3 -I tools/preview.py --saida /tmp/tela.png [--cheia] [--pagina servicos --p 2 --armado svc:ai-agent:reiniciar]` (dados que imitam o atheron real; `--cheia` usa 52 servicos com varios em falha e 8 comandos) ou `--porta 8765` para baixar de um servidor local.
+Para ver o resultado sem subir o servidor: `python3 -I tools/preview.py --saida /tmp/tela.png [--cheia] [--pagina servicos --p 2 --armado svc:ai-agent:reiniciar] [--pagina comandos --modo economia]` (dados que imitam o atheron real; `--cheia` usa 52 servicos com varios em falha e 8 comandos) ou `--porta 8765` para baixar de um servidor local.
 
 ## Recuperacao: Kindle com a interface parada
 Enquanto o monitor roda, o supervisor para a interface do Kindle (`lab126_gui`) e desliga o toque; o botao de energia o encerra normalmente. Se o supervisor morrer sem limpar (SIGKILL, falta de memoria), o Kindle pode ficar com a tela congelada e sem toque. Recuperar: `ssh root@kindle-monitor 'start lab126_gui; lipc-set-prop com.lab126.deviced enable_touch 1'` (ou, sem rede, segurar o botao de energia por ~40 s para reiniciar o aparelho).

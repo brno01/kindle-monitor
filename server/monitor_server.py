@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Servidor HTTP do kindle-monitor: GET de leitura e um POST /comando autenticado por token.
 
-Endpoints: /tela.txt e /tela.png (parametros ?pagina=resumo|detalhes|comandos e, no PNG, &armado=<id>),
+Endpoints: /tela.txt e /tela.png (parametros ?pagina=resumo|detalhes|comandos e, no PNG, &armado=<id>; todos aceitam &modo=desempenho|balanceado|economia),
 /botoes.json e /botoes.txt (layout dos botoes), /metricas.json, /historico.json, /saude e /comando/estado.
 POST /comando so registra um pedido (ver comandos.py); quem executa e o executor root.
 NUNCA escute em 0.0.0.0: passe --bind com o IP da LAN/tailnet.
@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import botoes  # noqa: E402
 import cache_render  # noqa: E402
+import perfis  # noqa: E402
 import coletores  # noqa: E402
 import comandos  # noqa: E402
 import render  # noqa: E402
@@ -131,6 +132,15 @@ def _parametros(query, itens=()):
     return pagina, armado, p
 
 
+def _modo(query):
+    """Perfil de energia (`modo`) da query string; invalido ou ausente vira o padrao, nunca excecao."""
+    try:
+        q = parse_qs(query, keep_blank_values=True, errors="replace")
+    except Exception:
+        q = {}
+    return perfis.modo_valido(q.get("modo", [""])[0])
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "kindle-monitor"
     protocol_version = "HTTP/1.0"
@@ -167,26 +177,28 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/tela.txt":
                 _, m = self.server.metricas(True)
                 pagina, _, p = _parametros(url.query, servicos.itens_de(m))
-                linhas = render.render_texto(m, self.server.colunas, pagina, p)
+                linhas = render.render_texto(m, self.server.colunas, pagina, p)  # o modo (perfil) so vale no PNG e nos botoes
                 self._responder(200, "\n".join(linhas) + "\n")
             elif url.path == "/tela.png":
                 sid, m = self.server.metricas(True)
                 pagina, armado, p = _parametros(url.query, servicos.ordenar(servicos.itens_de(m)))
-                self._responder(200, self.server.png(sid, m, pagina, armado, p), "image/png")
+                self._responder(200, self.server.png(sid, m, pagina, armado, p, _modo(url.query)), "image/png")
             elif url.path == "/botoes.json":
                 itens = self._itens()
                 pagina, armado, p = _parametros(url.query, itens)
                 n, p_efetivo = self._paginas(itens, p)
                 corpo = {"largura": self.server.largura, "altura": self.server.altura, "pagina": pagina,
                          "p": p_efetivo, "paginas": n,
-                         "botoes": botoes.layout(pagina, armado, self.server.largura, self.server.altura, p, itens)}
+                         "botoes": botoes.layout(pagina, armado, self.server.largura, self.server.altura, p, itens,
+                                                 _modo(url.query))}
                 self._responder(200, json.dumps(corpo, ensure_ascii=True), "application/json; charset=utf-8")
             elif url.path == "/botoes.txt":
                 # same layout as /botoes.json, one "id tipo x y w h" per line, for the Kindle's busybox awk
                 itens = self._itens()
                 pagina, armado, p = _parametros(url.query, itens)
                 linhas = ["%s %s %d %d %d %d" % (b["id"], b["tipo"], b["x"], b["y"], b["w"], b["h"])
-                          for b in botoes.layout(pagina, armado, self.server.largura, self.server.altura, p, itens)]
+                          for b in botoes.layout(pagina, armado, self.server.largura, self.server.altura, p, itens,
+                                         _modo(url.query))]
                 self._responder(200, "\n".join(linhas) + "\n")
             elif url.path == "/historico.json":
                 h = self.server.coletor.historico()
@@ -240,7 +252,7 @@ class Servidor(ThreadingHTTPServer):
         self.log = log
         self.comandos = comandos_obj or comandos.Comandos(comandos.validar_config({}))
         self.cache = cache_render.CacheLru(CACHE_RENDER_MAX)
-        self._vista = None  # (pagina, armado, p, quando) do ultimo /tela.png pedido, para preaquecer
+        self._vista = None  # (pagina, armado, p, modo, quando) do ultimo /tela.png pedido, para preaquecer
         self._relogio = time.monotonic
         super().__init__(endereco, Handler)
 
@@ -251,25 +263,26 @@ class Servidor(ThreadingHTTPServer):
             return None, self.coletor.coletar(com_pares=com_pares)
         return obter(com_pares)
 
-    def png(self, sid, m, pagina, armado, p):
+    def png(self, sid, m, pagina, armado, p, modo=None):
         """PNG da tela, do cache quando o snapshot, a pagina, o p, o botao armado e o tamanho se repetem."""
         extra = None
         if pagina == "comandos":
             ult = self.comandos.ultimos(botoes.ULTIMOS_MAX)
             m = dict(m, comandos=ult)
             extra = json.dumps(ult, sort_keys=True, default=str)
-        chave = None if sid is None else (sid, pagina, str(p), armado, self.largura, self.altura, extra)
-        self._vista = (pagina, armado, p, self._relogio())
+        modo = perfis.modo_valido(modo)
+        chave = None if sid is None else (sid, pagina, str(p), armado, modo, self.largura, self.altura, extra)
+        self._vista = (pagina, armado, p, modo, self._relogio())
         return self.cache.obter(chave, lambda: render_png.render_png(
-            m, m.get("historico"), self.largura, self.altura, pagina, armado, p))
+            m, m.get("historico"), self.largura, self.altura, pagina, armado, p, modo=modo))
 
     def preaquecer(self, snap):
         """Chamado pela thread de coleta a cada snapshot novo: ja renderiza a tela que o Kindle esta pedindo."""
         vista = self._vista
-        if vista is None or self._relogio() - vista[3] > PREAQUECER_S:
+        if vista is None or self._relogio() - vista[4] > PREAQUECER_S:
             return
-        pagina, armado, p, _ = vista
-        self.png(snap.id, dict(snap.metricas), pagina, armado, p)
+        pagina, armado, p, modo, _ = vista
+        self.png(snap.id, dict(snap.metricas), pagina, armado, p, modo)
         self._vista = vista  # preaquecer nao conta como pedido
 
 

@@ -10,6 +10,7 @@ y=$2
 D=/mnt/us/kindle-monitor
 STF=/var/tmp/kindle-monitor/state
 TOKEN=/var/local/kindle-monitor/token   # ext3, root 0600; never on the FAT /mnt/us
+MODOF=/var/local/kindle-monitor/modo    # power profile, ext3 (survives reboot and USB drive mode); only the name
 BTN=/tmp/kindle-monitor-botoes.txt
 PIDF=/tmp/kindle-monitor.pid
 LOG=/tmp/kindle-monitor.log
@@ -63,6 +64,12 @@ case "$id" in
   atualizar) log "refresh" ;;
   pagina:resumo | pagina:servicos | pagina:detalhes | pagina:comandos)
     PAGINA=${id#pagina:}; P=1; ARMADO=; ARMADO_ATE=0; log "page $PAGINA" ;;
+  modo:desempenho | modo:balanceado | modo:economia)
+    # single tap, local: store the profile atomically; the loop re-reads it on the wake-up below
+    nome=${id#modo:}
+    mkdir -p /var/local/kindle-monitor
+    printf '%s\n' "$nome" > "$MODOF.new" && chmod 0644 "$MODOF.new" && mv -f "$MODOF.new" "$MODOF"
+    ARMADO=; ARMADO_ATE=0; log "mode $nome" ;;
   servicos:anterior)
     [ "$P" -gt 1 ] && P=$((P - 1)); ARMADO=; ARMADO_ATE=0; log "services page $P" ;;
   servicos:proxima)

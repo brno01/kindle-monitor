@@ -12,6 +12,7 @@ from datetime import datetime
 import botoes
 import coletores
 import formato
+import perfis
 import servicos
 from canvas import BRANCO, CLARO, ESCURO, MEDIO, PRETO, TRILHO, Canvas, altura_capital
 
@@ -253,10 +254,13 @@ def _botao(c, b, invertido, espessura=2):
         c.texto(x + w // 2, topo + extra + cap + i * passo, ln, NEG, tam, cor, alinhar="centro")
 
 
-def _desenhar_botoes(c, pagina, armado, p, itens):
-    for b in botoes.layout(pagina, armado, c.largura, c.altura, p, itens):
+def _desenhar_botoes(c, pagina, armado, p, itens, modo=None):
+    modo = perfis.modo_valido(modo)
+    for b in botoes.layout(pagina, armado, c.largura, c.altura, p, itens, modo):
         if b["tipo"] == "local" and b["id"].startswith("pagina:"):
             _botao(c, b, b["id"] == "pagina:" + pagina)
+        elif b["id"].startswith("modo:"):
+            _botao(c, b, b["id"] == "modo:" + modo)
         else:
             _botao(c, b, b["armado"])
 
@@ -884,12 +888,15 @@ def _ultimos(c, m, x, y, w, rh, limite_y):
     return y0 + len(its) * rh
 
 
-def _desenhar_comandos(c, m, itens):
+def _desenhar_comandos(c, m, itens, modo=None):
     """Grade das acoes rapidas; abaixo os ultimos comandos, Atencao e (se couber) a grade de todos os servicos."""
     geo = botoes.geometria_comandos(c.largura, c.altura)
     w = c.largura - 2 * MARGEM
     limite = botoes.limite(c.altura)
     c.texto(MARGEM, geo["rapidas_titulo_y"] + 4 + _cap(NEG, 26), "ACOES RAPIDAS", NEG, 26, ESCURO)
+    c.texto(MARGEM, geo["ajustes_titulo_y"] + 4 + _cap(NEG, 26), "AJUSTES", NEG, 26, ESCURO)
+    desc = _ajustar(c, perfis.descricao(modo), REG, 34, w)
+    c.texto(MARGEM, geo["ajustes_desc_y"] + (geo["ajustes_desc_h"] + _cap(REG, 34)) // 2, desc, REG, 34, ESCURO)
     rh = geo["linha_h"]
     y = geo["fim_botoes"] + GAP
     reserva = (_h_atencao(1) + GAP) if itens else 0  # Atencao sempre ganha ao menos uma linha
@@ -911,7 +918,7 @@ def _desenhar_comandos(c, m, itens):
 
 # --------------------------------------------------------------------- entrada
 
-def desenhar(c, metricas, historico=None, pagina="resumo", armado=None, p=1):
+def desenhar(c, metricas, historico=None, pagina="resumo", armado=None, p=1, modo=None):
     """Desenha a pagina inteira no canvas `c` (padrao do Kindle: 1236x1648)."""
     m = metricas if isinstance(metricas, dict) else {}
     hist = historico if isinstance(historico, dict) else m.get("historico")
@@ -927,12 +934,12 @@ def desenhar(c, metricas, historico=None, pagina="resumo", armado=None, p=1):
     elif pagina == "detalhes":
         _desenhar_detalhes(c, m, itens, hist)
     else:
-        _desenhar_comandos(c, m, itens)
-    _desenhar_botoes(c, pagina, armado, p, itens)
+        _desenhar_comandos(c, m, itens, modo)
+    _desenhar_botoes(c, pagina, armado, p, itens, modo)
 
 
-def render_png(metricas, historico=None, largura=1236, altura=1648, pagina="resumo", armado=None, p=1):
+def render_png(metricas, historico=None, largura=1236, altura=1648, pagina="resumo", armado=None, p=1, modo=None):
     """Devolve a tela como PNG 8-bit em tons de cinza."""
     c = Canvas(largura, altura)
-    desenhar(c, metricas, historico, pagina, armado, p)
+    desenhar(c, metricas, historico, pagina, armado, p, modo)
     return c.para_png()

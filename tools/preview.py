@@ -112,6 +112,7 @@ def main(argv=None):
     p.add_argument("--cheia", action="store_true", help="52 servicos, varios em falha, 8 comandos recentes")
     p.add_argument("--pagina", default="resumo", choices=("resumo", "servicos", "detalhes", "comandos"))
     p.add_argument("--p", type=int, default=1, help="pagina da lista (so em servicos)")
+    p.add_argument("--modo", default=None, help="perfil de energia ativo (desempenho|balanceado|economia; pagina comandos)")
     p.add_argument("--armado", default=None, help="id do botao armado (acao rapida ou svc:<id>:<verbo>)")
     p.add_argument("--largura", type=int, default=1236)
     p.add_argument("--altura", type=int, default=1648)
@@ -119,11 +120,13 @@ def main(argv=None):
     if args.porta:
         url = "http://127.0.0.1:%d/tela.png?pagina=%s&p=%d%s" % (
             args.porta, args.pagina, args.p, "&armado=" + args.armado if args.armado else "")
+        if args.modo:
+            url += "&modo=" + args.modo
         with urllib.request.urlopen(url, timeout=10) as r:
             dados = r.read()
     else:
         m, hist = exemplo(args.cheia)
-        dados = render_png.render_png(m, hist, args.largura, args.altura, args.pagina, args.armado, args.p)
+        dados = render_png.render_png(m, hist, args.largura, args.altura, args.pagina, args.armado, args.p, args.modo)
     with open(args.saida, "wb") as f:
         f.write(dados)
     print("%s: %d bytes" % (args.saida, len(dados)))

@@ -11,6 +11,10 @@ LOG=/tmp/kindle-monitor.log
 IMG=/tmp/kindle-monitor.png
 BTN=/tmp/kindle-monitor-botoes.txt
 STF=/var/tmp/kindle-monitor/state
+MODOF=/var/local/kindle-monitor/modo   # power profile written by tap.sh (ext3); only one of the three names
+# config.sh's INTERVAL/FULL_EVERY are the fallbacks when the stored profile is missing or invalid
+INTERVAL0=$INTERVAL
+FULL_EVERY0=$FULL_EVERY
 
 if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then exit 0; fi
 echo $$ > "$PIDF"
@@ -55,6 +59,30 @@ read_state() {
   done < "$STF"
 }
 
+# power profile: only the three known names are accepted (the file is never sourced); the numbers
+# come from config.sh's PERFIL_<name>="<interval> <flash period>", validated as positive integers
+read_modo() {
+  MODO=desempenho
+  m=
+  if [ -f "$MODOF" ]; then IFS= read -r m < "$MODOF"; fi
+  case "$m" in desempenho|balanceado|economia) MODO=$m ;; esac
+  INTERVAL=$INTERVAL0; FULL_EVERY=$FULL_EVERY0
+  case "$MODO" in
+    desempenho) v=$PERFIL_desempenho ;;
+    balanceado) v=$PERFIL_balanceado ;;
+    economia) v=$PERFIL_economia ;;
+  esac
+  # shellcheck disable=SC2086
+  set -- $v
+  case "$1$2" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$1" -ge 1 ] && [ "$2" -ge 1 ] && { INTERVAL=$1; FULL_EVERY=$2; }
+  return 0
+}
+
+# signature of what taps change (page/armed state and profile): a tap that lands while the
+# loop is fetching or drawing sends USR1 when nothing is waiting, so it is detected here instead
+sig() { cat "$STF" "$MODOF" 2>/dev/null | cksum; }
+
 # page and armed button written by tap.sh
 state() {
   read_state
@@ -62,6 +90,7 @@ state() {
   Q="pagina=$PAGINA"
   [ "$PAGINA" = servicos ] && Q="$Q&p=$P"
   [ -n "$ARMADO" ] && Q="$Q&armado=$ARMADO"
+  Q="$Q&modo=$MODO"
 }
 
 fetch() {
@@ -77,7 +106,9 @@ fetch() {
 lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
 # a stale image would make the supervisor stop the Kindle UI before our first draw
 rm -f "$IMG"
-log "loop started pid=$$ server=$SERVER interval=${INTERVAL}s"
+read_modo
+log "loop started pid=$$ server=$SERVER interval=${INTERVAL}s mode=$MODO"
+MODO_LOG=
 n=0
 fails=0
 # let the launcher app exit and the library repaint before the first draw (interruptible)
@@ -91,6 +122,14 @@ if [ "${LOCK_TOUCH:-1}" = 1 ]; then
 fi
 while :; do
   T0=$(date +%s)
+  SIG0=$(sig)
+  read_modo
+  if [ "$MODO" != "$MODO_LOG" ]; then
+    log "mode $MODO interval=${INTERVAL}s"
+    # profile changed: the next full flash comes one new period from now (n=0 flashes at once, only at startup)
+    [ -n "$MODO_LOG" ] && n=1
+    MODO_LOG=$MODO
+  fi
   ensure_ts
   if fetch; then
     mv -f "$IMG.new" "$IMG"
@@ -108,8 +147,22 @@ while :; do
   fi
   # interruptible sleep: a signal is handled right away instead of after the sleep ends
   # sleep only what is left of the interval, so the period stays close to INTERVAL
+  # a tap or a profile change since the cycle began, or while it ran: skip the sleep. A profile
+  # change from a tap is applied at once (the loop re-reads it at the top of the next cycle).
+  read_modo
+  state
   left=$((INTERVAL - ($(date +%s) - T0)))
   [ "$left" -lt 0 ] && left=0
-  sleep "$left" &
-  wait $!
+  [ "$(sig)" != "$SIG0" ] && left=0
+  # an armed command button expires after ARM_SECONDS: wake up then so the screen stops showing "confirm"
+  if [ -n "$ARMADO" ]; then
+    arm_left=$((ARMADO_ATE - $(date +%s) + 1))
+    [ "$arm_left" -lt 0 ] && arm_left=0
+    [ "$arm_left" -lt "$left" ] && left=$arm_left
+  fi
+  if [ "$left" -gt 0 ]; then
+    sleep "$left" &
+    wait $!
+    kill $! 2>/dev/null   # woken by USR1: do not leave the long sleep behind
+  fi
 done
