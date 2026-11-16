@@ -2,6 +2,7 @@
 import unicodedata
 from datetime import datetime
 
+import botoes
 import coletores
 import formato
 
@@ -232,11 +233,34 @@ def _cabecalho(m, cols):
     return (host + " " + hora)[:cols]
 
 
-def render_texto(metricas, colunas):
-    """Monta a tela: lista de linhas ASCII, cada uma com no maximo `colunas` caracteres."""
+def _linhas_comandos(m, cols):
+    """Pagina comandos em texto: so lista os rotulos (o toque so existe na imagem) e os comandos recentes."""
+    linhas = ["COMANDOS (toque na imagem)", ""]
+    for grupo in ("leves", "servicos"):
+        linhas.append(botoes.TITULOS[grupo])
+        linhas += ["  [%s]" % rotulo for _, rotulo, g in botoes.COMANDOS if g == grupo]
+    linhas += ["", "ULTIMOS COMANDOS"]
+    lista = m.get("comandos")
+    itens = [i for i in lista if isinstance(i, dict)][:5] if isinstance(lista, list) else []
+    if not itens:
+        linhas.append("  nenhum comando ainda")
+    for it in itens:
+        linhas.append("  %s %s %s" % (it.get("quando", ""), it.get("estado", "?"), it.get("acao", "?")))
+    return linhas
+
+
+def render_texto(metricas, colunas, pagina="resumo"):
+    """Monta a tela: lista de linhas ASCII, cada uma com no maximo `colunas` caracteres.
+
+    `pagina`: "resumo" e "detalhes" mostram a tela completa (o texto ja e um resumo denso); "comandos" so lista os rotulos.
+    """
     cols = max(1, int(colunas))
     m = metricas if isinstance(metricas, dict) else {}
     linhas = [_cabecalho(m, cols), "-" * cols]
+    if pagina == "comandos":
+        linhas += _linhas_comandos(m, cols)
+        linhas = [ascii_seguro(l)[:cols] for l in linhas]
+        return linhas[:MAX_LINHAS]
     try:
         linhas += _secao(m, cols, compacto=False)
     except Exception:

@@ -89,17 +89,17 @@ class RenderPngTest(unittest.TestCase):
              "pares": [{"nome": "p", "ok": True, "metricas": {"cpu": nd}}]}
         self.assertEqual(ihdr(render_png.render_png(m, {"cpu": [None, None]})), (1236, 1648))
 
-    def test_cabecalho_preto_e_rodape_claro(self):
+    def test_cabecalho_compacto_e_botoes_no_rodape(self):
+        # v4: sem faixa preta (o cabecalho agora e compacto) e a barra de navegacao fica no rodape
         larg, alt, linhas = pixels(render_png.render_png(completo(), historico()))
-        self.assertEqual(linhas[3][5], 0)
-        self.assertEqual(linhas[60][larg // 2], 0)
-        self.assertEqual(max(linhas[alt - 2]), 255)
-        self.assertGreaterEqual(min(linhas[alt - 3]), 200)
-        self.assertGreaterEqual(min(linhas[alt - 40][:100]), 200)
+        self.assertEqual(linhas[3][5], 255)
+        self.assertEqual(linhas[60][larg // 2], 255)
+        self.assertEqual(linhas[alt - 2][larg // 2], 255)
+        self.assertEqual(linhas[alt - 90][350], 0)  # botao Resumo (selecionado) da barra de navegacao
 
-    def test_cabecalho_tem_texto_branco(self):
+    def test_cabecalho_tem_texto_escuro(self):
         _, _, linhas = pixels(render_png.render_png(completo(), historico()))
-        self.assertTrue(any(max(linhas[y][:400]) > 200 for y in range(20, 120)))
+        self.assertTrue(any(min(linhas[y][:400]) < 60 for y in range(20, 90)))
 
     def test_margens_laterais_vazias_abaixo_do_cabecalho(self):
         larg, alt, linhas = pixels(render_png.render_png(cheio(), historico()))
@@ -111,7 +111,7 @@ class RenderPngTest(unittest.TestCase):
         for m in (completo(), cheio(), MINIMO, completo(host="h" * 200, servicos=[
                 {"nome": "s" * 300, "ativo": False}], discos=[{"rotulo": "R" * 80, "pct": 5.0}] * 3)):
             c = cv.Canvas(1236, 1648, estrito=True)
-            render_png.desenhar(c, m, historico())  # levanta ForaDosLimites se algo sair
+            render_png.desenhar(c, m, historico())  # (pagina resumo) levanta ForaDosLimites se algo sair
 
     def test_tela_cheia_cabe_sem_cortar(self):
         c = cv.Canvas(1236, 1648, estrito=True)
@@ -169,16 +169,10 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def _faixas_largas(dados):
-    """Quantas faixas verticais de linhas tem uma corrida horizontal longa (barras e divisores)."""
+def _linhas_de_barra(dados):
+    """Linhas do cartao da GPU (resumo, 2a fileira, coluna esquerda) sem nenhum pixel branco: barra de uso."""
     larg, alt, linhas = pixels(dados)
-    faixas, dentro = 0, False
-    for y in range(160, alt - 70):
-        longa = min(linhas[y][60:larg - 60]) < 255
-        if longa and not dentro:
-            faixas += 1
-        dentro = longa
-    return faixas
+    return sum(1 for y in range(560, 900) if min(linhas[y][100:540]) < 255)
 
 
 class GpuRamPngTest(unittest.TestCase):
@@ -190,7 +184,7 @@ class GpuRamPngTest(unittest.TestCase):
         on = render_png.render_png(completo(gpu=self.ON), historico())
         self.assertEqual(ihdr(off), (1236, 1648))
         self.assertEqual(ihdr(on), (1236, 1648))
-        self.assertEqual(_faixas_largas(on) - _faixas_largas(off), 2)  # barra da GPU e da VRAM
+        self.assertGreater(_linhas_de_barra(on) - _linhas_de_barra(off), 20)  # o cartao ativo tem barra; o desativado nao
 
     def test_gpu_desativada_sem_mem_nula(self):
         g = {"util_pct": 0, "mem_usada_mb": None, "mem_total_mb": None, "temp_c": None}
@@ -200,7 +194,7 @@ class GpuRamPngTest(unittest.TestCase):
         a = {"util_pct": 0, "mem_usada_mb": 100, "mem_total_mb": 2048, "temp_c": 40}
         on = render_png.render_png(completo(gpu=self.ON), historico())
         so_vram = render_png.render_png(completo(gpu=a), historico())
-        self.assertEqual(_faixas_largas(on), _faixas_largas(so_vram))
+        self.assertEqual(_linhas_de_barra(on), _linhas_de_barra(so_vram))
 
     def test_ram_com_valor_e_disco_tier_state(self):
         m = completo(ram={"total_kb": 20331012, "usado_kb": 7763836, "pct": 38.2},
@@ -222,8 +216,8 @@ IO = {
 
 class IoPngTest(unittest.TestCase):
     def test_bloco_io_muda_a_imagem_e_mantem_dimensoes(self):
-        sem = render_png.render_png(completo(), historico())
-        com = render_png.render_png(completo(io=IO), historico())
+        sem = render_png.render_png(completo(), historico(), pagina="detalhes")
+        com = render_png.render_png(completo(io=IO), historico(), pagina="detalhes")
         self.assertEqual(ihdr(com), (1236, 1648))
         self.assertNotEqual(sem, com)
 
@@ -253,7 +247,7 @@ class IoPngTest(unittest.TestCase):
             return orig(m_, hist, d, w, ms, mp)
         render_png._montar = espia
         try:
-            render_png.desenhar(cv.Canvas(1236, 1648, estrito=True), m, historico())
+            render_png.desenhar(cv.Canvas(1236, 1648, estrito=True), m, historico(), "detalhes")
         finally:
             render_png._montar = orig
         self.assertEqual(blocos_usados["ultimo"][1:], (None, None))

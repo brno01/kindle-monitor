@@ -4,6 +4,7 @@
 Uso (so biblioteca padrao):
     python3 -I tools/preview.py --saida /tmp/preview.png                   # dados de exemplo
     python3 -I tools/preview.py --saida /tmp/preview.png --cheia           # 8 servicos e 3 discos
+    python3 -I tools/preview.py --saida /tmp/preview.png --pagina comandos --armado bots-pausar
     python3 -I tools/preview.py --saida /tmp/preview.png --porta 8765      # baixa de http://127.0.0.1:8765/tela.png
 """
 import argparse
@@ -62,6 +63,9 @@ def exemplo(cheia=False):
         "ram": [52 + i * 0.09 + (i % 5) for i in range(n)],
         "gpu": [max(0, (i * 13) % 40 - 5) for i in range(n)],
     }
+    m["comandos"] = [{"acao": "gpu-descarregar", "estado": "ok", "quando": "14:31:02", "detalhe": "modelo descarregado"},
+                     {"acao": "bots-pausar", "estado": "executando", "quando": "14:30:40", "detalhe": ""},
+                     {"acao": "ollama-reiniciar", "estado": "falhou", "quando": "14:20:11", "detalhe": "timeout de 20 s"}]
     return m, hist
 
 
@@ -70,15 +74,18 @@ def main(argv=None):
     p.add_argument("--saida", required=True, help="arquivo PNG de saida")
     p.add_argument("--porta", type=int, default=None, help="busca /tela.png do servidor local nessa porta")
     p.add_argument("--cheia", action="store_true", help="dados de exemplo com 8 servicos e 3 discos")
+    p.add_argument("--pagina", default="resumo", choices=("resumo", "detalhes", "comandos"))
+    p.add_argument("--armado", default=None, help="id do comando armado (so na pagina comandos)")
     p.add_argument("--largura", type=int, default=1236)
     p.add_argument("--altura", type=int, default=1648)
     args = p.parse_args(argv)
     if args.porta:
-        with urllib.request.urlopen("http://127.0.0.1:%d/tela.png" % args.porta, timeout=10) as r:
+        with urllib.request.urlopen("http://127.0.0.1:%d/tela.png?pagina=%s%s" % (
+                args.porta, args.pagina, "&armado=" + args.armado if args.armado else ""), timeout=10) as r:
             dados = r.read()
     else:
         m, hist = exemplo(args.cheia)
-        dados = render_png.render_png(m, hist, args.largura, args.altura)
+        dados = render_png.render_png(m, hist, args.largura, args.altura, args.pagina, args.armado)
     with open(args.saida, "wb") as f:
         f.write(dados)
     print("%s: %d bytes" % (args.saida, len(dados)))

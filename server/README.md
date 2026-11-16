@@ -20,7 +20,10 @@ Opcoes: `--bind` (padrao `127.0.0.1`), `--porta` (padrao `8765`), `--config` (ar
 | `/tela.png` | imagem PNG 8-bit em tons de cinza (`image/png`), `--largura` x `--altura` (padrao 1236x1648, Kindle Paperwhite 5), gerada so com a biblioteca padrao |
 | `/historico.json` | anel em memoria das ultimas 60 amostras: `intervalo_s`, `max`, `t` (epoch), `cpu`, `ram` e `gpu` (so se houver GPU), em %, da mais antiga para a mais nova (`null` = leitura falhou) |
 | `/metricas.json` | metricas brutas em JSON (`host`, `gerado_em` ISO, cpu, ram, gpu, discos, io, servicos, ragnarok, portas, historico, pares). `?pares=0` nao consulta os pares |
+| `/botoes.json` | `{"largura","altura","pagina","botoes":[{id,rotulo,x,y,w,h,tipo,armado}]}`: fonte unica do layout dos botoes (pixels do PNG, origem no canto superior esquerdo); o render desenha exatamente estes retangulos (`botoes.py`) |
 | `/saude` | `ok` |
+
+Parametros (GET): `/tela.png`, `/tela.txt` e `/botoes.json` aceitam `?pagina=resumo|detalhes|comandos` (padrao `resumo`); `/tela.png` e `/botoes.json` aceitam `&armado=<id>` (so ids da pagina comandos: `gpu-descarregar`, `bots-pausar`, `bots-retomar`, `monitor-reiniciar`, `ragnarok-reiniciar`, `ollama-reiniciar`; o botao armado aparece invertido com "Toque de novo para confirmar"). Valor invalido e ignorado (usa o padrao), nunca 500. Os botoes de comando so desenham e expoem o layout: a execucao (POST /comando) e outra frente. A pagina comandos mostra ate 5 itens de `metricas["comandos"]` (`{acao, estado, quando, detalhe}`) se existirem.
 
 Outro caminho: 404. Metodo diferente de GET: 405. Todas as respostas levam `Cache-Control: no-store`.
 
@@ -54,10 +57,14 @@ cd server && python3 -I -m unittest discover -s tests
 Os testes usam fixtures e fakes: nao precisam de rede, `nvidia-smi`, `systemctl` nem `/var/lib/cerberus`.
 
 ## Imagem (`/tela.png`)
-Retrato, faixa de cabecalho preta com o host e a hora, uma linha por metrica (CPU, RAM, GPU, VRAM, SWAP e discos) com numero grande e barra grossa, grafico do historico ao lado de CPU/RAM/GPU (na RAM o `usado / total GB` fica em x=228 e o grafico comeca depois do texto; `/tela.txt` mostra `7.4/19.4G` na linha da RAM e da SWAP, ou logo abaixo se nao couber), GPU "desativada" (util 0 % e memoria usada 0 MiB: uma linha so com `desativada · 39°C`, sem barra nem VRAM; `/tela.txt`: `GPU   desativada 39C`; `metricas.gpu.estado` e `desativada` ou `ativa`), bloco de I/O (linhas DISCO com `L` leitura e `E` escrita, REDE com `rx` e `tx`, em 1 ou 2 colunas conforme couber), temperaturas/carga/uptime (numa linha so quando cabem), bloco Ragnarok (jogadores, pilulas LOGIN/CHAR/MAP e aviso `PARADO`), servicos (falhas primeiro) e cartoes compactos dos pares. Campos ausentes nao ocupam espaco; se nao couber, o layout reduz numeros e espacamentos e, no limite, omite itens (`+N servicos`), sem cortar texto nem desenhar fora da imagem. Textos sem acento (a fonte embutida e ASCII mais `°` e `·`).
+Retrato 1236x1648, tres paginas e barra de navegacao fixa no rodape (Atualizar, Resumo, Detalhes, Comandos; a pagina atual invertida). Cabecalho compacto (host e hora com segundos, ~90 px, sem faixa preta).
+- **resumo**: cartoes com contorno fino para CPU, RAM, GPU e o disco mais cheio (numero de 140 px, barra e sparkline; GPU "desativada" sem barra), cartao do Ragnarok (jogadores + pilulas das portas, aviso `PARADO`) e cartao dos servicos ("6 ok" ou a lista dos que falharam).
+- **detalhes**: todos os discos (usado / total), bloco de I/O (DISCO L/E, REDE rx/tx), TEMP/CARGA/UP, lista completa de servicos (falhas primeiro) e cartoes dos pares.
+- **comandos**: grade de botoes em "ACOES LEVES" e "SERVICOS (derruba por alguns segundos)" (borda grossa), confirmacao em dois toques (`?armado=`) e "ULTIMOS COMANDOS".
+Se nao couber, o layout reduz densidade e, no limite, omite itens (`+N servicos`), sem cortar texto nem desenhar fora da imagem. Textos sem acento (a fonte embutida e ASCII mais `°` e `·`). Os botoes tem no minimo 150x110 px e 16 px de folga entre si.
 
-Em producao so entram `png.py` (encoder PNG com `struct` + `zlib`), `canvas.py` (desenho) e `render_png.py` (layout). As fontes DejaVu vem **pre-rasterizadas** em `fonte_dados.py` (arquivo gerado, ~300 KB; licenca DejaVu/Bitstream Vera no topo do arquivo). Para regerar (ferramenta de desenvolvimento, usa Pillow so via `uv`, nada global):
+Em producao so entram `botoes.py` (layout dos botoes), `png.py` (encoder PNG com `struct` + `zlib`), `canvas.py` (desenho) e `render_png.py` (layout). As fontes DejaVu vem **pre-rasterizadas** em `fonte_dados.py` (arquivo gerado, ~300 KB; licenca DejaVu/Bitstream Vera no topo do arquivo). Para regerar (ferramenta de desenvolvimento, usa Pillow so via `uv`, nada global):
 ```
 uv run --with pillow python tools/gerar_fonte.py        # reescreve server/fonte_dados.py
 ```
-Para ver o resultado sem subir o servidor: `python3 -I tools/preview.py --saida /tmp/tela.png [--cheia]` (dados de exemplo; `--cheia` usa 8 servicos e 3 discos) ou `--porta 8765` para baixar de um servidor local.
+Para ver o resultado sem subir o servidor: `python3 -I tools/preview.py --saida /tmp/tela.png [--cheia]` (dados de exemplo; `--cheia` usa 8 servicos e 3 discos; `--pagina` e `--armado` escolhem a pagina) ou `--porta 8765` para baixar de um servidor local.

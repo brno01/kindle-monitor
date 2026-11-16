@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Servidor HTTP do kindle-monitor: somente GET, somente leitura, sem autenticacao.
 
-Endpoints: /tela.txt (texto ASCII), /tela.png (imagem para o FBInk), /metricas.json, /historico.json e /saude.
+Endpoints: /tela.txt e /tela.png (parametros ?pagina=resumo|detalhes|comandos e, no PNG, &armado=<id>),
+/botoes.json (layout dos botoes), /metricas.json, /historico.json e /saude.
 NUNCA escute em 0.0.0.0: passe --bind com o IP da LAN/tailnet.
 """
 import argparse
@@ -15,6 +16,7 @@ from urllib.parse import parse_qs, urlsplit
 # Com `python3 -I` o diretorio do script nao entra no sys.path: adiciona so o do proprio programa.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import botoes  # noqa: E402
 import coletores  # noqa: E402
 import render  # noqa: E402
 import render_png  # noqa: E402
@@ -97,6 +99,17 @@ def _validar(cfg):
 
 # ---------------------------------------------------------------------- servidor
 
+def _parametros(query):
+    """(pagina, armado) da query string; valor invalido (ou ausente) vira o padrao, nunca excecao."""
+    try:
+        q = parse_qs(query, keep_blank_values=True, errors="replace")
+    except Exception:
+        q = {}
+    pagina = botoes.pagina_valida(q.get("pagina", [""])[0])
+    armado = botoes.armado_valido(q.get("armado", [""])[0]) if pagina == "comandos" else None
+    return pagina, armado
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "kindle-monitor"
     protocol_version = "HTTP/1.0"
@@ -120,12 +133,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._responder(200, "ok")
             elif url.path == "/tela.txt":
                 m = self.server.coletor.coletar(com_pares=True)
-                linhas = render.render_texto(m, self.server.colunas)
+                pagina, _ = _parametros(url.query)
+                linhas = render.render_texto(m, self.server.colunas, pagina)
                 self._responder(200, "\n".join(linhas) + "\n")
             elif url.path == "/tela.png":
                 m = self.server.coletor.coletar(com_pares=True)
-                png = render_png.render_png(m, m.get("historico"), self.server.largura, self.server.altura)
+                pagina, armado = _parametros(url.query)
+                png = render_png.render_png(m, m.get("historico"), self.server.largura, self.server.altura,
+                                            pagina, armado)
                 self._responder(200, png, "image/png")
+            elif url.path == "/botoes.json":
+                pagina, armado = _parametros(url.query)
+                corpo = {"largura": self.server.largura, "altura": self.server.altura, "pagina": pagina,
+                         "botoes": botoes.layout(pagina, armado, self.server.largura, self.server.altura)}
+                self._responder(200, json.dumps(corpo, ensure_ascii=True), "application/json; charset=utf-8")
             elif url.path == "/historico.json":
                 h = self.server.coletor.historico()
                 self._responder(200, json.dumps(h, ensure_ascii=True), "application/json; charset=utf-8")
