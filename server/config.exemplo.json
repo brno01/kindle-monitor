@@ -102,6 +102,10 @@
   "_comentario_intervalo_historico_s": "Segundos entre as amostras do historico em memoria (CPU, RAM e GPU %, ultimas 60 amostras: com 15 s sao 15 min), usado no grafico da imagem e em /historico.json. Entre 0 e 3600. Nada vai para o disco.",
   "intervalo_historico_s": 15,
 
+  "_comentario_intervalo_coleta_s": "Segundos entre os snapshots da thread de coleta (0.1 a 60). As requisicoes leem o ultimo snapshot, sem coletar. intervalo_lento_s (0.5 a 600): cadencia do nvidia-smi e do systemctl is-active dentro da thread.",
+  "intervalo_coleta_s": 1.0,
+  "intervalo_lento_s": 5.0,
+
   "_comentario_intervalo_cpu_s": "Segundos entre as duas leituras de /proc/stat para calcular o CPU %. Entre 0 e 5. So vale na primeira leitura ou quando a anterior tem mais de 30 s; nas demais o CPU % vem da diferenca entre requisicoes, sem dormir.",
   "intervalo_cpu_s": 0.5,
 

@@ -17,16 +17,19 @@ import subprocess
 import threading
 import time
 import urllib.request
-from collections import deque
+from collections import deque, namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from urllib.parse import urlsplit
 
 import servicos
 
+Snapshot = namedtuple("Snapshot", "id t metricas")
 ND = {"erro": "n/d"}
 CACHE_S = 5.0
 CACHE_CPU_PADRAO = 1.5
+INTERVALO_COLETA_PADRAO = 1.0   # s entre snapshots da thread de coleta
+INTERVALO_LENTO_PADRAO = 5.0    # s entre coletas caras (nvidia-smi, systemctl)
 IDADE_AMOSTRA_MAX_S = 30.0  # older than this, a previous sample is useless: sample twice again
 INTERVALO_MIN_S = 0.5  # closer requests reuse the last computed rate
 INTERVALO_IO_PADRAO = 0.3
@@ -92,10 +95,11 @@ class CpuAmostrador:
         self._prev = None  # (total, ocioso)
         self._prev_t = None
 
-    def medir(self):
+    def medir(self, forcar=False):
+        """`forcar=True` ignora o cache de `cache_s` (a thread de coleta ja controla a cadencia)."""
         with self._lock:
             agora = self._relogio()
-            if self._t is not None and agora - self._t < self._cache_s:
+            if not forcar and self._t is not None and agora - self._t < self._cache_s:
                 return self._valor
             if self._prev is None or agora - self._prev_t > IDADE_AMOSTRA_MAX_S:
                 a = parse_cpu_stat(self._leitor())
@@ -628,6 +632,15 @@ class Coletor:
         self._lock_hist = threading.Lock()
         self._parar = threading.Event()
         self._thread_historico = None
+        self._intervalo_coleta = float(config.get("intervalo_coleta_s", INTERVALO_COLETA_PADRAO))
+        self._intervalo_lento = float(config.get("intervalo_lento_s", INTERVALO_LENTO_PADRAO))
+        self._snap = None  # Snapshot imutavel; so e trocado (atribuicao atomica), nunca alterado
+        self._snap_id = 0
+        self._lock_snap = threading.Lock()  # serializa atualizar_snapshot
+        self._lento = {}  # chave -> (t, valor) das coletas caras
+        self._thread_coleta = None
+        self.ao_atualizar = None  # callback(snapshot) chamado pela thread depois de cada snapshot novo
+        self._parar_coleta = threading.Event()
 
     def servicos_kindle(self):
         """Catalogo com o estado do inventario root; None sem catalogo. Leve (le um arquivo pequeno)."""
@@ -640,8 +653,11 @@ class Coletor:
         return montar_servicos_kindle(self._catalogo, texto, self._agora())
 
     def servicos_itens(self):
-        """Itens da tela Servicos, na ordem de exibicao (mesma lista que o render usa)."""
-        sk = self.servicos_kindle()
+        """Itens da tela Servicos, na ordem de exibicao (mesma lista que o render usa).
+
+        Com a thread de coleta ativa usa o snapshot (nada de ler arquivo por requisicao)."""
+        snap = self._snap if self._thread_ativa() else None
+        sk = snap.metricas.get("servicos_kindle") if snap else self.servicos_kindle()
         return servicos.ordenar(sk["itens"]) if sk else []
 
     def _pares(self):
@@ -710,16 +726,89 @@ class Coletor:
 
     def parar(self):
         self._parar.set()
-        if self._thread_historico is not None:
-            self._thread_historico.join(timeout=2)
+        self._parar_coleta.set()
+        for t in (self._thread_historico, self._thread_coleta):
+            if t is not None:
+                t.join(timeout=2)
 
-    def coletar(self, com_pares=True):
+    # ------------------------------------------------------------- snapshot
+    def _thread_ativa(self):
+        t = self._thread_coleta
+        return t is not None and t.is_alive() and self._snap is not None
+
+    def snapshot(self):
+        """Ultimo Snapshot (id, t, metricas) ou None. Nunca bloqueia."""
+        return self._snap
+
+    def obter_metricas(self, com_pares=True):
+        """(id_do_snapshot, metricas) sem coletar, se ja ha snapshot; senao coleta na hora (id None).
+
+        As metricas sao copia rasa: o chamador pode trocar chaves de topo sem afetar o snapshot."""
+        snap = self._snap
+        if snap is None:
+            return None, self.coletar(com_pares=com_pares)
+        m = dict(snap.metricas)
+        if not com_pares:
+            m.pop("pares", None)
+        return snap.id, m
+
+    def _caro(self, chave, fn):
+        """Valor de `fn` reutilizado por `intervalo_lento_s` (so no caminho do snapshot). Excecao propaga."""
+        agora = self._relogio()
+        hit = self._lento.get(chave)
+        if hit is not None and agora - hit[0] < self._intervalo_lento:
+            return hit[1]
+        v = fn()
+        self._lento[chave] = (self._relogio(), v)
+        return v
+
+    def atualizar_snapshot(self):
+        """Coleta e troca o snapshot. Falha de uma metrica mantem o valor anterior; falha total mantem o snapshot."""
+        with self._lock_snap:
+            anterior = self._snap
+            try:
+                m = self.coletar(com_pares=True, _snapshot=True)
+            except Exception:
+                if anterior is not None:
+                    return anterior
+                raise
+            if anterior is not None:
+                for k, v in m.items():
+                    if isinstance(v, dict) and "erro" in v:
+                        velho = anterior.metricas.get(k)
+                        if velho is not None and not (isinstance(velho, dict) and "erro" in velho):
+                            m[k] = velho
+            self._snap_id += 1
+            self._snap = Snapshot(self._snap_id, self._agora(), m)
+            return self._snap
+
+    def _laco_coleta(self):
+        while not self._parar_coleta.is_set():
+            try:
+                antes = self._snap
+                snap = self.atualizar_snapshot()
+                if snap is not antes and self.ao_atualizar is not None:
+                    self.ao_atualizar(snap)
+            except Exception:
+                pass
+            self._parar_coleta.wait(self._intervalo_coleta)
+
+    def iniciar_coleta(self):
+        """Inicia a thread (daemon) que renova o snapshot a cada `intervalo_coleta_s`. Idempotente."""
+        if self._thread_coleta is not None and self._thread_coleta.is_alive():
+            return
+        self._parar_coleta = threading.Event()
+        self._thread_coleta = threading.Thread(target=self._laco_coleta, name="coleta", daemon=True)
+        self._thread_coleta.start()
+
+    def coletar(self, com_pares=True, _snapshot=False):
         cfg = self.config
+        caro = self._caro if _snapshot else (lambda chave, fn: fn())
         m = {
             "host": cfg.get("host", "?"),
             "gerado_em": datetime.fromtimestamp(self._agora()).astimezone().isoformat(timespec="seconds"),
         }
-        m["cpu"] = _isolado(lambda: {"pct": self._cpu.medir()})
+        m["cpu"] = _isolado(lambda: {"pct": self._cpu.medir(forcar=_snapshot)})
         m["carga"] = _isolado(lambda: parse_loadavg(self._ler("/proc/loadavg")))
         mem = _isolado(lambda: parse_meminfo(self._ler("/proc/meminfo")))
         m["ram"] = mem if "erro" in mem else mem["ram"]
@@ -728,7 +817,7 @@ class Coletor:
 
         for chave, fn in (
             ("temp_cpu", lambda: coletar_temperatura(self._raiz_sys)),
-            ("gpu", lambda: coletar_gpu(self._executar)),
+            ("gpu", lambda: caro("gpu", lambda: coletar_gpu(self._executar))),
         ):
             try:
                 v = fn()
@@ -745,7 +834,7 @@ class Coletor:
             m["discos"] = discos
         if cfg.get("servicos"):
             try:
-                m["servicos"] = coletar_servicos(cfg["servicos"], self._executar)
+                m["servicos"] = caro("servicos", lambda: coletar_servicos(cfg["servicos"], self._executar))
             except Exception:
                 m["servicos"] = dict(ND)
         sk = self.servicos_kindle()

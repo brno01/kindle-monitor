@@ -11,6 +11,7 @@ import json
 import os
 import socket
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -18,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import botoes  # noqa: E402
+import cache_render  # noqa: E402
 import coletores  # noqa: E402
 import comandos  # noqa: E402
 import render  # noqa: E402
@@ -30,6 +32,8 @@ COLUNAS_MIN, COLUNAS_MAX = 20, 120
 LARGURA_PADRAO, ALTURA_PADRAO = 1236, 1648  # Kindle Paperwhite 5
 LARGURA_MIN, LARGURA_MAX = 800, 3000
 ALTURA_MIN, ALTURA_MAX = 1300, 4000
+CACHE_RENDER_MAX = 8
+PREAQUECER_S = 30.0  # so renderiza antes do pedido se a ultima tela foi pedida ha menos que isto
 ENDERECOS_PROIBIDOS = ("0.0.0.0", "::", "")
 
 
@@ -50,6 +54,8 @@ def carregar_config(caminho):
         "intervalo_io_s": coletores.INTERVALO_IO_PADRAO,
         "portas": [],
         "intervalo_historico_s": coletores.INTERVALO_HISTORICO_PADRAO,
+        "intervalo_coleta_s": coletores.INTERVALO_COLETA_PADRAO,
+        "intervalo_lento_s": coletores.INTERVALO_LENTO_PADRAO,
         "comandos": {},
     }
     if caminho:
@@ -100,6 +106,10 @@ def _validar(cfg):
     h = cfg["intervalo_historico_s"]
     if isinstance(h, bool) or not isinstance(h, (int, float)) or not 0 < h <= 3600:
         raise ValueError("config: intervalo_historico_s deve estar entre 0 e 3600")
+    for chave, lo, hi in (("intervalo_coleta_s", 0.1, 60), ("intervalo_lento_s", 0.5, 600)):
+        v = cfg[chave]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+            raise ValueError("config: %s deve estar entre %s e %s" % (chave, lo, hi))
     cfg["comandos"] = comandos.validar_config(cfg["comandos"])  # ValueError com a causa
     cfg["servicos_kindle"] = servicos.validar_catalogo(cfg["servicos_kindle"])  # ValueError com a causa
 
@@ -155,18 +165,14 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/saude":
                 self._responder(200, "ok")
             elif url.path == "/tela.txt":
-                m = self.server.coletor.coletar(com_pares=True)
+                _, m = self.server.metricas(True)
                 pagina, _, p = _parametros(url.query, servicos.itens_de(m))
                 linhas = render.render_texto(m, self.server.colunas, pagina, p)
                 self._responder(200, "\n".join(linhas) + "\n")
             elif url.path == "/tela.png":
-                m = self.server.coletor.coletar(com_pares=True)
+                sid, m = self.server.metricas(True)
                 pagina, armado, p = _parametros(url.query, servicos.ordenar(servicos.itens_de(m)))
-                if pagina == "comandos":
-                    m = dict(m, comandos=self.server.comandos.ultimos(botoes.ULTIMOS_MAX))
-                png = render_png.render_png(m, m.get("historico"), self.server.largura, self.server.altura,
-                                            pagina, armado, p)
-                self._responder(200, png, "image/png")
+                self._responder(200, self.server.png(sid, m, pagina, armado, p), "image/png")
             elif url.path == "/botoes.json":
                 itens = self._itens()
                 pagina, armado, p = _parametros(url.query, itens)
@@ -187,7 +193,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._responder(200, json.dumps(h, ensure_ascii=True), "application/json; charset=utf-8")
             elif url.path == "/metricas.json":
                 com_pares = parse_qs(url.query).get("pares", ["1"])[0] != "0"
-                m = self.server.coletor.coletar(com_pares=com_pares)
+                _, m = self.server.metricas(com_pares)
                 m["comandos"] = self.server.comandos.ultimos()
                 self._responder(200, json.dumps(m, ensure_ascii=True), "application/json; charset=utf-8")
             elif url.path == "/comando/estado":
@@ -233,7 +239,38 @@ class Servidor(ThreadingHTTPServer):
         self.altura = altura
         self.log = log
         self.comandos = comandos_obj or comandos.Comandos(comandos.validar_config({}))
+        self.cache = cache_render.CacheLru(CACHE_RENDER_MAX)
+        self._vista = None  # (pagina, armado, p, quando) do ultimo /tela.png pedido, para preaquecer
+        self._relogio = time.monotonic
         super().__init__(endereco, Handler)
+
+    def metricas(self, com_pares):
+        """(id_do_snapshot|None, metricas). Sem snapshot (thread desligada) coleta na hora, sem cache."""
+        obter = getattr(self.coletor, "obter_metricas", None)
+        if obter is None:
+            return None, self.coletor.coletar(com_pares=com_pares)
+        return obter(com_pares)
+
+    def png(self, sid, m, pagina, armado, p):
+        """PNG da tela, do cache quando o snapshot, a pagina, o p, o botao armado e o tamanho se repetem."""
+        extra = None
+        if pagina == "comandos":
+            ult = self.comandos.ultimos(botoes.ULTIMOS_MAX)
+            m = dict(m, comandos=ult)
+            extra = json.dumps(ult, sort_keys=True, default=str)
+        chave = None if sid is None else (sid, pagina, str(p), armado, self.largura, self.altura, extra)
+        self._vista = (pagina, armado, p, self._relogio())
+        return self.cache.obter(chave, lambda: render_png.render_png(
+            m, m.get("historico"), self.largura, self.altura, pagina, armado, p))
+
+    def preaquecer(self, snap):
+        """Chamado pela thread de coleta a cada snapshot novo: ja renderiza a tela que o Kindle esta pedindo."""
+        vista = self._vista
+        if vista is None or self._relogio() - vista[3] > PREAQUECER_S:
+            return
+        pagina, armado, p, _ = vista
+        self.png(snap.id, dict(snap.metricas), pagina, armado, p)
+        self._vista = vista  # preaquecer nao conta como pedido
 
 
 def criar_servidor(bind, porta, coletor, colunas=COLUNAS_PADRAO, log=True,
@@ -289,6 +326,8 @@ def main(argv=None):
     coletor.iniciar_historico()
     srv = criar_servidor(args.bind, args.porta, coletor, args.colunas, largura=args.largura, altura=args.altura,
                          comandos=comandos.Comandos(cfg["comandos"], catalogo=cfg["servicos_kindle"]))
+    coletor.ao_atualizar = srv.preaquecer
+    coletor.iniciar_coleta()
     print("kindle-monitor em http://%s:%d (host %s)" % (args.bind, srv.server_address[1], cfg["host"]),
           file=sys.stderr)
     try:
