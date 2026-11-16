@@ -169,10 +169,12 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def _linhas_de_barra(dados):
-    """Linhas do cartao da GPU (resumo, 2a fileira, coluna esquerda) sem nenhum pixel branco: barra de uso."""
+def _tinta_gpu(dados):
+    """Linhas com tinta nos primeiros 120 px do tile da GPU (resumo, 3o tile), entre o rotulo e a barra.
+
+    Numero de 72 px (tile ativo) ocupa ~52 linhas; a palavra "desativada" (34 px) so ~26."""
     larg, alt, linhas = pixels(dados)
-    return sum(1 for y in range(560, 900) if min(linhas[y][100:540]) < 255)
+    return sum(1 for y in range(118, 200) if min(linhas[y][642:760]) < 100)
 
 
 class GpuRamPngTest(unittest.TestCase):
@@ -184,7 +186,8 @@ class GpuRamPngTest(unittest.TestCase):
         on = render_png.render_png(completo(gpu=self.ON), historico())
         self.assertEqual(ihdr(off), (1236, 1648))
         self.assertEqual(ihdr(on), (1236, 1648))
-        self.assertGreater(_linhas_de_barra(on) - _linhas_de_barra(off), 20)  # o cartao ativo tem barra; o desativado nao
+        # v5: o tile ativo tem numero grande, sparkline e barra cheia; o desativado so a palavra e a barra vazia
+        self.assertGreater(_tinta_gpu(on), _tinta_gpu(off) + 15)
 
     def test_gpu_desativada_sem_mem_nula(self):
         g = {"util_pct": 0, "mem_usada_mb": None, "mem_total_mb": None, "temp_c": None}
@@ -194,7 +197,9 @@ class GpuRamPngTest(unittest.TestCase):
         a = {"util_pct": 0, "mem_usada_mb": 100, "mem_total_mb": 2048, "temp_c": 40}
         on = render_png.render_png(completo(gpu=self.ON), historico())
         so_vram = render_png.render_png(completo(gpu=a), historico())
-        self.assertEqual(_linhas_de_barra(on), _linhas_de_barra(so_vram))
+        off = render_png.render_png(completo(gpu=self.OFF), historico())
+        self.assertGreater(_tinta_gpu(so_vram), _tinta_gpu(off) + 15)  # nao cai no layout "desativada"
+        self.assertNotEqual(so_vram, off)
 
     def test_ram_com_valor_e_disco_tier_state(self):
         m = completo(ram={"total_kb": 20331012, "usado_kb": 7763836, "pct": 38.2},
@@ -203,7 +208,9 @@ class GpuRamPngTest(unittest.TestCase):
         self.assertEqual(ihdr(render_png.render_png(m, historico())), (1236, 1648))
 
     def test_tamanho_binario(self):
-        self.assertEqual(render_png._tamanho(7763836 * 1024, 20331012 * 1024, 1024), "7.4 / 19.4 GB")
+        self.assertEqual(render_png._tamanho(7763836 * 1024, 20331012 * 1024, 1024), "7.4/19.4 GB")  # v5: sem espacos ao redor da barra (cabe nos tiles)
+        self.assertEqual(render_png._tamanho(33 * 10**9, 42 * 10**9), "33/42 GB")
+        self.assertEqual(render_png._tamanho(373 * 10**9, 932 * 10**9), "373/932 GB")
 
 
 IO = {
@@ -236,21 +243,16 @@ class IoPngTest(unittest.TestCase):
             c = cv.Canvas(1236, 1648, estrito=True)
             render_png.desenhar(c, m, historico())
 
-    def test_caso_cheio_com_io_cabe_na_menor_densidade_sem_omitir(self):
-        # the full case must not drop services ("+N servicos") just because of the I/O block
-        m = cheio() | {"io": IO, "gpu": GpuRamPngTest.ON}
-        blocos_usados = {}
-        orig = render_png._montar
-
-        def espia(m_, hist, d, w, ms=None, mp=None):
-            blocos_usados["ultimo"] = (d, ms, mp)
-            return orig(m_, hist, d, w, ms, mp)
-        render_png._montar = espia
-        try:
-            render_png.desenhar(cv.Canvas(1236, 1648, estrito=True), m, historico(), "detalhes")
-        finally:
-            render_png._montar = orig
-        self.assertEqual(blocos_usados["ultimo"][1:], (None, None))
+    def test_caso_cheio_com_io_cabe_na_pagina_detalhes_sem_omitir_blocos(self):
+        # v5: a pagina detalhes empilha blocos de altura fixa; nada pode ser descartado por falta de espaco
+        import botoes
+        import servicos
+        m = cheio() | {"io": IO, "gpu": GpuRamPngTest.ON, "pares": [completo()["pares"][0]]}
+        w = 1236 - 2 * render_png.MARGEM
+        blocos = render_png._blocos_detalhes(cv.Canvas(8, 8), m, servicos.itens_de(m), w, historico())
+        total = sum(b[0] for b in blocos) + render_png.GAP * (len(blocos) - 1)
+        self.assertLessEqual(total, botoes.limite(1648) - botoes.TOPO)
+        self.assertGreaterEqual(len(blocos), 6)
 
     def test_margens_laterais_vazias_com_io(self):
         larg, alt, linhas = pixels(render_png.render_png(cheio() | {"io": IO}, historico()))

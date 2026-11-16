@@ -115,7 +115,7 @@ class BotoesDesenhadosTest(unittest.TestCase):
 
     def test_paginas_diferentes(self):
         imgs = {p: render_png.render_png(caso_cheio(), historico(), pagina=p) for p in botoes.PAGINAS}
-        self.assertEqual(len(set(imgs.values())), 3)
+        self.assertEqual(len(set(imgs.values())), len(botoes.PAGINAS))
 
     def test_ultimos_comandos_mudam_a_imagem(self):
         sem = render_png.render_png(completo(), None, pagina="comandos")
@@ -139,7 +139,7 @@ class ResumoTest(unittest.TestCase):
                 self.assertEqual(min(linhas[y][larg - 40:]), 255, (pagina, y))
 
     def test_resumo_tem_numeros_grandes(self):
-        # o numero do CPU (140 px) ocupa muita altura contigua de tinta
+        # o numero do CPU (72 px na v5) ocupa muita altura contigua de tinta
         larg, alt, linhas = pixels(render_png.render_png(completo(cpu={"pct": 56.0}), historico()))
         topo = None
         seq = 0
@@ -149,7 +149,7 @@ class ResumoTest(unittest.TestCase):
                 topo = max(topo or 0, seq)
             else:
                 seq = 0
-        self.assertGreater(topo, 60)
+        self.assertGreater(topo, 48)
 
     def test_servicos_com_falha_aparecem(self):
         a = render_png.render_png(completo(servicos=[{"nome": "a.service", "ativo": True}]), None)

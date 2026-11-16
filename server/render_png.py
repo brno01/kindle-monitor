@@ -1,8 +1,10 @@
 """Tela PNG (retrato, tons de cinza) do kindle-monitor. Funcoes puras: metricas -> bytes PNG.
 
-Layout em blocos empilhados na vertical; se nao couber, `desenhar` tenta densidades menores
-(numeros e espacamentos menores, servicos em duas colunas) e, no limite, omite itens
-("+N servicos") em vez de cortar texto ou desenhar fora da imagem.
+Quatro paginas (resumo, servicos, detalhes, comandos) mais a barra de navegacao fixa no rodape. Os botoes vem
+sempre de `botoes.layout` (a mesma funcao que serve /botoes.json): aqui so se desenha o que ela devolve.
+Visual e-ink: alto contraste, contornos finos, raios pequenos, sem sombras; so os tamanhos de fonte embutidos
+(26 e 34; negrito tambem 48, 72 e 140). Estado de servico: forma antes da cor (cheia = ativo, vazia = parado,
+X = falha, ? = desconhecido).
 """
 import unicodedata
 from datetime import datetime
@@ -10,21 +12,15 @@ from datetime import datetime
 import botoes
 import coletores
 import formato
+import servicos
 from canvas import BRANCO, CLARO, ESCURO, MEDIO, PRETO, TRILHO, Canvas, altura_capital
 
 NEG, REG, MONO = "sans-bold", "sans", "mono"
-MARGEM = 48
-ALTURA_CABECALHO = 92  # cabecalho compacto: host e hora, sem faixa preta
-BARRA_RAIO = 8
-HIST_MAX = 60
-
-# Densidades, da mais folgada a mais apertada.
-DENSIDADES = (
-    dict(num=72, pct=34, barra=26, esp_linha=26, esp_secao=34, svc_h=46, svc_cols=2, card_h=150, io_h=44),
-    dict(num=72, pct=34, barra=26, esp_linha=16, esp_secao=26, svc_h=42, svc_cols=2, card_h=146, io_h=42),
-    dict(num=48, pct=26, barra=24, esp_linha=14, esp_secao=22, svc_h=40, svc_cols=2, card_h=140, io_h=40),
-    dict(num=48, pct=26, barra=20, esp_linha=10, esp_secao=16, svc_h=36, svc_cols=2, card_h=134, io_h=36),
-)
+MARGEM = botoes.MARGEM
+GAP = botoes.GAP
+ALTURA_CABECALHO = botoes.CAB_PX
+RAIO = 10
+PAD = 16
 
 
 # ------------------------------------------------------------------ utilidades
@@ -66,17 +62,26 @@ def _pct(fn):
         return None
 
 
-def _tamanho(usado, total, base=1000):
-    """'3.1 / 8.0 GB' (mesma unidade para os dois, escolhida pelo total; base 1000 ou 1024)."""
+def _un(v, base):
     un = ("B", "KB", "MB", "GB", "TB", "PB")
-    i = 0
-    t = float(total)
+    i, t = 0, float(v)
     while t >= base and i < len(un) - 1:
         t /= float(base)
         i += 1
+    return t, i, un
+
+
+def _tamanho(usado, total, base=1000):
+    """'7.4/19.4 GB': mesma unidade para os dois (escolhida pelo total)."""
+    t, i, un = _un(total, base)
     f = float(base) ** i
-    fmt = "%.0f" if t >= 100 else "%.1f"
-    return (fmt + " / " + fmt + " %s") % (usado / f, total / f, un[i])
+    fmt = "%.0f" if t >= 40 else "%.1f"  # 33/42 GB, 373/932 GB, mas 7.4/19.4 GB
+    return (fmt + "/" + fmt + " %s") % (usado / f, total / f, un[i])
+
+
+def _bytes_txt(v, base):
+    t, i, un = _un(v, base)
+    return ("%.0f %s" if t >= 100 else "%.1f %s") % (t, un[i])
 
 
 def _uptime(seg):
@@ -93,42 +98,44 @@ def _hora(m, fmt):
         return "--:--:--" if "%S" in fmt else "--:--"
 
 
+def _cap(fonte, tam):
+    return altura_capital(fonte, tam)
+
+
+def _texto_c(c, x, y_centro, texto, fonte, tam, cor, alinhar="esq"):
+    """Texto com o centro das maiusculas em y_centro."""
+    c.texto(x, y_centro + _cap(fonte, tam) // 2, texto, fonte, tam, cor, alinhar)
+
+
 # --------------------------------------------------------------- componentes
 
+def _card(c, x, y, w, h):
+    c.contorno_arredondado(x, y, w, h, RAIO, PRETO, 2, BRANCO)
+
+
 def _barra(c, x, y, w, h, pct):
-    """Trilho cinza claro com contorno e preenchimento preto, cantos levemente arredondados."""
-    c.contorno_arredondado(x, y, w, h, BARRA_RAIO, ESCURO, 2, TRILHO)
+    """Trilho claro com contorno fino e preenchimento preto."""
+    r = min(6, h // 2)
+    c.contorno_arredondado(x, y, w, h, r, ESCURO, 2, TRILHO)
     if pct is None:
         return
     iw, ih = w - 4, h - 4
-    for marca in (25, 50, 75):
-        c.retangulo(x + 2 + int(iw * marca / 100.0) - 1, y + 4, 2, ih - 4, CLARO)
     cheio = int(round(iw * pct / 100.0))
     if cheio > 0:
-        c.retangulo_arredondado(x + 2, y + 2, max(cheio, 4), ih, max(2, BARRA_RAIO - 2), PRETO)
-
-
-def _numero(c, x_dir, base, pct, tam, tam_pct, cor=PRETO):
-    """Numero grande com o '%' menor, alinhado a direita em x_dir, sobre a linha de base."""
-    if pct is None:
-        c.texto(x_dir, base, "n/d", NEG, tam, MEDIO, alinhar="dir")
-        return
-    wp = c.medir("%", NEG, tam_pct)
-    c.texto(x_dir, base, "%", NEG, tam_pct, cor, alinhar="dir")
-    c.texto(x_dir - wp - 4, base, "%d" % int(round(pct)), NEG, tam, cor, alinhar="dir")
+        c.retangulo_arredondado(x + 2, y + 2, max(cheio, min(4, iw)), ih, max(1, r - 2), PRETO)
 
 
 def _sparkline(c, x, y_base, w, h, serie):
     """Area + linha do historico (0..100%), a amostra mais recente na direita."""
     pts = []
     n = len(serie)
-    passo = w / float(max(2, n) - 1)  # preenche a largura; compacta ate chegar a 60 amostras
+    passo = w / float(max(2, n) - 1)
     for i, v in enumerate(serie):
         v = _num(v)
         if v is None:
             continue
         px = x + w - (n - 1 - i) * passo
-        py = y_base - 3 - min(100.0, max(0.0, v)) / 100.0 * (h - 6)
+        py = y_base - 2 - min(100.0, max(0.0, v)) / 100.0 * (h - 5)
         pts.append((px, py))
     c.retangulo(x, y_base - 1, w, 2, CLARO)
     if len(pts) < 2:
@@ -137,429 +144,64 @@ def _sparkline(c, x, y_base, w, h, serie):
         for cx in range(int(round(xa)), int(round(xb)) + 1):
             t = 0 if xb == xa else (cx - xa) / (xb - xa)
             top = int(ya + (yb - ya) * t)
-            c.retangulo(cx, top, 1, int(y_base - 1 - top), TRILHO)
-    c.polilinha([(int(round(px)), int(round(py))) for px, py in pts], PRETO, 3)
-    c.circulo(int(round(pts[-1][0])), int(round(pts[-1][1])), 5, PRETO)
+            c.retangulo(cx, top, 1, max(0, int(y_base - 1 - top)), TRILHO)
+    c.polilinha([(int(round(px)), int(round(py))) for px, py in pts], PRETO, 2)
+    c.circulo(int(round(pts[-1][0])), int(round(pts[-1][1])), 3, PRETO)
 
 
-def _linha_metrica(c, x, y, w, d, rotulo, pct, detalhe=None, serie=None, tam_rot=None):
-    """Rotulo pequeno a esquerda, numero grande a direita, barra grossa embaixo."""
-    cap = altura_capital(NEG, d["num"])
-    base = y + cap
-    num_w = c.medir("100", NEG, d["num"]) + 4 + c.medir("%", NEG, d["pct"])
-    rotulo_w = 170
-    if tam_rot is None:
-        tam_rot = 34 if c.medir(_limpar(rotulo), NEG, 34) <= rotulo_w - 10 else 26  # "NAS SSD" cabe a 26
-    c.texto(x, base, _ajustar(c, rotulo, NEG, tam_rot, rotulo_w - 10), NEG, tam_rot, ESCURO)
-    _numero(c, x + w, base, pct, d["num"], d["pct"])
-    x0, x1 = x + rotulo_w + 10, x + w - num_w - 30
-    if detalhe:
-        # valor em x0 (como nas outras linhas); o sparkline, se houver, comeca depois do texto
-        txt = _ajustar(c, detalhe, REG, 26, x1 - x0)
-        c.texto(x0, base, txt, REG, 26, ESCURO)
-        x0 += int(c.medir(txt, REG, 26)) + 28
-    if serie is not None and sum(1 for v in serie if _num(v) is not None) >= 4 and x1 - x0 > 100:
-        _sparkline(c, x0, base, x1 - x0, cap, serie)
-    _barra(c, x, base + 14, w, d["barra"], pct)
-
-
-def _linha_desativada(c, x, y, w, d, rotulo, temp):
-    """GPU sem nada carregado: uma linha so, 'desativada' no lugar do numero grande (sem barra)."""
-    base = y + altura_capital(NEG, d["num"])
-    c.texto(x, base, rotulo, NEG, 34, ESCURO)
-    txt = "desativada"
-    if _num(temp) is not None:
-        txt += "  \u00b7  %d\u00b0C" % int(round(temp))
-    c.texto(x + w, base, txt, NEG, 48, ESCURO, alinhar="dir")
-
-
-def _pilula(c, x, y, w, h, rotulo, aberto):
-    """Aberta: preenchida de preto com texto branco. Fechada: so contorno, com um X."""
-    if aberto:
-        c.retangulo_arredondado(x, y, w, h, h // 2, PRETO)
-        base = y + (h + altura_capital(NEG, 34)) // 2
-        c.texto(x + w // 2, base, rotulo, NEG, 34, BRANCO, alinhar="centro")
-        return
-    c.contorno_arredondado(x, y, w, h, h // 2, PRETO, 3, BRANCO)
-    lado = 20
-    tw = c.medir(rotulo, NEG, 34)
-    ini = x + (w - (lado + 12 + tw)) / 2.0
-    base = y + (h + altura_capital(NEG, 34)) // 2
-    c.cruz_x(int(ini), y + (h - lado) // 2, lado, PRETO, 4)
-    c.texto(int(ini) + lado + 12, base, rotulo, NEG, 34, PRETO)
-
-
-def _icone_servico(c, x, y, lado, ok):
-    if ok:
-        c.circulo(x + lado // 2, y + lado // 2, lado // 2 - 1, PRETO)
+def _forma(c, x, y, lado, estado):
+    """Forma do estado dentro do quadrado (x, y, lado, lado): cheia, vazia, X ou ?."""
+    cx, cy, r = x + lado // 2, y + lado // 2, lado // 2 - 1
+    if estado == "ativo":
+        c.circulo(cx, cy, r, PRETO)
+    elif estado == "parado":
+        c.circulo(cx, cy, r, PRETO)
+        c.circulo(cx, cy, r - 3, BRANCO)
+    elif estado == "falha":
+        c.contorno(x + 1, y + 1, lado - 2, lado - 2, PRETO, 3)
+        c.cruz_x(x + 7, y + 7, lado - 14, PRETO, 3)
     else:
-        c.contorno(x, y, lado, lado, PRETO, 3)
-        c.cruz_x(x + 6, y + 6, lado - 12, PRETO, 3)
+        c.contorno(x + 1, y + 1, lado - 2, lado - 2, MEDIO, 2)
+        c.texto(cx, cy + _cap(NEG, 26) // 2, "?", NEG, 26, ESCURO, alinhar="centro")
 
 
-# ----------------------------------------------------------------- blocos
+def _forma_ok(c, x, y, lado, ok):
+    _forma(c, x, y, lado, "ativo" if ok else "falha")
 
-def _info_disco(dk):
-    """(rotulo, pct, detalhe, usado, total, base) de uma entrada de disco; None se nao for um dict."""
-    if not isinstance(dk, dict):
+
+# ------------------------------------------------------------------ cabecalho
+
+def _aviso_inventario(m):
+    sk = m.get("servicos_kindle")
+    if not isinstance(sk, dict):
         return None
-    base = 1024 if dk.get("base") == 1024 else 1000
-    usado, total = _num(dk.get("usado_b")), _num(dk.get("total_b"))
-    det = None
-    if total and usado is not None:
-        det = _tamanho(usado, total, base)
-        if dk.get("parado"):
-            det += "  ·  parado"
-    return str(dk.get("rotulo", "?")), _pct(lambda: dk["pct"]), det, usado, total, base
+    if sk.get("inventario") == "velho":
+        return "estados desatualizados"
+    if sk.get("inventario") == "ausente":
+        return "sem inventario de servicos"
+    return None
 
 
-def _bloco_titulo(texto, d, gap=None):
-    cap = altura_capital(NEG, 26)
-
-    def desenhar(c, y, x):
-        c.texto(x, y + cap, texto, NEG, 26, ESCURO)
-    return (cap, desenhar, 16 if gap is None else gap, None)
-
-
-def _bloco_discos(m, d, w):
-    """Pagina detalhes: todos os discos, cada um com usado/total, numero e barra."""
-    discos = m.get("discos")
-    infos = [i for i in (_info_disco(x) for x in discos) if i] if isinstance(discos, list) else []
-    if not infos:
-        return []
-    cap = altura_capital(NEG, d["num"])
-    h_linha = cap + 14 + d["barra"]
-    medidor = Canvas(8, 8)
-    tam_rot = 34 if all(medidor.medir(_limpar(i[0]), NEG, 34) <= 160 for i in infos) else 26  # mesmo tamanho em todas
-    blocos = [_bloco_titulo("ARMAZENAMENTO", d)]
-    for i, (rot, pct, det, _u, _t, _b) in enumerate(infos):
-        def desenhar(c, y, x, rot=rot, pct=pct, det=det):
-            _linha_metrica(c, x, y, w, d, rot, pct, det, None, tam_rot)
-        blocos.append((h_linha, desenhar, d["esp_linha"] if i < len(infos) - 1 else d["esp_secao"], None))
-    return blocos
-
-def _bloco_info(m, d, w):
-    partes_temp = []
-    try:
-        if _ok(m.get("temp_cpu")):
-            partes_temp.append("CPU %d°C" % int(round(m["temp_cpu"]["c"])))
-        g = m.get("gpu")
-        if _ok(g) and _num(g.get("temp_c")) is not None:
-            partes_temp.append("GPU %d°C" % int(round(g["temp_c"])))
-    except Exception:
-        partes_temp = []
-    up = None
-    try:
-        up = _uptime(m["uptime"]["segundos"])
-    except Exception:
-        pass
-    carga = None
-    try:
-        cg = m["carga"]
-        carga = "%.2f  %.2f  %.2f" % (cg["1m"], cg["5m"], cg["15m"])
-    except Exception:
-        pass
-    if not (partes_temp or up or carga):
-        return []
-    temp = "  \u00b7  ".join(partes_temp)
-    linha_h = 46
-    cap = altura_capital(NEG, 34)
-
-    def itens(c, tam):
-        """[(etiqueta, valor)] na ordem TEMP, CARGA, UP, com a largura de cada um."""
-        r = []
-        for etq, val in (("TEMP", temp), ("CARGA", carga), ("UP", up)):
-            if val:
-                r.append((etq, val, c.medir(etq, NEG, 26) + 14 + c.medir(val, NEG, tam)))
-        return r
-
-    def cabe_numa_linha(c, tam):
-        it = itens(c, tam)
-        return sum(i[2] for i in it) + 36 * (len(it) - 1) <= w
-
-    def desenhar(c, y, x):
-        if cabe_numa_linha(c, 34):
-            tam = 34
-            it = itens(c, tam)
-            livre = w - sum(i[2] for i in it)
-            gap = livre / float(max(1, len(it) - 1)) if len(it) > 1 else 0
-            base = y + altura_capital(NEG, tam)
-            px = float(x)
-            for etq, val, largura in it:
-                c.texto(int(px), base, etq, NEG, 26, ESCURO)
-                c.texto(int(px + c.medir(etq, NEG, 26) + 14), base, val, NEG, tam, PRETO)
-                px += largura + gap
-            return
-        base = y + cap
-        px = x
-        if partes_temp:
-            c.texto(px, base, "TEMP", NEG, 26, ESCURO)
-            px += c.medir("TEMP", NEG, 26) + 14
-            c.texto(px, base, temp, NEG, 34, PRETO)
-        if up:
-            c.texto(x + w, base, up, NEG, 34, PRETO, alinhar="dir")
-            c.texto(x + w - c.medir(up, NEG, 34) - 14, base, "UP", NEG, 26, ESCURO, alinhar="dir")
-        if carga:
-            y2 = base + (linha_h if (partes_temp or up) else 0)
-            c.texto(x, y2, "CARGA", NEG, 26, ESCURO)
-            c.texto(x + c.medir("CARGA", NEG, 26) + 14, y2, carga, NEG, 34, PRETO)
-
-    # height is decided at layout time (no canvas yet): measure with a throwaway one
-    medidor = Canvas(8, 8)
-    if cabe_numa_linha(medidor, 34):
-        h = altura_capital(NEG, 34)
-    else:
-        h = cap + (linha_h if ((partes_temp or up) and carga) else 0)
-    return [(h, desenhar, d["esp_secao"], None)]
-
-
-def _bloco_io(m, d, w):
-    """Taxas de disco (L = leitura, E = escrita) e de rede (rx/tx): uma tabela compacta de 1 ou 2 colunas."""
-    io = m.get("io")
-    if not _ok(io):
-        return []
-    grupos = []  # (titulo, [(rotulo, (tag1, val1), (tag2, val2))])
-    for chave, titulo, tags, campos in (("discos", "DISCO", ("L", "E"), ("leitura_bps", "escrita_bps")),
-                                         ("redes", "REDE", ("rx", "tx"), ("rx_bps", "tx_bps"))):
-        lista = io.get(chave)
-        linhas = []
-        for it in lista if isinstance(lista, list) else []:
-            if isinstance(it, dict):
-                linhas.append((_limpar(it.get("rotulo", "?")),
-                               (tags[0], formato.taxa(it.get(campos[0]))), (tags[1], formato.taxa(it.get(campos[1])))))
-        if linhas:
-            grupos.append((titulo, linhas))
-    if not grupos:
-        return []
-    h_linha = d["io_h"]
-    tam = tam_tag = tam_rot = 26  # embedded fonts only come in 26 and 34 px (above 34: bold only)
-    medidor = Canvas(8, 8)
-    titulo_w = max(medidor.medir(t, NEG, 26) for t, _ in grupos) + 14
-    todas = [l for _, ls in grupos for l in ls]
-    rot_w = max(medidor.medir(l[0], NEG, tam_rot) for l in todas) + 14
-
-    def larg_par(par):
-        return medidor.medir(par[0], REG, tam_tag) + 8 + medidor.medir(par[1], NEG, tam)
-    a_w = max(larg_par(l[1]) for l in todas) + 18
-    b_w = max(larg_par(l[2]) for l in todas)
-    celula = int(rot_w + a_w + b_w)
-    gap_col = 20
-    cols = 2 if 2 * celula + gap_col <= w - titulo_w else 1
-    cw = (w - titulo_w - gap_col * (cols - 1)) // cols
-    n_linhas = sum(-(-len(ls) // cols) for _, ls in grupos)
-    h = n_linhas * h_linha
-
-    def desenhar(c, y, x):
-        yy = y
-        for titulo, ls in grupos:
-            n = -(-len(ls) // cols)
-            c.texto(x, yy + (h_linha + altura_capital(NEG, 26)) // 2, titulo, NEG, 26, ESCURO)
-            for i, (rot, a, b) in enumerate(ls):
-                cx = x + titulo_w + (i % cols) * (cw + gap_col)
-                base = yy + (i // cols) * h_linha + (h_linha + altura_capital(NEG, tam)) // 2
-                c.texto(cx, base, _ajustar(c, rot, NEG, tam_rot, rot_w - 6), NEG, tam_rot, PRETO)
-                for k, (tag, val) in enumerate((a, b)):
-                    px = cx + rot_w + (0 if k == 0 else a_w)
-                    c.texto(px, base, tag, REG, tam_tag, ESCURO)
-                    c.texto(px + c.medir(tag, REG, tam_tag) + 8, base, val, NEG, tam, PRETO)
-            yy += n * h_linha
-
-    return [(h, desenhar, d["esp_linha"] + 6, None)]
-
-
-def _bloco_ragnarok(m, d, w):
-    rag, portas = m.get("ragnarok"), m.get("portas")
-    portas = [p for p in portas if isinstance(p, dict)] if isinstance(portas, list) else []
-    if rag is None and not portas:
-        return []
-    parado = _ok(rag) and bool(rag.get("parado"))
-    cap_n = altura_capital(NEG, 140)
-    pil_h = 64
-    corpo = cap_n
-    if parado:
-        corpo = max(corpo, pil_h + 14 + 40)
-    titulo_h = altura_capital(NEG, 26) + 18
-    h = titulo_h + corpo
-
-    def desenhar(c, y, x):
-        c.texto(x, y + altura_capital(NEG, 26),
-                "RAGNAROK  \u00b7  " + ("jogadores online" if rag is not None else "portas"), NEG, 26, ESCURO)
-        yc = y + titulo_h
-        pil_y = 4 if parado else max(0, (cap_n - pil_h) // 2)
-        pil_w, gap = 200, 16
-        px0 = x + w - (len(portas) * pil_w + max(0, len(portas) - 1) * gap)
-        if rag is not None:
-            if _ok(rag) and _num(rag.get("jogadores")) is not None:
-                n, cor = "%d" % int(rag["jogadores"]), (MEDIO if parado else PRETO)
-                c.texto(x, yc + cap_n, n, NEG, 140, cor)
-            else:
-                c.texto(x, yc + cap_n, "n/d", NEG, 72, MEDIO)
-        for i, p in enumerate(portas):
-            rot = _ajustar(c, p.get("rotulo", "?"), NEG, 34, pil_w - 70)
-            _pilula(c, px0 + i * (pil_w + gap), yc + pil_y, pil_w, pil_h, rot, bool(p.get("aberto")))
-        if parado:
-            idade = rag.get("idade_s")
-            txt = "PARADO %d min" % (idade // 60) if isinstance(idade, int) and idade >= 60 else "PARADO"
-            bw = int(c.medir(txt, NEG, 26)) + 36
-            bx = x + w - bw
-            by = yc + pil_y + pil_h + 14
-            c.contorno_arredondado(bx, by, bw, 40, 8, PRETO, 3, BRANCO)
-            c.texto(bx + bw // 2, by + (40 + altura_capital(NEG, 26)) // 2, txt, NEG, 26, PRETO, alinhar="centro")
-
-    return [(h, desenhar, d["esp_secao"], None)]
-
-
-def _bloco_servicos(m, d, w, max_itens=None):
-    servicos = m.get("servicos")
-    if servicos is None:
-        return []
-    cap = altura_capital(NEG, 26)
-    titulo_h = cap + 16
-    if not isinstance(servicos, list):
-        def desenhar_nd(c, y, x):
-            c.texto(x, y + cap, "SERVICOS", NEG, 26, ESCURO)
-            c.texto(x + 190, y + cap, "n/d", NEG, 26, MEDIO)
-        return [(cap, desenhar_nd, d["esp_secao"], None)]
-    itens = []
-    for s in servicos:
-        if not isinstance(s, dict):
-            continue
-        estado = "n/d" if "erro" in s else ("ok" if s.get("ativo") else "FALHA")
-        nome = str(s.get("nome", "?"))
-        if nome.endswith(".service") and len(nome) > 8:
-            nome = nome[:-8]  # todo mundo e .service: economiza largura
-        itens.append((nome, estado))
-    if not itens:
-        return []
-    itens.sort(key=lambda t: t[1] == "ok")  # falhas primeiro (estavel)
-    extra = 0
-    if max_itens is not None and len(itens) > max_itens:
-        extra = len(itens) - max_itens
-        itens = itens[:max_itens]
-    cols = d["svc_cols"] if len(itens) + (1 if extra else 0) > 3 else 1
-    n_linhas = -(-len(itens) // cols) + (1 if extra else 0)
-    h = titulo_h + n_linhas * d["svc_h"]
-
-    def desenhar(c, y, x):
-        falhas = sum(1 for _, e in itens if e != "ok")
-        c.texto(x, y + cap, "SERVICOS", NEG, 26, ESCURO)
-        if falhas:
-            c.texto(x + w, y + cap, "%d com problema" % falhas, NEG, 26, PRETO, alinhar="dir")
-        gap = 24
-        cw = (w - gap * (cols - 1)) // cols
-        sh = d["svc_h"]
-        y0 = y + titulo_h
-        for i, (nome, est) in enumerate(itens):
-            cx = x + (i % cols) * (cw + gap)
-            cy = y0 + (i // cols) * sh
-            ok = est == "ok"
-            if not ok:
-                c.retangulo_arredondado(cx, cy + 2, cw, sh - 4, 8, TRILHO)
-            lado = 24
-            _icone_servico(c, cx + 10, cy + (sh - lado) // 2, lado, ok)
-            base = cy + (sh + altura_capital(MONO, 26)) // 2
-            reservado = 0 if ok else c.medir(est, NEG, 26) + 26
-            c.texto(cx + 10 + lado + 14, base, _ajustar(c, nome, MONO, 26, cw - 10 - lado - 14 - 12 - reservado),
-                    MONO, 26, PRETO)
-            if not ok:
-                c.texto(cx + cw - 14, base, est, NEG, 26, PRETO, alinhar="dir")
-        if extra:
-            yb = y0 + (-(-len(itens) // cols)) * sh
-            c.texto(x + 10, yb + (sh + altura_capital(NEG, 26)) // 2, "+%d servicos" % extra, NEG, 26, ESCURO)
-
-    return [(h, desenhar, d["esp_secao"], None)]
-
-
-def _mini(c, x, y, w, rotulo, pct, tam=48, tam_pct=26):
-    """Medidor compacto do cartao de par: rotulo + numero + barra fina."""
-    cap = altura_capital(NEG, tam)
-    base = y + cap
-    c.texto(x, base, rotulo, NEG, 26, ESCURO)
-    _numero(c, x + w, base, pct, tam, tam_pct)
-    _barra(c, x, base + 12, w, 16, pct)
-
-
-def _bloco_pares(m, d, w, max_pares=None):
-    pares = m.get("pares")
-    if not isinstance(pares, list):
-        return []
-    pares = [p for p in pares if isinstance(p, dict)]
-    if max_pares is not None:
-        pares = pares[:max_pares]
-    blocos = []
-    for i, par in enumerate(pares):
-        nome = str(par.get("nome", "?"))
-        pm = par.get("metricas") if par.get("ok") and isinstance(par.get("metricas"), dict) else None
-        ultimo = i == len(pares) - 1
-        gap = d["esp_secao"] if ultimo else d["esp_linha"] + 6
-        if pm is None:
-            def desenhar_fora(c, y, x, nome=nome):
-                c.contorno_arredondado(x, y, w, 84, 16, MEDIO, 3, BRANCO)
-                c.texto(x + 22, y + 56, _ajustar(c, nome, NEG, 34, w // 2), NEG, 34, ESCURO)
-                c.texto(x + w - 22, y + 56, "sem resposta", NEG, 26, MEDIO, alinhar="dir")
-            blocos.append((84, desenhar_fora, gap, None))
-            continue
-
-        def desenhar_par(c, y, x, nome=nome, pm=pm):
-            c.contorno_arredondado(x, y, w, d["card_h"], 16, PRETO, 3, BRANCO)
-            pad = 22
-            base = y + 18 + altura_capital(NEG, 34)
-            info = []
-            try:
-                if _ok(pm.get("temp_cpu")):
-                    info.append("%d°C" % int(round(pm["temp_cpu"]["c"])))
-            except Exception:
-                pass
-            try:
-                info.append("UP " + _uptime(pm["uptime"]["segundos"]))
-            except Exception:
-                pass
-            txt_info = "  ·  ".join(info)
-            iw = c.medir(txt_info, REG, 26) if txt_info else 0
-            c.texto(x + pad, base, _ajustar(c, nome, NEG, 34, w - 2 * pad - iw - 24), NEG, 34, PRETO)
-            if txt_info:
-                c.texto(x + w - pad, base, txt_info, REG, 26, ESCURO, alinhar="dir")
-            itens = [("CPU", _pct(lambda: pm["cpu"]["pct"])), ("RAM", _pct(lambda: pm["ram"]["pct"]))]
-            gpu = pm.get("gpu")
-            if gpu is not None:
-                itens.append(("GPU", _pct(lambda: gpu["util_pct"])))
-            else:
-                dk = pm.get("discos")
-                if isinstance(dk, list) and dk and isinstance(dk[0], dict):
-                    itens.append((_ajustar(c, str(dk[0].get("rotulo", "DISCO")), NEG, 26, 90), _pct(lambda: dk[0]["pct"])))
-            gap = 30
-            cw = (w - 2 * pad - gap * (len(itens) - 1)) // len(itens)
-            for k, (rot, pct) in enumerate(itens):
-                _mini(c, x + pad + k * (cw + gap), base + 26, cw, rot, pct)
-
-        blocos.append((d["card_h"], desenhar_par, gap, None))
-    return blocos
-
-
-# ------------------------------------------------------------ composicao
-
-def _montar(m, hist, d, w, max_serv=None, max_pares=None):
-    blocos = []
-    blocos += _bloco_metricas(m, hist, d, w)
-    blocos += _bloco_io(m, d, w)
-    blocos += _bloco_info(m, d, w)
-    blocos += _bloco_ragnarok(m, d, w)
-    blocos += _bloco_servicos(m, d, w, max_serv)
-    blocos += _bloco_pares(m, d, w, max_pares)
-    return blocos
-
-
-# ------------------------------------------------------------ cabecalho e botoes
-
-def _cabecalho(c, m):
-    """Compacto (host a esquerda, hora com segundos a direita) e uma linha fina embaixo."""
-    base = 36 + altura_capital(NEG, 48)
+def _cabecalho(c, m, itens):
+    """Fino: host, resumo dos servicos e hora com segundos; uma linha clara embaixo."""
+    base = 14 + _cap(NEG, 34)
     hora = _hora(m, "%H:%M:%S")
-    c.texto(c.largura - MARGEM, base, hora, NEG, 48, PRETO, alinhar="dir")
-    maxw = c.largura - 2 * MARGEM - c.medir(hora, NEG, 48) - 40
-    c.texto(MARGEM, base, _ajustar(c, m.get("host", "?"), NEG, 48, maxw), NEG, 48, PRETO)
+    c.texto(c.largura - MARGEM, base, hora, NEG, 34, PRETO, alinhar="dir")
+    fim = c.largura - MARGEM - c.medir(hora, NEG, 34) - 28
+    resumo = _aviso_inventario(m) or (servicos.texto_resumo(itens) if itens else "")
+    host = _limpar(m.get("host", "?"))
+    wh = c.medir(host, NEG, 34)
+    ws = c.medir(_limpar(resumo), REG, 26) if resumo else 0
+    if resumo and MARGEM + min(wh, 200) + 28 + ws > fim:
+        resumo = _ajustar(c, resumo, REG, 26, max(0, fim - MARGEM - min(wh, 200) - 28))
+        ws = c.medir(resumo, REG, 26)
+    if resumo and ws:
+        c.texto(fim, base, resumo, REG, 26, ESCURO, alinhar="dir")
+    c.texto(MARGEM, base, _ajustar(c, host, NEG, 34, max(40, fim - ws - MARGEM - 28)), NEG, 34, PRETO)
     c.retangulo(MARGEM, ALTURA_CABECALHO - 4, c.largura - 2 * MARGEM, 2, CLARO)
 
+
+# --------------------------------------------------------------------- botoes
 
 def _quebrar(c, texto, fonte, tam, larg_max):
     """Quebra por palavras em linhas que cabem em larg_max; None se alguma palavra sozinha nao couber."""
@@ -576,14 +218,21 @@ def _quebrar(c, texto, fonte, tam, larg_max):
     return linhas + [atual] if atual else linhas
 
 
-def _botao(c, b, invertido, espessura=3):
+def _botao(c, b, invertido, espessura=2):
     """Desenha exatamente o retangulo do layout: contorno (ou preenchido, se invertido) e rotulo centralizado."""
     x, y, w, h = b["x"], b["y"], b["w"], b["h"]
     if invertido:
-        c.retangulo_arredondado(x, y, w, h, 16, PRETO)
+        c.retangulo_arredondado(x, y, w, h, RAIO, PRETO)
     else:
-        c.contorno_arredondado(x, y, w, h, 16, PRETO, espessura, BRANCO)
+        c.contorno_arredondado(x, y, w, h, RAIO, PRETO, espessura, BRANCO)
     cor = BRANCO if invertido else PRETO
+    if h < 110:  # botoes baixos (linha, paginacao, navegacao): uma linha so
+        for tam in (34, 26):
+            if c.medir(_limpar(b["rotulo"]), NEG, tam) <= w - 16:
+                break
+        txt = _ajustar(c, b["rotulo"], NEG, tam, w - 12)
+        c.texto(x + w // 2, y + (h + _cap(NEG, tam)) // 2, txt, NEG, tam, cor, alinhar="centro")
+        return
     tam = 34
     linhas = _quebrar(c, b["rotulo"], NEG, 34, w - 36)
     if linhas is None or len(linhas) > 3:
@@ -591,11 +240,11 @@ def _botao(c, b, invertido, espessura=3):
         linhas = _quebrar(c, b["rotulo"], NEG, 26, w - 12)
     if linhas is None:
         linhas = [_ajustar(c, b["rotulo"], NEG, 26, w - 12)]
-    cap = altura_capital(NEG, tam)
+    cap = _cap(NEG, tam)
     passo = cap + 18
     corpo = cap + (len(linhas) - 1) * passo
-    original = next((r for cid, r, _g in botoes.COMANDOS if cid == b["id"]), None) if b.get("armado") else None
-    cap_p = altura_capital(REG, 26)
+    original = next((r for cid, r in botoes.COMANDOS if cid == b["id"]), None) if b.get("armado") else None
+    cap_p = _cap(REG, 26)
     extra = (cap_p + 16) if original else 0  # sem perder de vista QUAL comando esta armado
     topo = y + (h - corpo - extra) // 2
     if original:
@@ -604,351 +253,703 @@ def _botao(c, b, invertido, espessura=3):
         c.texto(x + w // 2, topo + extra + cap + i * passo, ln, NEG, tam, cor, alinhar="centro")
 
 
-def _desenhar_botoes(c, pagina, armado):
-    grupo = {cid: g for cid, _r, g in botoes.COMANDOS}
-    for b in botoes.layout(pagina, armado, c.largura, c.altura):
-        if b["tipo"] == "local":
+def _desenhar_botoes(c, pagina, armado, p, itens):
+    for b in botoes.layout(pagina, armado, c.largura, c.altura, p, itens):
+        if b["tipo"] == "local" and b["id"].startswith("pagina:"):
             _botao(c, b, b["id"] == "pagina:" + pagina)
         else:
-            _botao(c, b, b["armado"], 6 if grupo.get(b["id"]) == "servicos" else 3)
+            _botao(c, b, b["armado"])
 
 
-# ------------------------------------------------------------ pagina resumo
+# ----------------------------------------------------------- blocos reutilizaveis
 
-CARD_RAIO = 14
-PAD = 28
-
-
-def _cartao(c, x, y, w, h):
-    c.contorno_arredondado(x, y, w, h, CARD_RAIO, PRETO, 2, BRANCO)
-
-
-def _numero_esq(c, x, base, pct, tam, tam_pct):
-    """Numero grande com o '%' menor, a partir de x; devolve a largura ocupada."""
-    if pct is None:
-        return int(c.texto(x, base, "n/d", NEG, 72 if tam > 72 else 48, MEDIO))
-    s = "%d" % int(round(pct))
-    w = c.texto(x, base, s, NEG, tam, PRETO)
-    return int(w + 6 + c.texto(x + w + 6, base, "%", NEG, tam_pct, PRETO))
+def _info_disco(dk):
+    """(rotulo, pct, usado, total, base, parado) de uma entrada de disco; None se nao for um dict."""
+    if not isinstance(dk, dict):
+        return None
+    base = 1024 if dk.get("base") == 1024 else 1000
+    return (str(dk.get("rotulo", "?")), _pct(lambda: dk["pct"]), _num(dk.get("usado_b")), _num(dk.get("total_b")),
+            base, bool(dk.get("parado")))
 
 
-def _cartao_metrica(c, x, y, w, h, rotulo, pct, detalhe=None, serie=None, lateral=None, grande=True, desativada=None):
-    """Cartao: rotulo e detalhe no topo, numero grande, sparkline ou texto lateral, barra embaixo."""
-    _cartao(c, x, y, w, h)
-    ix, iw = x + PAD, w - 2 * PAD
-    base_l = y + PAD + altura_capital(NEG, 26)
-    tam, tam_pct = (140, 48) if grande else (72, 34)
-    rot = _ajustar(c, rotulo, NEG, 26, iw)
-    c.texto(ix, base_l, rot, NEG, 26, ESCURO)
-    if detalhe:
-        c.texto(x + w - PAD, base_l, _ajustar(c, detalhe, REG, 26, iw - c.medir(rot, NEG, 26) - 24), REG, 26,
-                ESCURO, alinhar="dir")
-    topo_reg = base_l + 20
-    if desativada is not None:
-        fim = y + h - PAD
-        cap1, cap2 = altura_capital(NEG, 72), altura_capital(NEG, 34)
-        b1 = topo_reg + (fim - topo_reg - (cap1 + 18 + cap2)) // 2 + cap1
-        c.texto(ix, b1, "desativada", NEG, 72, PRETO)
-        if desativada:
-            c.texto(ix, b1 + 18 + cap2, desativada, NEG, 34, ESCURO)
+def _discos(m):
+    d = m.get("discos")
+    return [i for i in (_info_disco(x) for x in d) if i] if isinstance(d, list) else []
+
+
+def _linha_barra(c, x, yc, w, rotulo, pct, valor, rot_w, tam=26, barra_h=18):
+    """rotulo | barra fina | pct | valor, centrada verticalmente em yc."""
+    _texto_c(c, x, yc, _ajustar(c, rotulo, NEG, tam, rot_w - 8), NEG, tam, ESCURO)
+    pct_txt = "n/d" if pct is None else "%d%%" % int(round(pct))
+    pw = c.medir("100%", NEG, tam)
+    vw = int(c.medir(valor, REG, tam)) if valor else 0
+    _texto_c(c, x + w - vw - (16 if vw else 0), yc, pct_txt, NEG, tam, PRETO, "dir")
+    if valor:
+        _texto_c(c, x + w, yc, valor, REG, tam, ESCURO, "dir")
+    bx = x + rot_w
+    bw = w - rot_w - int(pw) - vw - 16 - (16 if vw else 0) - 8
+    if bw > 40:
+        _barra(c, bx, yc - barra_h // 2, bw, barra_h, pct)
+
+
+def _grupos_io(m):
+    """[(titulo, [texto])]: 'NVMe L 12.3 MB/s E 1.2 MB/s' e 'LAN rx 3.4 MB/s tx 0.2 MB/s'."""
+    io = m.get("io")
+    if not _ok(io):
+        return []
+    saida = []
+    for chave, titulo, a, b, ta, tb in (("discos", "DISCO", "leitura_bps", "escrita_bps", "L", "E"),
+                                         ("redes", "REDE", "rx_bps", "tx_bps", "rx", "tx")):
+        lista = io.get(chave)
+        itens = []
+        for it in lista if isinstance(lista, list) else []:
+            if isinstance(it, dict):
+                itens.append("%s %s %s %s %s" % (_limpar(it.get("rotulo", "?")), ta, formato.taxa(it.get(a)),
+                                                tb, formato.taxa(it.get(b))))
+        if itens:
+            saida.append((titulo, itens))
+    return saida
+
+
+def _linhas_io(c, grupos, w_util):
+    """Quebra cada grupo em linhas que cabem: [(titulo|None, texto)]."""
+    linhas = []
+    for titulo, itens in grupos:
+        atual = ""
+        primeiro = True
+        for it in itens:
+            t = (atual + "     " + it) if atual else it
+            if atual and c.medir(t, REG, 26) > w_util:
+                linhas.append((titulo if primeiro else None, atual))
+                primeiro = False
+                atual = it
+            else:
+                atual = t
+        if atual:
+            linhas.append((titulo if primeiro else None, atual))
+    return linhas
+
+
+IO_LINHA = 40
+
+
+def _h_io(c, m, w):
+    g = _grupos_io(m)
+    if not g:
+        return 0
+    return len(_linhas_io(c, g, w - 2 * PAD - 100)) * IO_LINHA + 2 * 12
+
+
+def _card_io(c, m, x, y, w, h):
+    linhas = _linhas_io(c, _grupos_io(m), w - 2 * PAD - 100)
+    _card(c, x, y, w, h)
+    for i, (titulo, txt) in enumerate(linhas):
+        yc = y + 12 + i * IO_LINHA + IO_LINHA // 2
+        if titulo:
+            _texto_c(c, x + PAD, yc, titulo, NEG, 26, ESCURO)
+        _texto_c(c, x + PAD + 100, yc, _ajustar(c, txt, REG, 26, w - 2 * PAD - 100), REG, 26, PRETO)
+
+
+def _card_discos(c, discos, x, y, w, titulo=None, linha_h=46):
+    """Card com uma linha por disco; devolve a altura usada."""
+    topo = 44 if titulo else 0
+    h = topo + len(discos) * linha_h + 20
+    _card(c, x, y, w, h)
+    if titulo:
+        c.texto(x + PAD, y + 14 + _cap(NEG, 26), titulo, NEG, 26, ESCURO)
+    rot_w = max([c.medir(_limpar(d[0]), NEG, 26) for d in discos] + [60]) + 24
+    rot_w = int(min(rot_w, w // 4))
+    for i, (rot, pct, usado, total, base, parado) in enumerate(discos):
+        yc = y + topo + 10 + i * linha_h + linha_h // 2
+        valor = _tamanho(usado, total, base) if total and usado is not None else None
+        if valor and parado:
+            valor += " · parado"
+        _linha_barra(c, x + PAD, yc, w - 2 * PAD, rot, pct, valor, rot_w)
+    return h
+
+
+def _h_discos(discos, titulo=None, linha_h=46):
+    return (44 if titulo else 0) + len(discos) * linha_h + 20 if discos else 0
+
+
+# --------------------------------------------------------------------- Atencao
+
+ATENCAO_LINHA = 46
+ATENCAO_TITULO = 48
+
+
+def _estado_txt(it):
+    e = it.get("estado")
+    base = {"ativo": "ativo", "parado": "parado", "falha": "FALHA"}.get(e, "desconhecido")
+    det = _limpar(it.get("detalhe", "") or "")
+    if det and (e == "falha" or "/" in det):  # parado/ativo ja dizem tudo; falha e swarm (2/2) ganham o detalhe
+        base += "  " + det
+    return base
+
+
+def _h_atencao(n, linhas=None):
+    """Altura do card: titulo + (linhas de itens | 'Tudo em ordem')."""
+    corpo = 64 if n == 0 else (linhas if linhas is not None else n) * ATENCAO_LINHA
+    return ATENCAO_TITULO + corpo + 14
+
+
+def _card_atencao(c, atencao, x, y, w, h):
+    _card(c, x, y, w, h)
+    c.texto(x + PAD, y + 14 + _cap(NEG, 26), "ATENCAO", NEG, 26, ESCURO)
+    if not atencao:
+        yc = y + ATENCAO_TITULO + 32
+        _forma_ok(c, x + PAD, yc - 16, 32, True)
+        _texto_c(c, x + PAD + 48, yc, "Tudo em ordem", NEG, 34, PRETO)
         return
-    barra_h = 34
-    barra_y = y + h - PAD - barra_h
-    fim = barra_y - 20
-    cap = altura_capital(NEG, tam)
-    nb = topo_reg + (fim - topo_reg + cap) // 2
-    nw = _numero_esq(c, ix, nb, pct, tam, tam_pct)
-    if serie is not None and sum(1 for v in serie if _num(v) is not None) >= 4 and iw - nw - 40 > 100:
-        _sparkline(c, ix + nw + 40, fim, iw - nw - 40, fim - topo_reg, serie)
-    elif lateral and iw - nw - 30 >= max(c.medir(lateral[1], NEG, 48), c.medir(lateral[0], NEG, 26)):
-        pequeno, grande_t = lateral
-        cx = ix + iw
-        b2 = nb
-        c.texto(cx, b2, grande_t, NEG, 48, PRETO, alinhar="dir")
-        c.texto(cx, b2 - altura_capital(NEG, 48) - 16, pequeno, NEG, 26, ESCURO, alinhar="dir")
-    _barra(c, ix, barra_y, iw, barra_h, pct)
+    c.texto(x + w - PAD, y + 14 + _cap(NEG, 26), "%d itens" % len(atencao) if len(atencao) != 1 else "1 item",
+            NEG, 26, PRETO, alinhar="dir")
+    cabem = max(1, (h - ATENCAO_TITULO - 14) // ATENCAO_LINHA)
+    mostrar = atencao if len(atencao) <= cabem else atencao[:cabem - 1]
+    for i, it in enumerate(mostrar):
+        yc = y + ATENCAO_TITULO + i * ATENCAO_LINHA + ATENCAO_LINHA // 2
+        _forma(c, x + PAD, yc - 14, 28, it.get("estado"))
+        est = _estado_txt(it)
+        ew = c.medir(est, NEG, 26)
+        c.texto(x + w - PAD, yc + _cap(NEG, 26) // 2, est, NEG, 26, PRETO, alinhar="dir")
+        _texto_c(c, x + PAD + 44, yc, _ajustar(c, it.get("rotulo", "?"), NEG, 34, w - 2 * PAD - 44 - ew - 24),
+                 NEG, 34, PRETO)
+    if len(atencao) > len(mostrar):
+        yc = y + ATENCAO_TITULO + len(mostrar) * ATENCAO_LINHA + ATENCAO_LINHA // 2
+        _texto_c(c, x + PAD + 44, yc, "+%d itens" % (len(atencao) - len(mostrar)), NEG, 26, ESCURO)
 
 
-def _disco_mais_cheio(m):
-    discos = m.get("discos")
-    infos = [i for i in (_info_disco(x) for x in discos) if i and i[1] is not None] if isinstance(discos, list) else []
-    return max(infos, key=lambda i: i[1]) if infos else None
+# ----------------------------------------------------------------- chips (resumo)
+
+CHIP_H = 40
 
 
-def _cartoes_resumo(m, hist):
-    """[(rotulo, pct, detalhe, serie, lateral, desativada)] de CPU, RAM, GPU e o disco mais cheio."""
+def _chips_h(n, cols):
+    return 52 + -(-n // cols) * CHIP_H + 12
+
+
+def _card_chips(c, itens, x, y, w, h, cols):
+    _card(c, x, y, w, h)
+    c.texto(x + PAD, y + 14 + _cap(NEG, 26), "TODOS OS SERVICOS", NEG, 26, ESCURO)
+    # legenda com as quatro formas, a direita
+    xd = x + w - PAD
+    for est, nome in (("desconhecido", "n/d"), ("falha", "falha"), ("parado", "parado"), ("ativo", "ativo")):
+        wt = int(c.medir(nome, REG, 26))
+        c.texto(xd, y + 14 + _cap(REG, 26), nome, REG, 26, ESCURO, alinhar="dir")
+        _forma(c, xd - wt - 8 - 22, y + 14 + _cap(REG, 26) - 20, 22, est)
+        xd -= wt + 8 + 22 + 22
+    cw = (w - 2 * PAD) // cols
+    for i, it in enumerate(itens):
+        cx = x + PAD + (i % cols) * cw
+        yc = y + 52 + (i // cols) * CHIP_H + CHIP_H // 2
+        e = it.get("estado")
+        _forma(c, cx, yc - 11, 22, e)
+        fonte = NEG if e == "falha" else REG
+        _texto_c(c, cx + 32, yc, _ajustar(c, it.get("rotulo", "?"), fonte, 26, cw - 32 - 12), fonte, 26,
+                 PRETO if e != "desconhecido" else MEDIO)
+
+
+# --------------------------------------------------------------- ragnarok (1 linha)
+
+def _linha_ragnarok(c, m, x, y, w, h):
+    rag, portas = m.get("ragnarok"), m.get("portas")
+    portas = [p for p in portas if isinstance(p, dict)] if isinstance(portas, list) else []
+    _card(c, x, y, w, h)
+    yc = y + h // 2
+    parado = _ok(rag) and bool(rag.get("parado"))
+    partes = ["RAGNAROK"]
+    if rag is not None:
+        if _ok(rag) and _num(rag.get("jogadores")) is not None:
+            n = int(rag["jogadores"])
+            partes.append("%d jogador%s" % (n, "" if n == 1 else "es"))
+        else:
+            partes.append("n/d")
+        if parado:
+            idade = rag.get("idade_s")
+            partes.append("PARADO %d min" % (idade // 60) if isinstance(idade, int) and idade >= 60 else "PARADO")
+    txt = "  ·  ".join(partes)
+    # portas a direita: "LOGIN ok  CHAR ok  MAP FALHA", cada uma com a forma
+    xd = x + w - PAD
+    usados = 0
+    for p in reversed(portas):
+        ok = bool(p.get("aberto"))
+        rot = _ajustar(c, p.get("rotulo", "?"), NEG, 26, 140) + (" ok" if ok else " FALHA")
+        wt = int(c.medir(rot, NEG, 26))
+        c.texto(xd, yc + _cap(NEG, 26) // 2, rot, NEG, 26, PRETO, alinhar="dir")
+        _forma_ok(c, xd - wt - 8 - 22, yc - 11, 22, ok)
+        xd -= wt + 8 + 22 + 26
+        usados += wt + 8 + 22 + 26
+    _texto_c(c, x + PAD, yc, _ajustar(c, txt, NEG, 26, w - 2 * PAD - usados - 20), NEG, 26,
+             MEDIO if parado else PRETO)
+
+
+# --------------------------------------------------------------------- resumo
+
+TILE_PAD = 14
+
+
+def _tiles(m, hist, discos):
+    """4 tiles: CPU, RAM, GPU e o disco "/" (ou o primeiro)."""
     cpu, ram, gpu = m.get("cpu"), m.get("ram"), m.get("gpu")
-    cartoes = [dict(rotulo="CPU", pct=_pct(lambda: cpu["pct"]), serie=hist.get("cpu"))]
+    t_cpu = None
+    if _ok(m.get("temp_cpu")) and _num(m["temp_cpu"].get("c")) is not None:
+        t_cpu = "%d°C" % int(round(m["temp_cpu"]["c"]))
+    tiles = [dict(rotulo="CPU", pct=_pct(lambda: cpu["pct"]), detalhe=t_cpu, serie=hist.get("cpu"))]
     det_ram = None
     if _ok(ram) and _num(ram.get("total_kb")):
         det_ram = _tamanho(ram.get("usado_kb", 0) * 1024, ram["total_kb"] * 1024, 1024)
-    cartoes.append(dict(rotulo="RAM", pct=_pct(lambda: ram["pct"]), detalhe=det_ram, serie=hist.get("ram")))
+    tiles.append(dict(rotulo="RAM", pct=_pct(lambda: ram["pct"]), detalhe=det_ram, serie=hist.get("ram")))
     if gpu is not None:
+        t = _num(gpu.get("temp_c")) if isinstance(gpu, dict) else None
+        tt = "%d°C" % int(round(t)) if t is not None else None
         if coletores.gpu_desativada(gpu):
-            t = _num(gpu.get("temp_c")) if isinstance(gpu, dict) else None
-            cartoes.append(dict(rotulo="GPU", pct=None, desativada="%d°C" % int(round(t)) if t is not None else ""))
+            tiles.append(dict(rotulo="GPU", pct=None, desativada=True, detalhe=tt))
         else:
-            det = None
+            vram = None
             if _ok(gpu) and _num(gpu.get("mem_usada_mb")) is not None and gpu.get("mem_total_mb"):
-                det = "VRAM " + _tamanho(gpu["mem_usada_mb"] * 10**6, gpu["mem_total_mb"] * 10**6)
-            cartoes.append(dict(rotulo="GPU", pct=_pct(lambda: gpu["util_pct"]), detalhe=det, serie=hist.get("gpu")))
-    di = _disco_mais_cheio(m)
-    if di:
-        rot, pct, det, usado, total, base = di
-        livre = _bytes_txt(max(0, total - usado), base) if total and usado is not None else None
-        cartoes.append(dict(rotulo="DISCO  ·  " + rot.upper(), pct=pct, detalhe=det,
-                            lateral=("LIVRE", livre) if livre else None))
-    return cartoes
+                vram = "VRAM " + _tamanho(gpu["mem_usada_mb"] * 10 ** 6, gpu["mem_total_mb"] * 10 ** 6)
+            tiles.append(dict(rotulo="GPU", pct=_pct(lambda: gpu["util_pct"]), detalhe=tt, serie=hist.get("gpu"),
+                              extra=vram))
+    if discos:
+        d = next((x for x in discos if x[0] == "/"), discos[0])
+        rot, pct, usado, total, base, _parado = d
+        det = _tamanho(usado, total, base) if total and usado is not None else None
+        livre = "livre " + _bytes_txt(max(0, total - usado), base) if total and usado is not None else None
+        tiles.append(dict(rotulo="DISCO " + rot, pct=pct, detalhe=det, extra=livre))
+        tiles[-1]["_disco"] = d
+    return tiles
 
 
-def _bytes_txt(v, base):
-    un = ("B", "KB", "MB", "GB", "TB", "PB")
-    i, t = 0, float(v)
-    while t >= base and i < len(un) - 1:
-        t /= float(base)
-        i += 1
-    return ("%.0f %s" if t >= 100 else "%.1f %s") % (t, un[i])
+def _h_tile():
+    return TILE_PAD + _cap(NEG, 26) + 12 + _cap(NEG, 72) + 12 + 40 + 10 + 14 + TILE_PAD
 
 
-def _cartao_ragnarok(c, m, x, y, w, h, grande):
-    rag, portas = m.get("ragnarok"), m.get("portas")
-    portas = [p for p in portas if isinstance(p, dict)] if isinstance(portas, list) else []
-    _cartao(c, x, y, w, h)
-    parado = _ok(rag) and bool(rag.get("parado"))
-    base_l = y + PAD + altura_capital(NEG, 26)
-    c.texto(x + PAD, base_l, "RAGNAROK  ·  " + ("JOGADORES ONLINE" if rag is not None else "PORTAS"), NEG, 26, ESCURO)
-    tam = 140 if grande else 72
-    cap = altura_capital(NEG, tam)
-    topo = base_l + 20
-    nb = topo + 12 + (y + h - PAD - topo - 12 + cap) // 2
-    if rag is not None:
-        if _ok(rag) and _num(rag.get("jogadores")) is not None:
-            c.texto(x + PAD, nb, "%d" % int(rag["jogadores"]), NEG, tam, MEDIO if parado else PRETO)
-        else:
-            c.texto(x + PAD, nb, "n/d", NEG, 72, MEDIO)
-    pil_h, gap = 64, 16
-    num_w = c.medir("%d" % int(rag["jogadores"]), NEG, tam) if _ok(rag) and _num(rag.get("jogadores")) is not None else 0
-    pil_w = 190
-    if portas:
-        pil_w = max(110, min(190, (w - 2 * PAD - int(num_w) - 40 - gap * (len(portas) - 1)) // len(portas)))
-    px0 = x + w - PAD - (len(portas) * pil_w + max(0, len(portas) - 1) * gap)
-    centro = topo + (y + h - PAD - topo) // 2
-    pil_y = centro - pil_h // 2 - (28 if parado else 0)
-    for i, p in enumerate(portas):
-        _pilula(c, px0 + i * (pil_w + gap), pil_y, pil_w, pil_h,
-                _ajustar(c, p.get("rotulo", "?"), NEG, 34, pil_w - 44), bool(p.get("aberto")))
-    if parado:
-        idade = rag.get("idade_s")
-        txt = "PARADO %d min" % (idade // 60) if isinstance(idade, int) and idade >= 60 else "PARADO"
-        bw = int(c.medir(txt, NEG, 26)) + 36
-        by = pil_y + pil_h + 12
-        c.contorno_arredondado(x + w - PAD - bw, by, bw, 40, 8, PRETO, 3, BRANCO)
-        c.texto(x + w - PAD - bw // 2, by + (40 + altura_capital(NEG, 26)) // 2, txt, NEG, 26, PRETO, alinhar="centro")
-
-
-def _servicos_resumo(m, max_linhas):
-    """(ok, falhas [(nome, estado)], total) ou None se nao ha servicos na metrica."""
-    servicos = m.get("servicos")
-    if servicos is None:
-        return None
-    if not isinstance(servicos, list):
-        return 0, [("servicos", "n/d")], 1
-    ok, falhas = 0, []
-    for s in servicos:
-        if not isinstance(s, dict):
-            continue
-        if "erro" not in s and s.get("ativo"):
-            ok += 1
-        else:
-            nome = str(s.get("nome", "?"))
-            falhas.append((nome[:-8] if nome.endswith(".service") and len(nome) > 8 else nome,
-                           "n/d" if "erro" in s else "FALHA"))
-    return ok, falhas, ok + len(falhas)
-
-
-LINHA_SVC = 50
-
-
-def _h_servicos(m, max_linhas):
-    r = _servicos_resumo(m, max_linhas)
-    if r is None or r[2] == 0:
-        return 0
-    corpo = 72 if not r[1] else min(len(r[1]), max_linhas + 1) * LINHA_SVC
-    return PAD + altura_capital(NEG, 26) + 24 + corpo + PAD
-
-
-def _cartao_servicos(c, m, x, y, w, h, max_linhas):
-    ok, falhas, total = _servicos_resumo(m, max_linhas)
-    _cartao(c, x, y, w, h)
-    base_l = y + PAD + altura_capital(NEG, 26)
-    c.texto(x + PAD, base_l, "SERVICOS", NEG, 26, ESCURO)
-    topo = base_l + 24
-    if not falhas:
-        cap = altura_capital(NEG, 72)
-        lado = 40
-        base = topo + (y + h - PAD - topo + cap) // 2
-        c.circulo(x + PAD + lado // 2, base - cap // 2, lado // 2, PRETO)
-        c.texto(x + PAD + lado + 20, base, "%d ok" % ok, NEG, 72, PRETO)
-        c.texto(x + w - PAD, base, "todos ativos", REG, 26, ESCURO, alinhar="dir")
+def _tile(c, x, y, w, h, t):
+    _card(c, x, y, w, h)
+    ix, iw = x + TILE_PAD, w - 2 * TILE_PAD
+    base_l = y + TILE_PAD + _cap(NEG, 26)
+    rot = _ajustar(c, t["rotulo"], NEG, 26, iw)
+    c.texto(ix, base_l, rot, NEG, 26, ESCURO)
+    if t.get("detalhe"):
+        det = _ajustar(c, t["detalhe"], REG, 26, iw - c.medir(rot, NEG, 26) - 12)
+        c.texto(x + w - TILE_PAD, base_l, det, REG, 26, ESCURO, alinhar="dir")
+    nb = base_l + 12 + _cap(NEG, 72)
+    barra_y = y + h - TILE_PAD - 14
+    if t.get("desativada"):
+        c.texto(ix, nb, _ajustar(c, "desativada", NEG, 34, iw), NEG, 34, PRETO)
+        topo_s = base_l + 12 + _cap(NEG, 72) + 12
+        _texto_c(c, ix, (topo_s + barra_y - 10) // 2, "sem modelo", REG, 26, ESCURO)
+        _barra(c, ix, barra_y, iw, 14, None)
         return
-    resumo = "%d ok  ·  %d com problema" % (ok, len(falhas))
-    c.texto(x + w - PAD, base_l, resumo, NEG, 26, PRETO, alinhar="dir")
-    mostrar = falhas if len(falhas) <= max_linhas else falhas[:max_linhas - 1]
-    for i, (nome, est) in enumerate(mostrar):
-        cy = topo + i * LINHA_SVC
-        c.contorno(x + PAD, cy + (LINHA_SVC - 26) // 2, 26, 26, PRETO, 3)
-        c.cruz_x(x + PAD + 6, cy + (LINHA_SVC - 26) // 2 + 6, 14, PRETO, 3)
-        base = cy + (LINHA_SVC + altura_capital(NEG, 34)) // 2
-        c.texto(x + w - PAD, base, est, NEG, 34, PRETO, alinhar="dir")
-        c.texto(x + PAD + 26 + 18, base, _ajustar(c, nome, NEG, 34, w - 2 * PAD - 26 - 18 - c.medir(est, NEG, 34) - 24),
-                NEG, 34, PRETO)
-    if len(falhas) > len(mostrar):
-        cy = topo + len(mostrar) * LINHA_SVC
-        c.texto(x + PAD, cy + (LINHA_SVC + altura_capital(NEG, 26)) // 2, "+%d com problema" % (len(falhas) - len(mostrar)),
-                NEG, 26, ESCURO)
+    pct = t["pct"]
+    tam = 72 if c.medir("100", NEG, 72) + 6 + c.medir("%", NEG, 34) <= iw else 48
+    if pct is None:
+        c.texto(ix, base_l + 12 + _cap(NEG, tam), "n/d", NEG, tam, MEDIO)
+    else:
+        nb = base_l + 12 + _cap(NEG, tam)
+        wn = c.texto(ix, nb, "%d" % int(round(pct)), NEG, tam, PRETO)
+        c.texto(ix + wn + 6, nb, "%", NEG, 34 if tam == 72 else 26, PRETO)
+    topo_s = base_l + 12 + _cap(NEG, 72) + 12
+    serie = t.get("serie")
+    if serie is not None and sum(1 for v in serie if _num(v) is not None) >= 4:
+        _sparkline(c, ix, barra_y - 10, iw, barra_y - 10 - topo_s, serie)
+    elif t.get("extra"):
+        _texto_c(c, ix, (topo_s + barra_y - 10) // 2, _ajustar(c, t["extra"], REG, 26, iw), REG, 26, ESCURO)
+    _barra(c, ix, barra_y, iw, 14, pct)
 
 
-def _desenhar_resumo(c, m, hist):
-    x0, largura = MARGEM, c.largura - 2 * MARGEM
-    topo, limite = botoes.TOPO, botoes.nav_topo(c.altura) - 28
-    cartoes = _cartoes_resumo(m, hist)
-    linhas = -(-len(cartoes) // 2)
-    gap = 24
-    cabe = {}
-    for grande in (True, False):
-        rag_h = (230 if grande else 150) if (m.get("ragnarok") is not None or m.get("portas")) else 0
-        max_l = 4 if grande else 2
-        sv_h = _h_servicos(m, max_l)
-        n_gaps = linhas - 1 + (1 if rag_h else 0) + (1 if sv_h else 0)
-        card_h = (limite - topo - rag_h - sv_h - n_gaps * gap) // linhas
-        cabe = dict(grande=grande, rag_h=rag_h, sv_h=sv_h, max_l=max_l, card_h=card_h, n_gaps=n_gaps)
-        if card_h >= (250 if grande else 200):
-            break
-    card_h = min(cabe["card_h"], 380)
-    usado = linhas * card_h + cabe["rag_h"] + cabe["sv_h"] + cabe["n_gaps"] * gap
-    gap += min(24, max(0, (limite - topo - usado) // max(1, cabe["n_gaps"])))
-    cw = (largura - gap) // 2
+def _desenhar_resumo(c, m, hist, itens):
+    x0, w = MARGEM, c.largura - 2 * MARGEM
+    topo, limite = botoes.TOPO, botoes.limite(c.altura)
+    discos = _discos(m)
+    tiles = _tiles(m, hist, discos)
+    usado_tile = tiles[-1].get("_disco") if tiles and "_disco" in tiles[-1] else None
+    outros = [d for d in discos if d is not usado_tile][:5]
+
+    ht = _h_tile()
+    h_disc = _h_discos(outros)
+    h_io = _h_io(c, m, w)
+    rag = m.get("ragnarok") is not None or bool(m.get("portas"))
+    h_rag = 60 if rag else 0
+    r = servicos.resumo(itens)
+    atencao = r["atencao"]
+    # blocos fixos de cima para baixo; o que sobra vai para Atencao e para a grade de chips
+    fixos = [("tiles", ht), ("disc", h_disc), ("io", h_io)]
+    fixos = [(n, h) for n, h in fixos if h]
+    gaps = len(fixos)  # entre cada bloco e o proximo (o meio entra como ultimo)
     y = topo
-    for i in range(0, len(cartoes), 2):
-        par = cartoes[i:i + 2]
-        for k, cart in enumerate(par):
-            cx, wc = (x0 + k * (cw + gap), cw) if len(par) == 2 else (x0, largura)
-            _cartao_metrica(c, cx, y, wc, card_h, cart["rotulo"], cart["pct"], cart.get("detalhe"), cart.get("serie"),
-                            cart.get("lateral"), cabe["grande"], cart.get("desativada"))
-        y += card_h + gap
-    if cabe["rag_h"]:
-        _cartao_ragnarok(c, m, x0, y, largura, cabe["rag_h"], cabe["grande"])
-        y += cabe["rag_h"] + gap
-    if cabe["sv_h"]:
-        _cartao_servicos(c, m, x0, y, largura, cabe["sv_h"], cabe["max_l"])
+    sobra_total = limite - topo - sum(h for _, h in fixos) - h_rag - GAP * (len(fixos) + (1 if h_rag else 0))
+    # zona do meio: Atencao (+ chips)
+    meio_h = max(0, sobra_total)
+    a_min = _h_atencao(len(atencao), 0 if not atencao else min(len(atencao), 1))
+    chips_cols = None
+    chips_h = 0
+    if itens:
+        for cols in (3, 4):
+            if _h_atencao(len(atencao)) + GAP + _chips_h(len(itens), cols) <= meio_h:
+                chips_cols, chips_h = cols, _chips_h(len(itens), cols)
+                break
+    if chips_cols:
+        a_h = _h_atencao(len(atencao))
+        extra = meio_h - a_h - GAP - chips_h
+    else:
+        a_h = _h_atencao(len(atencao))
+        if a_h > meio_h:  # nao cabe tudo: limita as linhas
+            k = max(1, (meio_h - ATENCAO_TITULO - 14) // ATENCAO_LINHA)
+            a_h = _h_atencao(len(atencao), k)
+        extra = meio_h - a_h
+    # a folga vai distribuida entre os gaps (ate 24 px cada); o resto cresce o ultimo bloco do meio
+    n_gaps = len(fixos) + (1 if chips_cols else 0) + (1 if h_rag else 0)
+    por_gap = min(24, max(0, extra) // max(1, n_gaps))
+    gap = GAP + por_gap
+    sobra = extra - por_gap * n_gaps
+    for nome, h in fixos:
+        if nome == "tiles":
+            n = len(tiles)
+            tw = (w - (n - 1) * GAP) // n
+            for i, t in enumerate(tiles):
+                _tile(c, x0 + i * (tw + GAP), y, tw, h, t)
+        elif nome == "disc":
+            _card_discos(c, outros, x0, y, w)
+        else:
+            _card_io(c, m, x0, y, w, h)
+        y += h + gap
+    if not chips_cols:
+        a_h += max(0, min(sobra, 120))  # sem chips, Atencao pode crescer um pouco (nunca alem do que cabe)
+        a_h = min(a_h, max(0, limite - h_rag - (GAP if h_rag else 0) - y)) if a_h > meio_h else a_h
+    _card_atencao(c, atencao, x0, y, w, a_h)
+    y += a_h + gap
+    if chips_cols:
+        ch_h = chips_h + max(0, sobra)
+        _card_chips(c, itens, x0, y, w, ch_h, chips_cols)
+        y += ch_h + gap
+    if h_rag:
+        _linha_ragnarok(c, m, x0, limite - h_rag, w, h_rag)
 
 
-# ------------------------------------------------------------ pagina detalhes
+# ------------------------------------------------------------------- servicos
 
-def _montar(m, hist, d, w, max_serv=None, max_pares=None):
+def _desenhar_servicos(c, m, itens, p):
+    geo = botoes.geometria_servicos(itens, c.largura, c.altura, p)
+    bw, sw = botoes.medidas_linha(c.largura)
+    w = c.largura - 2 * MARGEM
+    if geo["barra"]:
+        b = geo["barra"]
+        _texto_c(c, MARGEM, b["y"] + b["h"] // 2, "Pagina %d/%d" % (geo["p"], geo["paginas"]), NEG, 34, PRETO)
+    if not itens:
+        _texto_c(c, MARGEM, botoes.TOPO + 40, "nenhum servico configurado", REG, 34, ESCURO)
+        return
+    por_grupo = {}
+    for it in itens:
+        g = por_grupo.setdefault(it.get("grupo"), [0, 0])
+        g[1] += 1
+        g[0] += 1 if it.get("estado") == "ativo" else 0
+    for e in geo["entradas"]:
+        y = e["y"]
+        if e["tipo"] == "cab":
+            tit = servicos.TITULOS_GRUPO.get(e["grupo"], str(e["grupo"]).upper())
+            base = y + 12 + _cap(NEG, 26)
+            c.texto(MARGEM, base, tit, NEG, 26, ESCURO)
+            a, t = por_grupo.get(e["grupo"], [0, 0])
+            c.texto(MARGEM + w, base, "%d de %d ativos" % (a, t), REG, 26, ESCURO, alinhar="dir")
+            c.retangulo(MARGEM, y + e["h"] - 8, w, 2, CLARO)
+            continue
+        it, h = e["item"], e["h"]
+        alt = botoes.BOTAO_H if h >= servicos.ROW_H else h  # altura util da linha (sem o espaco de 16)
+        yc = y + alt // 2
+        est = it.get("estado")
+        if est == "falha":
+            c.retangulo_arredondado(MARGEM, y, w, alt, 8, TRILHO)
+        _forma(c, MARGEM + 10, yc - 16, 32, est)
+        # coluna de estado fixa: alinha entre linhas com 2, 1 ou nenhum botao
+        x_estado = MARGEM + w - (bw * 2 + GAP) - GAP - sw
+        txt = _ajustar(c, _estado_txt(it), NEG if est == "falha" else REG, 26, sw - 8)
+        c.texto(x_estado, yc + _cap(REG, 26) // 2, txt, NEG if est == "falha" else REG, 26,
+                PRETO if est != "desconhecido" else MEDIO)
+        lx = MARGEM + 10 + 32 + 16
+        lw = x_estado - lx - 16
+        rot = _limpar(it.get("rotulo", "?"))
+        tam = 34 if c.medir(rot, NEG, 34) <= lw else 26
+        cor = PRETO if est != "desconhecido" else ESCURO
+        c.texto(lx, yc + _cap(NEG, tam) // 2, _ajustar(c, rot, NEG, tam, lw), NEG, tam, cor)
+        c.retangulo(MARGEM, y + h - (9 if h >= servicos.ROW_H else 2), w, 2, TRILHO)
+
+
+# -------------------------------------------------------------------- detalhes
+
+def _kv(c, x, yc, w, chave, valor, tam=34):
+    _texto_c(c, x, yc, chave, NEG, 26, ESCURO)
+    kw = int(c.medir(chave, NEG, 26)) + 14
+    _texto_c(c, x + kw, yc, _ajustar(c, valor, NEG, tam, w - kw), NEG, tam, PRETO)
+
+
+def _blocos_detalhes(c, m, itens, w, hist):
+    """[(altura, desenhar(c, x, y, h))] da pagina detalhes, de cima para baixo."""
     blocos = []
-    blocos += _bloco_discos(m, d, w)
-    blocos += _bloco_io(m, d, w)
-    blocos += _bloco_info(m, d, w)
-    blocos += _bloco_servicos(m, d, w, max_serv)
-    blocos += _bloco_pares(m, d, w, max_pares)
+    discos = _discos(m)
+    if discos:
+        blocos.append((_h_discos(discos, "DISCOS"),
+                       lambda c, x, y, h: _card_discos(c, discos, x, y, w, "DISCOS")))
+    # memoria
+    linhas = []
+    ram, swap, gpu = m.get("ram"), m.get("swap"), m.get("gpu")
+    if _ok(ram) and _num(ram.get("total_kb")):
+        linhas.append(("RAM", _pct(lambda: ram["pct"]), _tamanho(ram.get("usado_kb", 0) * 1024, ram["total_kb"] * 1024, 1024)))
+    if _ok(swap):
+        if swap.get("total_kb") == 0:
+            linhas.append(("SWAP", None, "sem swap"))
+        elif _num(swap.get("total_kb")):
+            linhas.append(("SWAP", _pct(lambda: swap["pct"]),
+                           _tamanho(swap.get("usado_kb", 0) * 1024, swap["total_kb"] * 1024, 1024)))
+    if _ok(gpu) and not coletores.gpu_desativada(gpu) and _num(gpu.get("mem_usada_mb")) is not None and gpu.get("mem_total_mb"):
+        linhas.append(("VRAM", gpu["mem_usada_mb"] * 100.0 / gpu["mem_total_mb"],
+                       _tamanho(gpu["mem_usada_mb"] * 10 ** 6, gpu["mem_total_mb"] * 10 ** 6)))
+    elif gpu is not None and coletores.gpu_desativada(gpu):
+        linhas.append(("GPU", None, "desativada"))
+    if linhas:
+        def mem(c, x, y, h):
+            _card(c, x, y, w, h)
+            c.texto(x + PAD, y + 14 + _cap(NEG, 26), "MEMORIA", NEG, 26, ESCURO)
+            for i, (rot, pct, val) in enumerate(linhas):
+                _linha_barra(c, x + PAD, y + 44 + 10 + i * 46 + 23, w - 2 * PAD, rot, pct, val, 100)
+        blocos.append((44 + len(linhas) * 46 + 20, mem))
+    h_io = _h_io(c, m, w)
+    if h_io:
+        blocos.append((h_io, lambda c, x, y, h: _card_io(c, m, x, y, w, h)))
+    # sistema: temperaturas, carga, uptime
+    kvs = []
+    try:
+        if _ok(m.get("temp_cpu")):
+            kvs.append(("TEMP CPU", "%d°C" % int(round(m["temp_cpu"]["c"]))))
+        if _ok(gpu) and _num(gpu.get("temp_c")) is not None:
+            kvs.append(("TEMP GPU", "%d°C" % int(round(gpu["temp_c"]))))
+    except Exception:
+        pass
+    try:
+        cg = m["carga"]
+        kvs.append(("CARGA", "%.2f  %.2f  %.2f" % (cg["1m"], cg["5m"], cg["15m"])))
+    except Exception:
+        pass
+    try:
+        kvs.append(("UP", _uptime(m["uptime"]["segundos"])))
+    except Exception:
+        pass
+    if kvs:
+        nl = -(-len(kvs) // 2)
+
+        def sistema(c, x, y, h):
+            _card(c, x, y, w, h)
+            cw = (w - 2 * PAD) // 2
+            for i, (k, v) in enumerate(kvs):
+                _kv(c, x + PAD + (i % 2) * cw, y + 12 + (i // 2) * 48 + 24, cw - 12, k, v)
+        blocos.append((nl * 48 + 24, sistema))
+    # historico (sparklines de ~15 min)
+    series = [(r, hist.get(k)) for r, k in (("CPU", "cpu"), ("RAM", "ram"), ("GPU", "gpu"))
+              if isinstance(hist.get(k), list) and sum(1 for v in hist[k] if _num(v) is not None) >= 4]
+    if series:
+        def historico(c, x, y, h):
+            _card(c, x, y, w, h)
+            c.texto(x + PAD, y + 14 + _cap(NEG, 26), "HISTORICO", NEG, 26, ESCURO)
+            minutos = int(round(len(series[0][1]) * (hist.get("intervalo_s") or 15) / 60.0))
+            c.texto(x + w - PAD, y + 14 + _cap(NEG, 26), "ultimos %d min" % minutos if minutos else "", REG, 26,
+                    ESCURO, alinhar="dir")
+            for i, (rot, serie) in enumerate(series):
+                top = y + 52 + i * 76
+                _texto_c(c, x + PAD, top + 34, rot, NEG, 26, ESCURO)
+                ultimo = next((v for v in reversed(serie) if _num(v) is not None), None)
+                _texto_c(c, x + w - PAD, top + 34, "%d%%" % int(round(ultimo)), NEG, 34, PRETO, "dir")
+                _sparkline(c, x + PAD + 90, top + 68, w - 2 * PAD - 90 - 90, 60, serie)
+        blocos.append((52 + len(series) * 76 + 8, historico))
+    # servicos por grupo
+    if itens:
+        cont = {}
+        for it in itens:
+            t = cont.setdefault(it.get("grupo"), [0, 0])
+            t[1] += 1
+            t[0] += 1 if it.get("estado") == "ativo" else 0
+        grupos = [g for g in servicos.GRUPOS if g in cont]
+
+        def porgrupo(c, x, y, h):
+            _card(c, x, y, w, h)
+            c.texto(x + PAD, y + 14 + _cap(NEG, 26), "SERVICOS POR GRUPO", NEG, 26, ESCURO)
+            cw = (w - 2 * PAD) // len(grupos)
+            for i, g in enumerate(grupos):
+                gx = x + PAD + i * cw
+                _texto_c(c, gx, y + 44 + 22, servicos.TITULOS_GRUPO[g], NEG, 26, ESCURO)
+                a, t = cont[g]
+                _texto_c(c, gx, y + 44 + 22 + 40, "%d/%d" % (a, t), NEG, 34, PRETO if a == t else PRETO)
+                if a != t:
+                    c.retangulo(gx, y + 44 + 22 + 40 + 20, int(c.medir("%d/%d" % (a, t), NEG, 34)), 3, PRETO)
+        blocos.append((44 + 22 + 40 + 34, porgrupo))
+    # ragnarok
+    if m.get("ragnarok") is not None or m.get("portas"):
+        blocos.append((60, lambda c, x, y, h: _linha_ragnarok(c, m, x, y, w, h)))
+    # pares
+    pares = m.get("pares")
+    for par in [p for p in pares if isinstance(p, dict)] if isinstance(pares, list) else []:
+        blocos.append((76, lambda c, x, y, h, par=par: _card_par(c, par, x, y, w, h)))
     return blocos
 
 
-def _desenhar_detalhes(c, m, hist):
-    largura = c.largura - 2 * MARGEM
-    topo = botoes.TOPO
-    limite = botoes.nav_topo(c.altura) - 28
-    n_serv = len([s for s in m.get("servicos") or [] if isinstance(s, dict)]) if isinstance(m.get("servicos"), list) else 0
-    n_pares = len(m.get("pares")) if isinstance(m.get("pares"), list) else 0
-    tentativas = [(d, None, None) for d in DENSIDADES]
-    ultimo = DENSIDADES[-1]
-    tentativas += [(ultimo, k, None) for k in range(n_serv - 1, -1, -1)]
-    tentativas += [(ultimo, 0, k) for k in range(n_pares - 1, -1, -1)]
-    escolhido = None
-    for d, ms, mp in tentativas:
-        blocos = _montar(m, hist, d, largura, ms, mp)
-        total = sum(b[0] for b in blocos) + sum(b[2] for b in blocos[:-1])
-        escolhido = (d, blocos, total)
-        if topo + total <= limite:
-            break
-    d, blocos, total = escolhido
-    sobra = max(0, limite - topo - total)
-    n_secoes = sum(1 for b in blocos[:-1] if b[2] >= d["esp_secao"])
-    extra = min(30, sobra // n_secoes) if n_secoes else 0
-    y = topo
-    for i, (h, fn, gap, _) in enumerate(blocos):
-        fn(c, y, MARGEM)
-        y += h
-        if i < len(blocos) - 1:
-            if gap >= d["esp_secao"]:
-                gap += extra
-                c.retangulo(MARGEM, y + gap // 2 - 1, largura, 2, CLARO)
-            y += gap
-
-
-# ------------------------------------------------------------ pagina comandos
-
-def _desenhar_comandos(c, m):
-    geo = botoes.geometria_comandos(c.largura, c.altura)
-    for grupo, sec in geo["secoes"].items():
-        c.texto(MARGEM, sec["titulo_y"] + altura_capital(NEG, 26), botoes.TITULOS[grupo], NEG, 26, ESCURO)
-    u = geo["ultimos"]
-    c.texto(u["x"], u["y"] + altura_capital(NEG, 26), "ULTIMOS COMANDOS", NEG, 26, ESCURO)
-    lista = m.get("comandos")
-    itens = [i for i in lista if isinstance(i, dict)][:5] if isinstance(lista, list) else []
-    y0 = u["y"] + botoes.ULTIMOS_TITULO_H
-    if not itens:
-        c.texto(u["x"], y0 + (geo["linha_h"] + altura_capital(REG, 34)) // 2, "nenhum comando ainda", REG, 34, ESCURO)
+def _card_par(c, par, x, y, w, h):
+    _card(c, x, y, w, h)
+    nome = str(par.get("nome", "?"))
+    pm = par.get("metricas") if par.get("ok") and isinstance(par.get("metricas"), dict) else None
+    yc = y + h // 2
+    if pm is None:
+        _texto_c(c, x + PAD, yc, _ajustar(c, nome, NEG, 34, w // 2), NEG, 34, ESCURO)
+        _texto_c(c, x + w - PAD, yc, "sem resposta", NEG, 26, MEDIO, "dir")
         return
-    rh, bw, bh = geo["linha_h"], 232, 38
-    for i, it in enumerate(itens):
-        y = y0 + i * rh
+    partes = []
+    for rot, fn in (("CPU", lambda: pm["cpu"]["pct"]), ("RAM", lambda: pm["ram"]["pct"]),
+                    ("GPU", lambda: pm["gpu"]["util_pct"])):
+        v = _pct(fn)
+        if v is not None:
+            partes.append("%s %d%%" % (rot, int(round(v))))
+    try:
+        partes.append("%d°C" % int(round(pm["temp_cpu"]["c"])))
+    except Exception:
+        pass
+    try:
+        partes.append("UP " + _uptime(pm["uptime"]["segundos"]))
+    except Exception:
+        pass
+    txt = "   ".join(partes)
+    tw = c.medir(txt, REG, 26)
+    c.texto(x + w - PAD, yc + _cap(REG, 26) // 2, _ajustar(c, txt, REG, 26, w - 2 * PAD - 120), REG, 26, ESCURO, alinhar="dir")
+    _texto_c(c, x + PAD, yc, _ajustar(c, nome, NEG, 34, max(60, w - 2 * PAD - tw - 24)), NEG, 34, PRETO)
+
+
+def _desenhar_detalhes(c, m, itens, hist):
+    w = c.largura - 2 * MARGEM
+    topo, limite = botoes.TOPO, botoes.limite(c.altura)
+    blocos = _blocos_detalhes(c, m, itens, w, hist)
+    # se nao couber, descarta do fim (pares, depois ragnarok...) em vez de sair da imagem
+    while blocos and sum(b[0] for b in blocos) + GAP * (len(blocos) - 1) > limite - topo:
+        blocos.pop()
+    if not blocos:
+        return
+    folga = limite - topo - sum(b[0] for b in blocos) - GAP * (len(blocos) - 1)
+    extra = min(24, folga // max(1, len(blocos)))
+    y = topo
+    for h, fn in blocos:
+        fn(c, MARGEM, y, h)
+        y += h + GAP + extra
+
+
+# --------------------------------------------------------------------- acoes
+
+def _card_grupos(c, itens, x, y, w, h):
+    cont = {}
+    for it in itens:
+        t = cont.setdefault(it.get("grupo"), [0, 0])
+        t[1] += 1
+        t[0] += 1 if it.get("estado") == "ativo" else 0
+    grupos = [g for g in servicos.GRUPOS if g in cont]
+    _card(c, x, y, w, h)
+    c.texto(x + PAD, y + 14 + _cap(NEG, 26), "SERVICOS POR GRUPO", NEG, 26, ESCURO)
+    cw = (w - 2 * PAD) // max(1, len(grupos))
+    for i, g in enumerate(grupos):
+        gx = x + PAD + i * cw
+        a, t = cont[g]
+        _texto_c(c, gx, y + 44 + 22, servicos.TITULOS_GRUPO[g], NEG, 26, ESCURO)
+        txt = "%d/%d" % (a, t)
+        _texto_c(c, gx, y + 44 + 22 + 40, txt, NEG, 34, PRETO)
+        if a != t:  # sublinhado: nem todos ativos
+            c.retangulo(gx, y + 44 + 22 + 40 + 20, int(c.medir(txt, NEG, 34)), 3, PRETO)
+
+
+H_GRUPOS = 44 + 22 + 40 + 34
+
+
+def _ultimos(c, m, x, y, w, rh, limite_y):
+    """Titulo + ate 8 comandos recentes; devolve o Y logo abaixo."""
+    c.texto(x, y + 4 + _cap(NEG, 26), "ULTIMOS COMANDOS", NEG, 26, ESCURO)
+    lista = m.get("comandos")
+    its = [i for i in lista if isinstance(i, dict)][:botoes.ULTIMOS_MAX] if isinstance(lista, list) else []
+    y0 = y + botoes.ULTIMOS_TITULO_H
+    its = its[:max(0, (limite_y - y0) // rh)]
+    if not its:
+        _texto_c(c, x, y0 + rh // 2, "nenhum comando ainda", REG, 34, ESCURO)
+        return y0 + rh
+    bh = 36
+    bw = max([150] + [int(c.medir(_limpar(str(i.get("estado", "?"))).upper()[:10], NEG, 26)) + 28 for i in its])
+    for i, it in enumerate(its):
+        yy = y0 + i * rh
         estado = str(it.get("estado", "?"))
         rot = _limpar(estado).upper()[:10]
-        by = y + (rh - bh) // 2
+        by = yy + (rh - bh) // 2
         if estado == "falhou":
-            c.retangulo_arredondado(u["x"], by, bw, bh, 8, PRETO)
+            c.retangulo_arredondado(x, by, bw, bh, 8, PRETO)
             cor = BRANCO
         else:
-            c.contorno_arredondado(u["x"], by, bw, bh, 8, PRETO, 3, TRILHO if estado == "executando" else BRANCO)
+            c.contorno_arredondado(x, by, bw, bh, 8, PRETO, 2, TRILHO if estado == "executando" else BRANCO)
             cor = PRETO
-        c.texto(u["x"] + bw // 2, by + (bh + altura_capital(NEG, 26)) // 2, rot, NEG, 26, cor, alinhar="centro")
-        base = y + (rh + altura_capital(NEG, 34)) // 2
+        c.texto(x + bw // 2, by + (bh + _cap(NEG, 26)) // 2, rot, NEG, 26, cor, alinhar="centro")
+        yc = yy + rh // 2
         quando = _limpar(it.get("quando", ""))
-        c.texto(u["x"] + u["w"], base, quando, REG, 26, ESCURO, alinhar="dir")
-        ax = u["x"] + bw + 22
-        limite_a = u["x"] + u["w"] - c.medir(quando, REG, 26) - 24
-        acao = _ajustar(c, it.get("acao", "?"), NEG, 34, limite_a - ax)
-        c.texto(ax, base, acao, NEG, 34, PRETO)
+        c.texto(x + w, yc + _cap(REG, 26) // 2, quando, REG, 26, ESCURO, alinhar="dir")
+        ax = x + bw + 20
+        limite_a = x + w - c.medir(quando, REG, 26) - 24
+        acao = _ajustar(c, servicos.rotulo_acao(str(it.get("acao", "?"))), NEG, 34, limite_a - ax)
+        c.texto(ax, yc + _cap(NEG, 34) // 2, acao, NEG, 34, PRETO)
         det = _limpar(it.get("detalhe", ""))
         dx = ax + int(c.medir(acao, NEG, 34)) + 24
         if det and limite_a - dx > 60:
-            c.texto(dx, base, _ajustar(c, det, REG, 26, limite_a - dx), REG, 26, ESCURO)
-        if i < len(itens) - 1:
-            c.retangulo(u["x"], y + rh - 1, u["w"], 2, TRILHO)
+            c.texto(dx, yc + _cap(REG, 26) // 2, _ajustar(c, det, REG, 26, limite_a - dx), REG, 26, ESCURO)
+        if i < len(its) - 1:
+            c.retangulo(x, yy + rh - 1, w, 2, TRILHO)
+    return y0 + len(its) * rh
 
 
-# ------------------------------------------------------------ entrada
+def _desenhar_comandos(c, m, itens):
+    """Grade das acoes rapidas; abaixo os ultimos comandos, Atencao e (se couber) a grade de todos os servicos."""
+    geo = botoes.geometria_comandos(c.largura, c.altura)
+    w = c.largura - 2 * MARGEM
+    limite = botoes.limite(c.altura)
+    c.texto(MARGEM, geo["rapidas_titulo_y"] + 4 + _cap(NEG, 26), "ACOES RAPIDAS", NEG, 26, ESCURO)
+    rh = geo["linha_h"]
+    y = geo["fim_botoes"] + GAP
+    reserva = (_h_atencao(1) + GAP) if itens else 0  # Atencao sempre ganha ao menos uma linha
+    y = _ultimos(c, m, MARGEM, y, w, rh, limite - reserva) + GAP
+    if not itens or limite - y < _h_atencao(1):
+        return
+    atencao = servicos.resumo(itens)["atencao"]
+    kmax = max(1, (limite - y - ATENCAO_TITULO - 14) // ATENCAO_LINHA)
+    ah = _h_atencao(len(atencao), min(len(atencao), kmax)) if atencao else _h_atencao(0)
+    _card_atencao(c, atencao, MARGEM, y, w, ah)
+    y += ah + GAP
+    for cols in (3, 4):  # todos os servicos, se sobrar espaco; senao so o resumo por grupo
+        if limite - y >= _chips_h(len(itens), cols):
+            _card_chips(c, itens, MARGEM, y, w, _chips_h(len(itens), cols), cols)
+            return
+    if limite - y >= H_GRUPOS:
+        _card_grupos(c, itens, MARGEM, y, w, H_GRUPOS)
 
-def desenhar(c, metricas, historico=None, pagina="resumo", armado=None):
+
+# --------------------------------------------------------------------- entrada
+
+def desenhar(c, metricas, historico=None, pagina="resumo", armado=None, p=1):
     """Desenha a pagina inteira no canvas `c` (padrao do Kindle: 1236x1648)."""
     m = metricas if isinstance(metricas, dict) else {}
     hist = historico if isinstance(historico, dict) else m.get("historico")
     hist = hist if isinstance(hist, dict) else {}
     pagina = botoes.pagina_valida(pagina)
-    _cabecalho(c, m)
+    itens = servicos.ordenar(servicos.itens_de(m))
+    armado = botoes.armado_valido(armado, itens)
+    _cabecalho(c, m, itens)
     if pagina == "resumo":
-        _desenhar_resumo(c, m, hist)
+        _desenhar_resumo(c, m, hist, itens)
+    elif pagina == "servicos":
+        _desenhar_servicos(c, m, itens, p)
     elif pagina == "detalhes":
-        _desenhar_detalhes(c, m, hist)
+        _desenhar_detalhes(c, m, itens, hist)
     else:
-        _desenhar_comandos(c, m)
-    _desenhar_botoes(c, pagina, armado)
+        _desenhar_comandos(c, m, itens)
+    _desenhar_botoes(c, pagina, armado, p, itens)
 
 
-def render_png(metricas, historico=None, largura=1236, altura=1648, pagina="resumo", armado=None):
+def render_png(metricas, historico=None, largura=1236, altura=1648, pagina="resumo", armado=None, p=1):
     """Devolve a tela como PNG 8-bit em tons de cinza."""
     c = Canvas(largura, altura)
-    desenhar(c, metricas, historico, pagina, armado)
+    desenhar(c, metricas, historico, pagina, armado, p)
     return c.para_png()

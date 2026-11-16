@@ -106,15 +106,19 @@ def _validar(cfg):
 
 # ---------------------------------------------------------------------- servidor
 
-def _parametros(query):
-    """(pagina, armado) da query string; valor invalido (ou ausente) vira o padrao, nunca excecao."""
+def _parametros(query, itens=()):
+    """(pagina, armado, p) da query string; valor invalido (ou ausente) vira o padrao, nunca excecao.
+
+    `p` so vale na pagina servicos (invalido = 1; acima do maximo o layout usa a ultima).
+    `armado` vale em comandos (acao rapida) e em servicos (svc:<id>:<verbo> do catalogo)."""
     try:
         q = parse_qs(query, keep_blank_values=True, errors="replace")
     except Exception:
         q = {}
     pagina = botoes.pagina_valida(q.get("pagina", [""])[0])
-    armado = botoes.armado_valido(q.get("armado", [""])[0]) if pagina == "comandos" else None
-    return pagina, armado
+    armado = botoes.armado_valido(q.get("armado", [""])[0], itens) if pagina in ("comandos", "servicos") else None
+    p = q.get("p", [""])[0] if pagina == "servicos" else 1
+    return pagina, armado, p
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -134,6 +138,17 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(dados)
 
+    def _itens(self):
+        """Itens do catalogo (ordenados, com estado) para o layout; [] se o coletor nao os tem."""
+        try:
+            return self.server.coletor.servicos_itens()
+        except Exception:
+            return []
+
+    def _paginas(self, itens, p):
+        g = botoes.geometria_servicos(itens, self.server.largura, self.server.altura, p)
+        return g["paginas"], g["p"]
+
     def do_GET(self):
         url = urlsplit(self.path)
         try:
@@ -141,27 +156,31 @@ class Handler(BaseHTTPRequestHandler):
                 self._responder(200, "ok")
             elif url.path == "/tela.txt":
                 m = self.server.coletor.coletar(com_pares=True)
-                pagina, _ = _parametros(url.query)
-                linhas = render.render_texto(m, self.server.colunas, pagina)
+                pagina, _, p = _parametros(url.query, servicos.itens_de(m))
+                linhas = render.render_texto(m, self.server.colunas, pagina, p)
                 self._responder(200, "\n".join(linhas) + "\n")
             elif url.path == "/tela.png":
                 m = self.server.coletor.coletar(com_pares=True)
-                pagina, armado = _parametros(url.query)
+                pagina, armado, p = _parametros(url.query, servicos.ordenar(servicos.itens_de(m)))
                 if pagina == "comandos":
-                    m = dict(m, comandos=self.server.comandos.ultimos())
+                    m = dict(m, comandos=self.server.comandos.ultimos(botoes.ULTIMOS_MAX))
                 png = render_png.render_png(m, m.get("historico"), self.server.largura, self.server.altura,
-                                            pagina, armado)
+                                            pagina, armado, p)
                 self._responder(200, png, "image/png")
             elif url.path == "/botoes.json":
-                pagina, armado = _parametros(url.query)
+                itens = self._itens()
+                pagina, armado, p = _parametros(url.query, itens)
+                n, p_efetivo = self._paginas(itens, p)
                 corpo = {"largura": self.server.largura, "altura": self.server.altura, "pagina": pagina,
-                         "botoes": botoes.layout(pagina, armado, self.server.largura, self.server.altura)}
+                         "p": p_efetivo, "paginas": n,
+                         "botoes": botoes.layout(pagina, armado, self.server.largura, self.server.altura, p, itens)}
                 self._responder(200, json.dumps(corpo, ensure_ascii=True), "application/json; charset=utf-8")
             elif url.path == "/botoes.txt":
                 # same layout as /botoes.json, one "id tipo x y w h" per line, for the Kindle's busybox awk
-                pagina, armado = _parametros(url.query)
+                itens = self._itens()
+                pagina, armado, p = _parametros(url.query, itens)
                 linhas = ["%s %s %d %d %d %d" % (b["id"], b["tipo"], b["x"], b["y"], b["w"], b["h"])
-                          for b in botoes.layout(pagina, armado, self.server.largura, self.server.altura)]
+                          for b in botoes.layout(pagina, armado, self.server.largura, self.server.altura, p, itens)]
                 self._responder(200, "\n".join(linhas) + "\n")
             elif url.path == "/historico.json":
                 h = self.server.coletor.historico()

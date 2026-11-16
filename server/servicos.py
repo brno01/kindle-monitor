@@ -161,16 +161,16 @@ def resumo(itens):
     return r
 
 
-def texto_resumo(itens):
+def texto_resumo(itens, sep=" \u00b7 "):
     r = resumo(itens)
-    t = "%d servicos · %d ok" % (r["total"], r["ok"])
+    partes = ["%d servicos" % r["total"], "%d ok" % r["ok"]]
     if r["parados"]:
-        t += " · %d parados" % r["parados"]
+        partes.append("%d parados" % r["parados"])
     if r["falhas"]:
-        t += " · %d falhas" % r["falhas"]
+        partes.append("%d falhas" % r["falhas"])
     if r["desconhecidos"]:
-        t += " · %d ?" % r["desconhecidos"]
-    return t
+        partes.append("%d ?" % r["desconhecidos"])
+    return sep.join(partes)
 
 
 def verbos_visiveis(item):

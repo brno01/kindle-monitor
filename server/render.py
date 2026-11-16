@@ -5,6 +5,7 @@ from datetime import datetime
 import botoes
 import coletores
 import formato
+import servicos
 
 MAX_LINHAS = 26
 ETQ = 5  # largura fixa do rotulo das linhas com barra
@@ -202,22 +203,76 @@ def _secao(m, cols, compacto, nome=None):
         elif portas is not None:
             linhas.append("Portas: n/d")
 
-        servicos = m.get("servicos")
-        if isinstance(servicos, list):
+        svcs = m.get("servicos")
+        if isinstance(svcs, list):
             def estado(s):
                 if "erro" in s:
                     return "n/d"
                 return "ok" if s.get("ativo") else "FALHA"
             try:
-                itens = sorted(((str(s.get("nome", "?")), estado(s)) for s in servicos),
+                itens = sorted(((str(s.get("nome", "?")), estado(s)) for s in svcs),
                                key=lambda t: t[1] == "ok")  # falhas primeiro (estavel)
                 larg = max(1, cols - 6)
                 for nome, est in itens:
                     linhas.append("%s %5s" % (nome[:larg].ljust(larg), est))
             except Exception:
                 linhas.append("Servicos n/d")
-        elif servicos is not None:
+        elif svcs is not None:
             linhas.append("Servicos n/d")
+        linhas += _linhas_catalogo(m, cols)
+    return linhas
+
+
+def _linhas_catalogo(m, cols):
+    """Resumo do catalogo de servicos: contagem e o que pede atencao (falha, ou parado nao opcional)."""
+    sk = m.get("servicos_kindle")
+    if not isinstance(sk, dict) or not isinstance(sk.get("itens"), list):
+        return []
+    itens = [i for i in sk["itens"] if isinstance(i, dict)]
+    linhas = ["Servicos: " + servicos.texto_resumo(itens, " | ")]
+    aviso = {"velho": "estados desatualizados", "ausente": "sem inventario"}.get(sk.get("inventario"))
+    if aviso:
+        linhas.append("! " + aviso)
+    for i in servicos.resumo(itens)["atencao"][:6]:
+        linhas.append("%s %s" % (str(i.get("rotulo", "?"))[:max(1, cols - 8)].ljust(max(1, cols - 8)),
+                                 "FALHA" if i.get("estado") == "falha" else "parado"))
+    return linhas
+
+
+FORMA_TXT = {"ativo": "[#]", "parado": "[ ]", "falha": "[X]"}
+LINHAS_POR_PAGINA = MAX_LINHAS - 5
+
+
+def _linhas_servicos(m, cols, p):
+    """Pagina servicos em texto: grupos com uma linha por servico; `p` fora da faixa vira 1 / a ultima."""
+    itens = servicos.ordenar(servicos.itens_de(m))
+    if not itens:
+        return ["Servicos: nenhum configurado"]
+    entradas = []
+    grupo = None
+    for i in itens:
+        if i.get("grupo") != grupo:
+            grupo = i.get("grupo")
+            a = sum(1 for x in itens if x.get("grupo") == grupo and x.get("estado") == "ativo")
+            n = sum(1 for x in itens if x.get("grupo") == grupo)
+            entradas.append(("%s %d/%d" % (servicos.TITULOS_GRUPO.get(grupo, str(grupo).upper()), a, n), False))
+        entradas.append((i, True))
+    paginas, atual = [], []
+    for e in entradas:
+        if len(atual) >= LINHAS_POR_PAGINA or (atual and not e[1] and len(atual) >= LINHAS_POR_PAGINA - 1):
+            paginas.append(atual)
+            atual = []
+        atual.append(e)
+    paginas.append(atual)
+    p = servicos.pagina_valida(p, len(paginas))
+    linhas = ["SERVICOS pagina %d/%d" % (p, len(paginas))]
+    for e, eh_item in paginas[p - 1]:
+        if not eh_item:
+            linhas.append(e)
+            continue
+        est = e.get("estado")
+        det = " " + str(e.get("detalhe")) if est == "falha" and e.get("detalhe") else ""
+        linhas.append("%s %s%s" % (FORMA_TXT.get(est, "[?]"), e.get("rotulo", "?"), det))
     return linhas
 
 
@@ -235,21 +290,19 @@ def _cabecalho(m, cols):
 
 def _linhas_comandos(m, cols):
     """Pagina comandos em texto: so lista os rotulos (o toque so existe na imagem) e os comandos recentes."""
-    linhas = ["COMANDOS (toque na imagem)", ""]
-    for grupo in ("leves", "servicos"):
-        linhas.append(botoes.TITULOS[grupo])
-        linhas += ["  [%s]" % rotulo for _, rotulo, g in botoes.COMANDOS if g == grupo]
+    linhas = ["ACOES (toque na imagem)", "ACOES RAPIDAS"]
+    linhas += ["  [%s]" % rotulo for _, rotulo in botoes.COMANDOS]
     linhas += ["", "ULTIMOS COMANDOS"]
     lista = m.get("comandos")
-    itens = [i for i in lista if isinstance(i, dict)][:5] if isinstance(lista, list) else []
+    itens = [i for i in lista if isinstance(i, dict)][:botoes.ULTIMOS_MAX] if isinstance(lista, list) else []
     if not itens:
         linhas.append("  nenhum comando ainda")
     for it in itens:
-        linhas.append("  %s %s %s" % (it.get("quando", ""), it.get("estado", "?"), it.get("acao", "?")))
+        linhas.append("  %s %s %s" % (it.get("quando", ""), it.get("estado", "?"), servicos.rotulo_acao(str(it.get("acao", "?")))))
     return linhas
 
 
-def render_texto(metricas, colunas, pagina="resumo"):
+def render_texto(metricas, colunas, pagina="resumo", p=1):
     """Monta a tela: lista de linhas ASCII, cada uma com no maximo `colunas` caracteres.
 
     `pagina`: "resumo" e "detalhes" mostram a tela completa (o texto ja e um resumo denso); "comandos" so lista os rotulos.
@@ -257,6 +310,9 @@ def render_texto(metricas, colunas, pagina="resumo"):
     cols = max(1, int(colunas))
     m = metricas if isinstance(metricas, dict) else {}
     linhas = [_cabecalho(m, cols), "-" * cols]
+    if pagina == "servicos":
+        linhas += _linhas_servicos(m, cols, p)
+        return [ascii_seguro(l)[:cols] for l in linhas][:MAX_LINHAS]
     if pagina == "comandos":
         linhas += _linhas_comandos(m, cols)
         linhas = [ascii_seguro(l)[:cols] for l in linhas]

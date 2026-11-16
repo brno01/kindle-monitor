@@ -62,7 +62,7 @@ class PaginasServidorTest(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertEqual(d["pagina"], "comandos")
         self.assertEqual([b["id"] for b in d["botoes"] if b["armado"]], ["bots-pausar"])
-        self.assertEqual(len([b for b in d["botoes"] if b["tipo"] == "comando"]), 6)
+        self.assertEqual(len([b for b in d["botoes"] if b["tipo"] == "comando"]), 4)
 
     def test_botoes_json_parametros_invalidos_viram_padrao(self):
         for q in ("pagina=xpto", "pagina=", "pagina=comandos&armado=nao-existe", "pagina=resumo&armado=bots-pausar",
@@ -89,7 +89,8 @@ class PaginasServidorTest(unittest.TestCase):
 
     def test_tela_png_com_pagina_e_armado(self):
         imgs = {}
-        for q in ("", "?pagina=resumo", "?pagina=detalhes", "?pagina=comandos", "?pagina=comandos&armado=bots-pausar"):
+        for q in ("", "?pagina=resumo", "?pagina=detalhes", "?pagina=servicos", "?pagina=comandos",
+                  "?pagina=comandos&armado=bots-pausar"):
             st, h, corpo = self.req("GET", "/tela.png" + q)
             self.assertEqual(st, 200, q)
             self.assertEqual(h["Content-Type"], "image/png")
@@ -98,6 +99,7 @@ class PaginasServidorTest(unittest.TestCase):
         self.assertEqual(imgs[""], imgs["?pagina=resumo"])
         self.assertEqual(len({imgs["?pagina=resumo"], imgs["?pagina=detalhes"], imgs["?pagina=comandos"],
                               imgs["?pagina=comandos&armado=bots-pausar"]}), 4)
+        self.assertNotEqual(imgs["?pagina=servicos"], imgs["?pagina=resumo"])
 
     def test_tela_png_parametros_invalidos_nunca_500(self):
         padrao = self.req("GET", "/tela.png")[2]
@@ -109,7 +111,7 @@ class PaginasServidorTest(unittest.TestCase):
         self.assertEqual(self.req("GET", "/tela.png?pagina=xpto")[2], padrao)
 
     def test_tela_txt_com_pagina(self):
-        for q in ("", "?pagina=resumo", "?pagina=detalhes", "?pagina=xpto"):
+        for q in ("", "?pagina=resumo", "?pagina=detalhes", "?pagina=servicos", "?pagina=servicos&p=9", "?pagina=xpto"):
             st, _, corpo = self.req("GET", "/tela.txt" + q)
             self.assertEqual(st, 200)
             self.assertIn("teste", corpo.decode("ascii"))
@@ -117,7 +119,7 @@ class PaginasServidorTest(unittest.TestCase):
         texto = corpo.decode("ascii")
         self.assertEqual(st, 200)
         self.assertTrue(all(len(l) <= 38 for l in texto.splitlines()))
-        for _, rotulo, _ in botoes.COMANDOS:
+        for _, rotulo in botoes.COMANDOS:
             self.assertIn(rotulo[:30], texto)
 
     def test_so_get(self):
