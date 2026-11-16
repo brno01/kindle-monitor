@@ -22,6 +22,7 @@ import coletores  # noqa: E402
 import comandos  # noqa: E402
 import render  # noqa: E402
 import render_png  # noqa: E402
+import servicos  # noqa: E402
 
 PORTA_PADRAO = 8765
 COLUNAS_PADRAO = 38
@@ -40,6 +41,7 @@ def carregar_config(caminho):
         "host": socket.gethostname(),
         "discos": [],
         "servicos": [],
+        "servicos_kindle": [],
         "balanceador": coletores.BALANCEADOR_PADRAO,
         "pares": [],
         "intervalo_cpu_s": 0.5,
@@ -99,6 +101,7 @@ def _validar(cfg):
     if isinstance(h, bool) or not isinstance(h, (int, float)) or not 0 < h <= 3600:
         raise ValueError("config: intervalo_historico_s deve estar entre 0 e 3600")
     cfg["comandos"] = comandos.validar_config(cfg["comandos"])  # ValueError com a causa
+    cfg["servicos_kindle"] = servicos.validar_catalogo(cfg["servicos_kindle"])  # ValueError com a causa
 
 
 # ---------------------------------------------------------------------- servidor
@@ -266,7 +269,7 @@ def main(argv=None):
     coletor = coletores.Coletor(cfg)
     coletor.iniciar_historico()
     srv = criar_servidor(args.bind, args.porta, coletor, args.colunas, largura=args.largura, altura=args.altura,
-                         comandos=comandos.Comandos(cfg["comandos"]))
+                         comandos=comandos.Comandos(cfg["comandos"], catalogo=cfg["servicos_kindle"]))
     print("kindle-monitor em http://%s:%d (host %s)" % (args.bind, srv.server_address[1], cfg["host"]),
           file=sys.stderr)
     try:

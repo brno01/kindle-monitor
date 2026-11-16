@@ -22,6 +22,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from urllib.parse import urlsplit
 
+import servicos
+
 ND = {"erro": "n/d"}
 CACHE_S = 5.0
 CACHE_CPU_PADRAO = 1.5
@@ -426,6 +428,48 @@ def coletar_servicos(nomes, executar):
     return resultado
 
 
+# ------------------------------------------------------------ servicos do Kindle
+
+INVENTARIO_ARQ = "servicos.json"
+INVENTARIO_VALIDADE_S = 60
+INVENTARIO_ESTADO_PADRAO = "/run/kindle-monitor/status"
+
+
+def _detalhe_curto(v):
+    return re.sub(r"[^A-Za-z0-9 _.,:/()=+-]", "?", v)[:24] if isinstance(v, str) else ""
+
+
+def montar_servicos_kindle(catalogo, texto, agora):
+    """Junta o catalogo com o inventario (JSON do executor root).
+
+    `texto` None = arquivo ausente. Mais de 60 s (ou do futuro), JSON ruim ou ausente: todos "desconhecido" e
+    `inventario` diz porque ("velho"/"ausente"). Nunca levanta.
+    """
+    inv, situacao, idade = {}, "ausente", None
+    if texto is not None:
+        try:
+            d = json.loads(texto)
+            gerado, dados = d["gerado"], d["servicos"]
+            if isinstance(gerado, bool) or not isinstance(gerado, (int, float)) or not isinstance(dados, dict):
+                raise ValueError("formato")
+            idade = agora - gerado
+            if -5 <= idade <= INVENTARIO_VALIDADE_S:
+                inv, situacao = dados, "ok"
+                idade = max(0, int(idade))
+            else:
+                situacao, idade = "velho", max(0, int(idade))
+        except (ValueError, KeyError, TypeError):
+            situacao, idade = "ausente", None
+    itens = []
+    for c in catalogo:
+        e = inv.get(c["id"]) if situacao == "ok" and isinstance(inv.get(c["id"]), dict) else {}
+        estado = e.get("estado") if e.get("estado") in servicos.ESTADOS else "desconhecido"
+        itens.append({"id": c["id"], "rotulo": c["rotulo"], "grupo": c["grupo"], "estado": estado,
+                      "detalhe": _detalhe_curto(e.get("detalhe")) if e else "",
+                      "verbos": list(c["verbos"]), "protegido": c["protegido"], "opcional": c["opcional"]})
+    return {"itens": itens, "inventario": situacao, "idade_s": idade}
+
+
 # --------------------------------------------------------------------- ragnarok
 
 def parse_ragnarok(texto, agora):
@@ -570,6 +614,9 @@ class Coletor:
             lambda caminho: self._ler(caminho), config.get("io"), dormir=dormir, relogio=relogio,
             intervalo_s=float(config.get("intervalo_io_s", INTERVALO_IO_PADRAO)),
         )
+        self._catalogo = servicos.validar_catalogo(config.get("servicos_kindle") or [])
+        estado = (config.get("comandos") or {}).get("estado") or INVENTARIO_ESTADO_PADRAO
+        self._inventario_caminho = os.path.join(estado, INVENTARIO_ARQ)
         self._lock_pares = threading.Lock()
         self._pares_t = None
         self._pares_v = None
@@ -581,6 +628,21 @@ class Coletor:
         self._lock_hist = threading.Lock()
         self._parar = threading.Event()
         self._thread_historico = None
+
+    def servicos_kindle(self):
+        """Catalogo com o estado do inventario root; None sem catalogo. Leve (le um arquivo pequeno)."""
+        if not self._catalogo:
+            return None
+        try:
+            texto = self._ler(self._inventario_caminho)
+        except Exception:
+            texto = None
+        return montar_servicos_kindle(self._catalogo, texto, self._agora())
+
+    def servicos_itens(self):
+        """Itens da tela Servicos, na ordem de exibicao (mesma lista que o render usa)."""
+        sk = self.servicos_kindle()
+        return servicos.ordenar(sk["itens"]) if sk else []
 
     def _pares(self):
         with self._lock_pares:
@@ -686,6 +748,9 @@ class Coletor:
                 m["servicos"] = coletar_servicos(cfg["servicos"], self._executar)
             except Exception:
                 m["servicos"] = dict(ND)
+        sk = self.servicos_kindle()
+        if sk is not None:
+            m["servicos_kindle"] = sk
         if cfg.get("portas"):
             try:
                 m["portas"] = self._portas()
