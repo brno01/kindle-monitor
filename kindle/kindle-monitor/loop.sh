@@ -43,12 +43,13 @@ ensure_ts() {
 
 # state is parsed field by field (never sourced): only known keys and validated values
 read_state() {
-  PAGINA=resumo; ARMADO=; ARMADO_ATE=0
+  PAGINA=resumo; P=1; ARMADO=; ARMADO_ATE=0
   [ -f "$STF" ] || return 0
   while IFS='=' read -r k v; do
     case "$k" in
-      PAGINA) case "$v" in resumo|detalhes|comandos) PAGINA=$v ;; esac ;;
-      ARMADO) case "$v" in ''|*[!a-z-]*) ;; *) ARMADO=$v ;; esac ;;
+      PAGINA) case "$v" in resumo|servicos|detalhes|comandos) PAGINA=$v ;; esac ;;
+      P) case "$v" in ''|*[!0-9]*) ;; *) [ "$v" -ge 1 ] && [ "$v" -le 99 ] && P=$v ;; esac ;;
+      ARMADO) case "$v" in ''|*[!a-z0-9:-]*) ;; *) ARMADO=$v ;; esac ;;
       ARMADO_ATE) case "$v" in ''|*[!0-9]*) ;; *) ARMADO_ATE=$v ;; esac ;;
     esac
   done < "$STF"
@@ -59,6 +60,7 @@ state() {
   read_state
   [ "$ARMADO_ATE" -ge "$(date +%s)" ] 2>/dev/null || ARMADO=
   Q="pagina=$PAGINA"
+  [ "$PAGINA" = servicos ] && Q="$Q&p=$P"
   [ -n "$ARMADO" ] && Q="$Q&armado=$ARMADO"
 }
 
@@ -73,6 +75,8 @@ fetch() {
 }
 
 lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
+# a stale image would make the supervisor stop the Kindle UI before our first draw
+rm -f "$IMG"
 log "loop started pid=$$ server=$SERVER interval=${INTERVAL}s"
 n=0
 fails=0

@@ -76,12 +76,25 @@ grab_stop() {
   G1=""; G2=""; rm -f "$FIFO"
 }
 
+GUI_STOPPED=0
+# the Kindle UI keeps repainting (clock, status bar) over the monitor even with the touch grabbed:
+# stop it while the loop runs, bring it back whenever the loop is not running and on exit
+gui_stop() {
+  [ "${STOP_GUI:-0}" = 1 ] && [ "$GUI_STOPPED" = 0 ] || return 0
+  stop lab126_gui >/dev/null 2>&1 && GUI_STOPPED=1 && log "kindle UI stopped"
+}
+gui_start() {
+  [ "$GUI_STOPPED" = 1 ] || return 0
+  start lab126_gui >/dev/null 2>&1; GUI_STOPPED=0; log "kindle UI started"
+}
+
 finish() {
   kill $P1 $P2 2>/dev/null
   grab_stop
   lp=$(loop_pid)
   [ -n "$lp" ] && kill "$lp" 2>/dev/null
   sleep 1
+  gui_start
   touch_on
   lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null
   rm -f "$SUPF"
@@ -112,6 +125,7 @@ while :; do
   fi
   if [ -z "$(loop_pid)" ]; then
     grab_stop
+    gui_start
     touch_on
     if [ -f "$D/loop.sh" ]; then
       [ "$starts" -gt 0 ] && log "loop not running (USB drive mode or crash?), starting it again"
@@ -122,5 +136,7 @@ while :; do
     fi
   fi
   [ "$LOCK_TOUCH" = buttons ] && [ -n "$(loop_pid)" ] && grab_start
+  # after the loop's first draw (FIRST_DELAY), the screen belongs to the monitor
+  [ -n "$(loop_pid)" ] && [ -f /tmp/kindle-monitor.png ] && gui_stop
   sleep 2
 done

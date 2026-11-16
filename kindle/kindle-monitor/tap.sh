@@ -28,18 +28,19 @@ hit=$(awk -v x="$x" -v y="$y" 'NF == 6 && $3 <= x && x < $3 + $5 && $4 <= y && y
 [ -n "$hit" ] || exit 0
 id=${hit% *}
 tipo=${hit#* }
-case "$id" in ''|*[!a-z:-]*) exit 0 ;; esac
+case "$id" in ''|*[!a-z0-9:-]*) exit 0 ;; esac
 
 ARM_SECONDS=6
 [ -f "$D/config.sh" ] && . "$D/config.sh"
 # state is parsed field by field (never sourced): only known keys and validated values
 read_state() {
-  PAGINA=resumo; ARMADO=; ARMADO_ATE=0
+  PAGINA=resumo; P=1; ARMADO=; ARMADO_ATE=0
   [ -f "$STF" ] || return 0
   while IFS='=' read -r k v; do
     case "$k" in
-      PAGINA) case "$v" in resumo|detalhes|comandos) PAGINA=$v ;; esac ;;
-      ARMADO) case "$v" in ''|*[!a-z-]*) ;; *) ARMADO=$v ;; esac ;;
+      PAGINA) case "$v" in resumo|servicos|detalhes|comandos) PAGINA=$v ;; esac ;;
+      P) case "$v" in ''|*[!0-9]*) ;; *) [ "$v" -ge 1 ] && [ "$v" -le 99 ] && P=$v ;; esac ;;
+      ARMADO) case "$v" in ''|*[!a-z0-9:-]*) ;; *) ARMADO=$v ;; esac ;;
       ARMADO_ATE) case "$v" in ''|*[!0-9]*) ;; *) ARMADO_ATE=$v ;; esac ;;
     esac
   done < "$STF"
@@ -60,8 +61,12 @@ send() {
 
 case "$id" in
   atualizar) log "refresh" ;;
-  pagina:resumo | pagina:detalhes | pagina:comandos)
-    PAGINA=${id#pagina:}; ARMADO=; ARMADO_ATE=0; log "page $PAGINA" ;;
+  pagina:resumo | pagina:servicos | pagina:detalhes | pagina:comandos)
+    PAGINA=${id#pagina:}; P=1; ARMADO=; ARMADO_ATE=0; log "page $PAGINA" ;;
+  servicos:anterior)
+    [ "$P" -gt 1 ] && P=$((P - 1)); ARMADO=; ARMADO_ATE=0; log "services page $P" ;;
+  servicos:proxima)
+    [ "$P" -lt 99 ] && P=$((P + 1)); ARMADO=; ARMADO_ATE=0; log "services page $P" ;;
   *)
     if [ "$tipo" = comando ]; then
       if [ "$ARMADO" = "$id" ] && [ "$ARMADO_ATE" -ge "$now" ] 2>/dev/null; then
@@ -74,6 +79,6 @@ case "$id" in
 esac
 
 mkdir -p /var/tmp/kindle-monitor
-printf 'PAGINA=%s\nARMADO=%s\nARMADO_ATE=%s\n' "$PAGINA" "$ARMADO" "$ARMADO_ATE" > "$STF.new" && mv -f "$STF.new" "$STF"
+printf 'PAGINA=%s\nP=%s\nARMADO=%s\nARMADO_ATE=%s\n' "$PAGINA" "$P" "$ARMADO" "$ARMADO_ATE" > "$STF.new" && mv -f "$STF.new" "$STF"
 [ -f "$PIDF" ] && kill -USR1 "$(cat "$PIDF")" 2>/dev/null
 exit 0

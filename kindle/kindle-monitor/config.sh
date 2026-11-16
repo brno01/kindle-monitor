@@ -6,3 +6,4 @@ FAIL_NOTICE_AFTER=3          # consecutive failures before drawing "sem dados" a
 FIRST_DELAY=12            # seconds to wait before the first draw: the Kindle returns to the library after the scriptlet exits and repaints its UI
 LOCK_TOUCH=buttons        # buttons = only the on-screen buttons answer (touch panel grabbed); 1 = touch fully off; 0 = no lock
 ARM_SECONDS=6             # a command button stays armed this long waiting for the confirming second tap
+STOP_GUI=1                # 1 = stop the Kindle UI (lab126_gui) while the monitor runs, so nothing repaints over it; it comes back on exit
