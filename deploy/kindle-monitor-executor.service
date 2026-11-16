@@ -8,7 +8,8 @@ Type=oneshot
 User=root
 ExecStart=/usr/bin/python3 -I /opt/kindle-monitor/deploy/kindle-monitor-executor.py --config /etc/kindle-monitor/config.json
 NoNewPrivileges=yes
-ProtectHome=yes
+# incus reads its client config under /root/.config: read-only keeps /root unwritable but readable
+ProtectHome=read-only
 PrivateTmp=yes
 TimeoutStartSec=180
 # Hardening. VALIDATE ON THE HOST (see server/README.md): systemctl needs D-Bus, incus its unix socket.
