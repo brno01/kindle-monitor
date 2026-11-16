@@ -1,0 +1,9 @@
+[Unit]
+Description=kindle-monitor: watch the command spool
+
+[Path]
+DirectoryNotEmpty=/run/kindle-monitor/spool
+Unit=kindle-monitor-executor.service
+
+[Install]
+WantedBy=multi-user.target

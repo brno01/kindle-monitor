@@ -19,6 +19,11 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 CapabilityBoundingSet=
 SystemCallArchitectures=native
 MemoryMax=128M
+# Spool and status of the command API; kept across restarts (the executor writes status as root).
+RuntimeDirectory=kindle-monitor
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ReadWritePaths=/run/kindle-monitor
 
 [Install]
 WantedBy=multi-user.target

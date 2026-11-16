@@ -25,6 +25,13 @@
     "discos": [{"rotulo": "NVMe", "dev": "nvme0n1"}, {"rotulo": "HD", "dev": "sda"}],
     "redes": [{"rotulo": "LAN", "if": "enp2s0f1"}, {"rotulo": "Tailnet", "if": "tailscale0"}]
   },
+  "comandos": {
+    "token_arquivo": "/etc/kindle-monitor/token",
+    "permitidos_de": ["100.64.0.2", "100.64.0.3"],
+    "acoes": ["gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar", "ragnarok-reiniciar", "ollama-reiniciar"],
+    "spool": "/run/kindle-monitor/spool",
+    "estado": "/run/kindle-monitor/status"
+  },
   "intervalo_historico_s": 15,
   "intervalo_cpu_s": 0.5,
   "cache_cpu_s": 1.5
