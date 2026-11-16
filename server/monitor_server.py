@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Servidor HTTP do kindle-monitor: somente GET, somente leitura, sem autenticacao.
 
-Endpoints: /tela.txt (texto ASCII), /tela.png (imagem para o FBInk), /metricas.json, /historico.json e /saude.
+POST /comando (so registra pedido, ver comandos.py). Endpoints: /tela.txt (texto ASCII), /tela.png (imagem para o FBInk), /metricas.json, /historico.json e /saude.
 NUNCA escute em 0.0.0.0: passe --bind com o IP da LAN/tailnet.
 """
 import argparse
@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlsplit
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import coletores  # noqa: E402
+import comandos  # noqa: E402
 import render  # noqa: E402
 import render_png  # noqa: E402
 
@@ -44,6 +45,7 @@ def carregar_config(caminho):
         "intervalo_io_s": coletores.INTERVALO_IO_PADRAO,
         "portas": [],
         "intervalo_historico_s": coletores.INTERVALO_HISTORICO_PADRAO,
+        "comandos": {},
     }
     if caminho:
         with open(caminho, "r", encoding="utf-8") as f:
@@ -93,6 +95,7 @@ def _validar(cfg):
     h = cfg["intervalo_historico_s"]
     if isinstance(h, bool) or not isinstance(h, (int, float)) or not 0 < h <= 3600:
         raise ValueError("config: intervalo_historico_s deve estar entre 0 e 3600")
+    cfg["comandos"] = comandos.validar_config(cfg["comandos"])  # ValueError com a causa
 
 
 # ---------------------------------------------------------------------- servidor
@@ -132,7 +135,10 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/metricas.json":
                 com_pares = parse_qs(url.query).get("pares", ["1"])[0] != "0"
                 m = self.server.coletor.coletar(com_pares=com_pares)
+                m["comandos"] = self.server.comandos.ultimos()
                 self._responder(200, json.dumps(m, ensure_ascii=True), "application/json; charset=utf-8")
+            elif url.path == "/comando/estado":
+                self._responder(200, json.dumps(self.server.comandos.ultimos()), "application/json; charset=utf-8")
             else:
                 self._responder(404, "nao encontrado\n")
         except Exception:
@@ -142,7 +148,19 @@ class Handler(BaseHTTPRequestHandler):
     def _nao_permitido(self):
         self._responder(405, "metodo nao permitido\n", extra={"Allow": "GET"})
 
-    do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _nao_permitido
+    def do_POST(self):
+        if urlsplit(self.path).path != "/comando":
+            return self._nao_permitido()
+        try:
+            tam = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            tam = None
+        status, corpo, extra = self.server.comandos.processar(
+            self.client_address[0], self.headers.get("X-Kindle-Token"),
+            self.headers.get("Content-Type"), tam, self.rfile)
+        self._responder(status, json.dumps(corpo), "application/json; charset=utf-8", extra)
+
+    do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _nao_permitido
 
     def log_message(self, formato, *args):
         if self.server.log:
@@ -152,7 +170,8 @@ class Handler(BaseHTTPRequestHandler):
 class Servidor(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, endereco, coletor, colunas, log, largura=LARGURA_PADRAO, altura=ALTURA_PADRAO):
+    def __init__(self, endereco, coletor, colunas, log, largura=LARGURA_PADRAO, altura=ALTURA_PADRAO,
+                 comandos_obj=None):
         if ":" in endereco[0]:
             self.address_family = socket.AF_INET6
         self.coletor = coletor
@@ -160,12 +179,13 @@ class Servidor(ThreadingHTTPServer):
         self.largura = largura
         self.altura = altura
         self.log = log
+        self.comandos = comandos_obj or comandos.Comandos(comandos.validar_config({}))
         super().__init__(endereco, Handler)
 
 
 def criar_servidor(bind, porta, coletor, colunas=COLUNAS_PADRAO, log=True,
-                   largura=LARGURA_PADRAO, altura=ALTURA_PADRAO):
-    return Servidor((bind, porta), coletor, colunas, log, largura, altura)
+                   largura=LARGURA_PADRAO, altura=ALTURA_PADRAO, comandos=None):
+    return Servidor((bind, porta), coletor, colunas, log, largura, altura, comandos)
 
 
 # --------------------------------------------------------------------------- CLI
@@ -214,7 +234,8 @@ def main(argv=None):
         return 2
     coletor = coletores.Coletor(cfg)
     coletor.iniciar_historico()
-    srv = criar_servidor(args.bind, args.porta, coletor, args.colunas, largura=args.largura, altura=args.altura)
+    srv = criar_servidor(args.bind, args.porta, coletor, args.colunas, largura=args.largura, altura=args.altura,
+                         comandos=comandos.Comandos(cfg["comandos"]))
     print("kindle-monitor em http://%s:%d (host %s)" % (args.bind, srv.server_address[1], cfg["host"]),
           file=sys.stderr)
     try:

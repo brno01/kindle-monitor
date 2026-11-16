@@ -1,6 +1,6 @@
 # kindle-monitor: servidor
 
-Servidor HTTP em Python 3 (somente biblioteca padrao) que coleta metricas do host e serve uma "tela" pronta para o Kindle: texto ASCII (`/tela.txt`) ou uma imagem PNG estilizada em tons de cinza (`/tela.png`, 1236x1648, para o FBInk). Somente GET, somente leitura, sem autenticacao, nao escreve em disco.
+Servidor HTTP em Python 3 (somente biblioteca padrao) que coleta metricas do host e serve uma "tela" pronta para o Kindle: texto ASCII (`/tela.txt`) ou uma imagem PNG estilizada em tons de cinza (`/tela.png`, 1236x1648, para o FBInk). Leitura por GET sem autenticacao; o unico POST e `/comando` (ver "Comandos"), que so registra um pedido. O processo web nao escreve em disco, exceto o pedido no spool.
 
 ## Como rodar
 ```
@@ -21,8 +21,10 @@ Opcoes: `--bind` (padrao `127.0.0.1`), `--porta` (padrao `8765`), `--config` (ar
 | `/historico.json` | anel em memoria das ultimas 60 amostras: `intervalo_s`, `max`, `t` (epoch), `cpu`, `ram` e `gpu` (so se houver GPU), em %, da mais antiga para a mais nova (`null` = leitura falhou) |
 | `/metricas.json` | metricas brutas em JSON (`host`, `gerado_em` ISO, cpu, ram, gpu, discos, io, servicos, ragnarok, portas, historico, pares). `?pares=0` nao consulta os pares |
 | `/saude` | `ok` |
+| `/comando/estado` | lista JSON dos ultimos comandos (mesma de `metricas.comandos`) |
+| `POST /comando` | registra um pedido de comando (ver "Comandos"); exige token |
 
-Outro caminho: 404. Metodo diferente de GET: 405. Todas as respostas levam `Cache-Control: no-store`.
+Outro caminho: 404. Metodo diferente de GET: 405 (menos `POST /comando`). Todas as respostas levam `Cache-Control: no-store`.
 
 ## Config (`config.exemplo.json`)
 Copie para `config.json` e ajuste. Chaves que comecam com `_` sao comentarios e sao ignoradas.
@@ -46,6 +48,35 @@ As taxas (bytes/s) saem da diferenca entre a amostra atual e a anterior, guardad
 Unidades na tela: **base 1024** (1 KB/s = 1024 B/s, 1 MB/s = 1024 KB/s, igual aos GiB da RAM), uma casa decimal: `512 B/s`, `40.0 KB/s`, `12.3 MB/s`. No `/tela.txt` a forma curta: `IO NVMe r 12.3M w 1.2M` e `NET LAN rx 3.4M tx 0.2M` (`B`, `K`, `M`, `G`; o rotulo e encurtado se a linha passar de `--colunas`).
 
 Cada coletor falha isolado: o que der erro aparece como `n/d` na tela e nunca derruba a requisicao. Sem GPU NVIDIA ou sem sensor de temperatura, a linha simplesmente nao aparece.
+
+## Comandos (POST /comando)
+O servidor continua sem privilegio (`User=nobody`, `ProtectSystem=strict`). Para mudar o atheron a partir do Kindle (com confirmacao em dois toques na tela), o processo web so **registra um pedido**; quem executa e um **executor root separado**, com uma tabela fixa de acoes. Nunca ha shell nem comando montado a partir do pedido.
+
+```
+Kindle --POST /comando {"acao":"..."} + X-Kindle-Token--> kindle-monitor.service (nobody)
+   grava /run/kindle-monitor/spool/<epoch_ns>-<acao>.req (vazio, tmp + rename)
+kindle-monitor-executor.path (DirectoryNotEmpty) --> kindle-monitor-executor.service (root, oneshot)
+   apaga o .req ANTES de executar, roda a acao da tabela, grava /run/kindle-monitor/status/<epoch_ns>-<acao>.json
+GET /comando/estado e metricas.comandos leem esses JSON (e os .req ainda no spool, como "executando")
+```
+
+**Acoes** (ids fixos, contrato com a tela):
+| id | O que faz |
+|---|---|
+| `gpu-descarregar` | `GET http://10.0.0.1:11435/api/ps` e, para cada modelo carregado, `POST /api/generate {"model": nome, "keep_alive": 0}` |
+| `bots-pausar` | para o `ro-bot-scheduler.timer` no container `games` (projeto `core`) e depois `ro-bot stop <bot>` para cada linha do `ro-bot list` com ESTADO `active` |
+| `bots-retomar` | inicia o `ro-bot-scheduler.timer` |
+| `monitor-reiniciar` | `systemctl restart kindle-monitor.service` |
+| `ragnarok-reiniciar` | reinicia `rathena-login`, `rathena-char` e `rathena-map` no container `games`; **recusado** durante a janela de atualizacao automatica (`cerberus-autoupdate.service` ativo) |
+| `ollama-reiniciar` | `systemctl restart ollama-gpu.service`; tambem recusado durante a atualizacao automatica |
+
+**Requisicao**: `POST /comando`, `Content-Type: application/json`, cabecalho `X-Kindle-Token: <64 hex>`, corpo `{"acao": "<id>"}` (ate 1 KB). Respostas: `202 {"estado":"aceito","acao","id"}`; `400` acao invalida/desligada ou JSON ruim; `401` token ausente/errado (sem detalhe); `403` IP de origem fora de `permitidos_de`; `413` corpo > 1 KB; `415` content-type; `429` mais de 1 pedido a cada 5 s no total (com `Retry-After`); `503` comandos desligados (arquivo de token ausente ou ilegivel). O token e comparado com `hmac.compare_digest`. Cada pedido, aceito ou recusado, vai para o journal (stderr) com hora, IP, acao e motivo, nunca o token.
+
+**Estado**: cada resultado e `{"acao","estado":"executando"|"ok"|"falhou","quando":"HH:MM:SS","detalhe":<=80 chars}`; `ultimos(5)` junta os JSON de `comandos.estado` com os pedidos ainda no spool (`executando`), do mais novo ao mais antigo. O executor guarda so os 20 resultados mais novos. O `detalhe` sai em ASCII (a fonte da tela nao tem acentos).
+
+**Config** (secao `comandos`, todas opcionais): `token_arquivo` (padrao `/etc/kindle-monitor/token`, primeira linha com 64 caracteres hex), `permitidos_de` (padrao `["100.64.0.2","100.64.0.3"]`), `acoes` (ids ligados; padrao todos; o executor tambem respeita), `spool` (padrao `/run/kindle-monitor/spool`, criado com modo 0700), `estado` (padrao `/run/kindle-monitor/status`).
+
+**Instalacao no atheron**: `deploy/instalar-atheron.sh` copia o executor para `/opt/kindle-monitor/deploy/`, gera `/etc/kindle-monitor/token` se nao existir (`root:nogroup`, `0640`) **sem imprimir o valor**, instala e habilita `kindle-monitor-executor.path` e reinicia o monitor. Para copiar o token para o Kindle: `sudo head -1 /etc/kindle-monitor/token` no atheron (o instalador nao imprime). Para trocar o token, apague o arquivo e rode o instalador de novo (ou escreva outro hex de 64 caracteres); o servidor le o arquivo a cada pedido. O `/run/kindle-monitor` e do `RuntimeDirectory` do `kindle-monitor.service` (dono `nobody`, `RuntimeDirectoryPreserve=yes`, some no reboot); o executor, root, grava o estado em `status/` com modo 0644 para o web ler. O executor so remove do spool o que tem nome invalido (os temporarios `.*` do web ficam), para a `.path` nao disparar em laco.
 
 ## Testes
 ```
