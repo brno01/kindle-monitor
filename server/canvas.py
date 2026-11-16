@@ -49,6 +49,41 @@ def altura_capital(nome, tam):
     return carregar_fonte(nome, tam)["glifos"][ord("H")]["h"]
 
 
+_tabelas = {}
+
+
+def _tabela_mistura(cor, fundo):
+    """Tabela cobertura(0..255) -> pixel resultante de `cor` sobre `fundo` (mesma conta de `_misturar`)."""
+    t = _tabelas.get((cor, fundo))
+    if t is None:
+        out = bytearray(256)
+        for cob in range(256):
+            if cob >= 255:
+                out[cob] = cor
+            elif cob == 0:
+                out[cob] = fundo
+            else:
+                d = (cor - fundo) * cob
+                out[cob] = fundo + ((d + 127) // 255 if d >= 0 else -((127 - d) // 255))
+        t = _tabelas[(cor, fundo)] = bytes(out)
+    return t
+
+
+_cantos = {}
+
+
+def _canto(r):
+    """Cobertura (0..255) do canto de raio r: lista de r linhas (da borda para dentro) de r bytes."""
+    t = _cantos.get(r)
+    if t is None:
+        t = []
+        for j in range(r):
+            dy = j + 0.5 - r
+            t.append(bytes(int(_clamp01(r + 0.5 - math.hypot(i + 0.5 - r, dy)) * 255 + 0.5) for i in range(r)))
+        _cantos[r] = t
+    return t
+
+
 def _clamp01(v):
     return 0.0 if v < 0 else 1.0 if v > 1 else v
 
@@ -148,24 +183,36 @@ class Canvas:
         x0, y0, x1, y1 = self._caixa(x, y, x + w, y + h)
         if x1 <= x0 or y1 <= y0:
             return
+        canto = _canto(r)
+        W, pix = self.largura, self.pixels
         for yy in range(y0, y1):
-            ci = yy + 0.5
-            if ci < y + r:
-                cy = y + r
-            elif ci > y + h - r:
-                cy = y + h - r
-            else:
-                cy = None
-            if cy is None or r == 0:
+            j = yy - y if yy - y < r else (y + h - 1 - yy if yy >= y + h - r else -1)
+            if j < 0 or r == 0:
                 self.retangulo(x0, yy, x1 - x0, 1, cor)
                 continue
-            dy = ci - cy
             esq_fim, dir_ini = x + r, x + w - r
             self.retangulo(max(x0, esq_fim), yy, max(0, min(x1, dir_ini) - max(x0, esq_fim)), 1, cor)
-            for xx in list(range(x0, min(x1, esq_fim))) + list(range(max(x0, dir_ini), x1)):
-                cx = esq_fim if xx < esq_fim else dir_ini
-                cob = _clamp01(r + 0.5 - math.hypot(xx + 0.5 - cx, dy))
-                self._misturar(yy * self.largura + xx, cor, int(cob * 255 + 0.5))
+            cobs = canto[j]  # r bytes: cobertura do canto esquerdo, da borda para dentro
+            # canto esquerdo: pixels x0 .. min(x1, esq_fim)
+            e1 = min(x1, esq_fim)
+            if e1 > x0:
+                self._misturar_linha(yy * W + x0, cobs[x0 - x:e1 - x], cor)
+            # canto direito: pixels max(x0, dir_ini) .. x1 (espelho da cobertura)
+            d0 = max(x0, dir_ini)
+            if x1 > d0:
+                self._misturar_linha(yy * W + d0, cobs[::-1][d0 - dir_ini:x1 - dir_ini], cor)
+
+    def _misturar_linha(self, base, cobs, cor):
+        """Mistura `cor` sobre pixels[base:base+len(cobs)] com as coberturas `cobs` (bytes)."""
+        pix = self.pixels
+        n = len(cobs)
+        fundo = pix[base:base + n]
+        o = fundo[0]
+        if fundo.count(o) == n:
+            pix[base:base + n] = cobs.translate(_tabela_mistura(cor, o))
+            return
+        for i, cob in enumerate(cobs):
+            self._misturar(base + i, cor, cob)
 
     def contorno_arredondado(self, x, y, w, h, raio, cor_borda, espessura, cor_interna):
         """Borda de `espessura` px e miolo `cor_interna` (pinta o retangulo todo: borda e depois miolo)."""
@@ -198,9 +245,19 @@ class Canvas:
         w, h, bmp = g["w"], g["h"], g["bitmap"]
         x0, y0, x1, y1 = self._caixa(gx, gy, gx + w, gy + h)
         pix, W = self.pixels, self.largura
+        n = x1 - x0
+        if n <= 0:
+            return
         for yy in range(y0, y1):
-            linha = bmp[(yy - gy) * w + (x0 - gx):(yy - gy) * w + (x1 - gx)]
+            ini = (yy - gy) * w + (x0 - gx)
+            linha = bmp[ini:ini + n]
             base = yy * W + x0
+            fundo = pix[base:base + n]
+            o = fundo[0]
+            if fundo.count(o) == n:
+                # fundo chapado (o caso comum): mistura por tabela de 256 entradas, em C
+                pix[base:base + n] = linha.translate(_tabela_mistura(cor, o))
+                continue
             for i, cob in enumerate(linha):
                 if cob == 255:
                     pix[base + i] = cor
