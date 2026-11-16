@@ -6,6 +6,9 @@
 # - whenever the loop is not running the touch screen is on, so the Kindle is never left without touch.
 cd / || exit 1
 D=/mnt/us/kindle-monitor
+LOCK_TOUCH=1
+# shellcheck disable=SC1091
+[ -f "$D/config.sh" ] && . "$D/config.sh"
 SUPF=/tmp/kindle-monitor-sup.pid
 PIDF=/tmp/kindle-monitor.pid
 STOPF=/tmp/kindle-monitor.stop
@@ -26,8 +29,56 @@ touch_on() { lipc-set-prop com.lab126.deviced enable_touch 1 2>/dev/null; }
 
 P1=""
 P2=""
+G1=""
+G2=""
+FIFO=/tmp/kindle-monitor-touch.fifo
+
+# touch reader (LOCK_TOUCH=buttons): evtest grabs the panel so the Kindle UI gets nothing;
+# `script` gives it a pty so it prints line by line; awk turns each lift into "x y" for tap.sh
+# one line per evtest event; a finger lift (tracking id -1) after a contact is one tap.
+# The kernel drops a position event whose value did not change, so a tap on the same
+# pixel as the previous one carries no X/Y: keep the last known position, never reset it.
+read_taps() {
+  cr=$(printf '\r')
+  down=0; tx=""; ty=""
+  while IFS= read -r line; do
+    v=${line##* }; v=${v%"$cr"}
+    case "$line" in
+      *"code 57 "*)
+        if [ "$v" -ge 0 ] 2>/dev/null; then down=1
+        elif [ "$down" = 1 ]; then
+          [ -n "$tx" ] && [ -n "$ty" ] && sh /var/tmp/kindle-monitor/tap.sh "$tx" "$ty"
+          down=0
+        fi ;;
+      *"code 53 "*) tx=$v ;;
+      *"code 54 "*) ty=$v ;;
+    esac
+  done
+}
+grab_alive() { pgrep -f 'evtest --grab /dev/input/event1' >/dev/null 2>&1; }
+grab_start() {
+  grab_alive && return 0
+  grab_stop
+  rm -f "$FIFO"; mkfifo "$FIFO" || return 1
+  lipc-set-prop com.lab126.deviced enable_touch 1 2>/dev/null
+  # `script` quits when its stdin ends, so feed it a pipe that never ends (a long sleep)
+  ( sleep 2000000000 | script -q -f -c 'evtest --grab /dev/input/event1' /dev/null > "$FIFO" 2>/dev/null ) &
+  G1=$!
+  # parse in plain sh: busybox awk buffers a continuous stream, sh `read` does not
+  read_taps < "$FIFO" &
+  G2=$!
+  log "touch reader started"
+}
+grab_stop() {
+  kill $G1 $G2 2>/dev/null
+  pkill -f 'evtest --grab /dev/input/event1' 2>/dev/null
+  pkill -f 'sleep 2000000000' 2>/dev/null
+  G1=""; G2=""; rm -f "$FIFO"
+}
+
 finish() {
   kill $P1 $P2 2>/dev/null
+  grab_stop
   lp=$(loop_pid)
   [ -n "$lp" ] && kill "$lp" 2>/dev/null
   sleep 1
@@ -60,6 +111,7 @@ while :; do
     finish "power button"
   fi
   if [ -z "$(loop_pid)" ]; then
+    grab_stop
     touch_on
     if [ -f "$D/loop.sh" ]; then
       [ "$starts" -gt 0 ] && log "loop not running (USB drive mode or crash?), starting it again"
@@ -69,5 +121,6 @@ while :; do
       if [ "$starts" -gt 5 ]; then sleep 30; else sleep 5; fi
     fi
   fi
+  [ "$LOCK_TOUCH" = buttons ] && [ -n "$(loop_pid)" ] && grab_start
   sleep 2
 done

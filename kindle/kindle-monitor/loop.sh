@@ -1,7 +1,7 @@
 #!/bin/sh
 # kindle-monitor loop: keeps Tailscale up, fetches the status PNG and draws it with FBInk.
-# Started by supervisor.sh (see monitor-ligar.sh). While it runs the touch screen is off;
-# the power button stops it (handled by the supervisor), and so does monitor-desligar.sh.
+# Started by supervisor.sh (see monitor-ligar.sh). Pages and the armed command button come
+# from tap.sh; the power button stops everything (handled by the supervisor).
 D=/mnt/us/kindle-monitor
 . "$D/config.sh"
 F=/mnt/us/libkh/bin/fbink
@@ -9,6 +9,8 @@ TS=/mnt/us/tailscale
 PIDF=/tmp/kindle-monitor.pid
 LOG=/tmp/kindle-monitor.log
 IMG=/tmp/kindle-monitor.png
+BTN=/tmp/kindle-monitor-botoes.txt
+STF=/tmp/kindle-monitor.state
 
 if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then exit 0; fi
 echo $$ > "$PIDF"
@@ -21,6 +23,8 @@ trap '' HUP
 trap 'log "got INT"; cleanup; exit 0' INT
 trap 'log "got TERM"; cleanup; exit 0' TERM
 trap 'log "exit"; cleanup' EXIT
+# tap.sh sends USR1 after a tap: the interruptible sleep below ends and the next fetch is immediate
+trap ':' USR1
 
 log() {
   [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 20000 ] && : > "$LOG"
@@ -37,10 +41,25 @@ ensure_ts() {
   sleep 10
 }
 
+# page and armed button written by tap.sh (values are validated there and here)
+state() {
+  PAGINA=resumo; ARMADO=; ARMADO_ATE=0
+  [ -f "$STF" ] && . "$STF"
+  case "$PAGINA" in resumo|detalhes|comandos) ;; *) PAGINA=resumo ;; esac
+  case "$ARMADO" in *[!a-z-]*) ARMADO= ;; esac
+  [ "$ARMADO_ATE" -ge "$(date +%s)" ] 2>/dev/null || ARMADO=
+  Q="pagina=$PAGINA"
+  [ -n "$ARMADO" ] && Q="$Q&armado=$ARMADO"
+}
+
 fetch() {
+  state
   rm -f "$IMG.new"
-  curl -s -f -m 25 --socks5-hostname localhost:1055 -o "$IMG.new" "http://$SERVER/tela.png" || return 1
-  [ "$(head -c 4 "$IMG.new" | od -An -tx1 | tr -d ' \n')" = "89504e47" ]
+  curl -s -f -m 25 --socks5-hostname localhost:1055 -o "$IMG.new" "http://$SERVER/tela.png?$Q" || return 1
+  [ "$(head -c 4 "$IMG.new" | od -An -tx1 | tr -d ' \n')" = "89504e47" ] || return 1
+  # button layout for the same page, used by tap.sh; keep the old one if this fails
+  curl -s -f -m 10 --socks5-hostname localhost:1055 -o "$BTN.new" "http://$SERVER/botoes.txt?$Q" && mv -f "$BTN.new" "$BTN"
+  return 0
 }
 
 lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
@@ -52,6 +71,7 @@ sleep "$FIRST_DELAY" &
 wait $!
 # from here on the screen belongs to the monitor: touch off, power button is the way out
 # (supervisor.sh, running from RAM, watches the power button and turns touch back on)
+# LOCK_TOUCH=1: touch fully off; LOCK_TOUCH=buttons: the supervisor grabs the touch panel and only the buttons answer
 if [ "${LOCK_TOUCH:-1}" = 1 ]; then
   lipc-set-prop com.lab126.deviced enable_touch 0 2>/dev/null && log "touch disabled"
 fi
