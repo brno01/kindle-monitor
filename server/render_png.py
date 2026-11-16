@@ -430,9 +430,13 @@ def _chips_h(n, cols):
 def _card_chips(c, itens, x, y, w, h, cols):
     _card(c, x, y, w, h)
     c.texto(x + PAD, y + 14 + _cap(NEG, 26), "TODOS OS SERVICOS", NEG, 26, ESCURO)
-    # legenda com as quatro formas, a direita
+    # legenda com as quatro formas, a direita (so se couber ao lado do titulo)
     xd = x + w - PAD
-    for est, nome in (("desconhecido", "n/d"), ("falha", "falha"), ("parado", "parado"), ("ativo", "ativo")):
+    legenda = (("desconhecido", "n/d"), ("falha", "falha"), ("parado", "parado"), ("ativo", "ativo"))
+    larg_leg = sum(int(c.medir(n, REG, 26)) + 8 + 22 + 22 for _, n in legenda)
+    if larg_leg + c.medir("TODOS OS SERVICOS", NEG, 26) + 2 * PAD + 30 > w:
+        legenda = ()
+    for est, nome in legenda:
         wt = int(c.medir(nome, REG, 26))
         c.texto(xd, y + 14 + _cap(REG, 26), nome, REG, 26, ESCURO, alinhar="dir")
         _forma(c, xd - wt - 8 - 22, y + 14 + _cap(REG, 26) - 20, 22, est)
@@ -558,51 +562,46 @@ def _tile(c, x, y, w, h, t):
 
 
 def _desenhar_resumo(c, m, hist, itens):
+    """Tiles, armazenamento, I/O, Atencao, (grade de servicos | resumo por grupo se couber) e Ragnarok."""
     x0, w = MARGEM, c.largura - 2 * MARGEM
     topo, limite = botoes.TOPO, botoes.limite(c.altura)
     discos = _discos(m)
     tiles = _tiles(m, hist, discos)
-    usado_tile = tiles[-1].get("_disco") if tiles and "_disco" in tiles[-1] else None
-    outros = [d for d in discos if d is not usado_tile][:5]
-
-    ht = _h_tile()
-    h_disc = _h_discos(outros)
-    h_io = _h_io(c, m, w)
+    do_tile = tiles[-1].get("_disco") if tiles and "_disco" in tiles[-1] else None
+    outros = [d for d in discos if d is not do_tile][:5]
+    atencao = servicos.resumo(itens)["atencao"]
     rag = m.get("ragnarok") is not None or bool(m.get("portas"))
+
+    # (nome, altura) de cima para baixo; o Ragnarok fica ancorado embaixo, fora da lista
+    blocos = [("tiles", _h_tile())]
+    if outros:
+        blocos.append(("disc", _h_discos(outros)))
+    h_io = _h_io(c, m, w)
+    if h_io:
+        blocos.append(("io", h_io))
     h_rag = 60 if rag else 0
-    r = servicos.resumo(itens)
-    atencao = r["atencao"]
-    # blocos fixos de cima para baixo; o que sobra vai para Atencao e para a grade de chips
-    fixos = [("tiles", ht), ("disc", h_disc), ("io", h_io)]
-    fixos = [(n, h) for n, h in fixos if h]
-    gaps = len(fixos)  # entre cada bloco e o proximo (o meio entra como ultimo)
-    y = topo
-    sobra_total = limite - topo - sum(h for _, h in fixos) - h_rag - GAP * (len(fixos) + (1 if h_rag else 0))
-    # zona do meio: Atencao (+ chips)
-    meio_h = max(0, sobra_total)
-    a_min = _h_atencao(len(atencao), 0 if not atencao else min(len(atencao), 1))
-    chips_cols = None
-    chips_h = 0
+    util = limite - topo - (h_rag + GAP if h_rag else 0)
+
+    def total(bl):
+        return sum(h for _, h in bl) + GAP * (len(bl) - 1)
+
+    ate = _h_atencao(len(atencao))
+    if total(blocos) + GAP + ate > util:  # muitas falhas: Atencao encolhe e mostra "+N itens"
+        k = max(1, (util - total(blocos) - GAP - ATENCAO_TITULO - 14) // ATENCAO_LINHA)
+        ate = _h_atencao(len(atencao), min(k, len(atencao))) if atencao else _h_atencao(0)
+    blocos.append(("atencao", ate))
+    extra = None
     if itens:
-        for cols in (3, 4):
-            if _h_atencao(len(atencao)) + GAP + _chips_h(len(itens), cols) <= meio_h:
-                chips_cols, chips_h = cols, _chips_h(len(itens), cols)
+        for nome, h in (("chips3", _chips_h(len(itens), 3)), ("chips4", _chips_h(len(itens), 4)), ("grupos", H_GRUPOS)):
+            if total(blocos) + GAP + h <= util:
+                extra = (nome, h)
                 break
-    if chips_cols:
-        a_h = _h_atencao(len(atencao))
-        extra = meio_h - a_h - GAP - chips_h
-    else:
-        a_h = _h_atencao(len(atencao))
-        if a_h > meio_h:  # nao cabe tudo: limita as linhas
-            k = max(1, (meio_h - ATENCAO_TITULO - 14) // ATENCAO_LINHA)
-            a_h = _h_atencao(len(atencao), k)
-        extra = meio_h - a_h
-    # a folga vai distribuida entre os gaps (ate 24 px cada); o resto cresce o ultimo bloco do meio
-    n_gaps = len(fixos) + (1 if chips_cols else 0) + (1 if h_rag else 0)
-    por_gap = min(24, max(0, extra) // max(1, n_gaps))
-    gap = GAP + por_gap
-    sobra = extra - por_gap * n_gaps
-    for nome, h in fixos:
+    if extra:
+        blocos.append(extra)
+    sobra = max(0, util - total(blocos))
+    gap = GAP + min(40, sobra // max(1, len(blocos) - 1)) if len(blocos) > 1 else GAP
+    y = topo
+    for nome, h in blocos:
         if nome == "tiles":
             n = len(tiles)
             tw = (w - (n - 1) * GAP) // n
@@ -610,18 +609,15 @@ def _desenhar_resumo(c, m, hist, itens):
                 _tile(c, x0 + i * (tw + GAP), y, tw, h, t)
         elif nome == "disc":
             _card_discos(c, outros, x0, y, w)
-        else:
+        elif nome == "io":
             _card_io(c, m, x0, y, w, h)
+        elif nome == "atencao":
+            _card_atencao(c, atencao, x0, y, w, h)
+        elif nome == "grupos":
+            _card_grupos(c, itens, x0, y, w, h)
+        else:
+            _card_chips(c, itens, x0, y, w, h, 3 if nome == "chips3" else 4)
         y += h + gap
-    if not chips_cols:
-        a_h += max(0, min(sobra, 120))  # sem chips, Atencao pode crescer um pouco (nunca alem do que cabe)
-        a_h = min(a_h, max(0, limite - h_rag - (GAP if h_rag else 0) - y)) if a_h > meio_h else a_h
-    _card_atencao(c, atencao, x0, y, w, a_h)
-    y += a_h + gap
-    if chips_cols:
-        ch_h = chips_h + max(0, sobra)
-        _card_chips(c, itens, x0, y, w, ch_h, chips_cols)
-        y += ch_h + gap
     if h_rag:
         _linha_ragnarok(c, m, x0, limite - h_rag, w, h_rag)
 
@@ -662,7 +658,9 @@ def _desenhar_servicos(c, m, itens, p):
         _forma(c, MARGEM + 10, yc - 16, 32, est)
         # coluna de estado fixa: alinha entre linhas com 2, 1 ou nenhum botao
         x_estado = MARGEM + w - (bw * 2 + GAP) - GAP - sw
-        txt = _ajustar(c, _estado_txt(it), NEG if est == "falha" else REG, 26, sw - 8)
+        txt = _estado_txt(it)
+        if c.medir(txt, NEG if est == "falha" else REG, 26) > sw - 8:
+            txt = {"falha": "FALHA", "desconhecido": "desconhecido"}.get(est, txt.split("  ")[0])
         c.texto(x_estado, yc + _cap(REG, 26) // 2, txt, NEG if est == "falha" else REG, 26,
                 PRETO if est != "desconhecido" else MEDIO)
         lx = MARGEM + 10 + 32 + 16
@@ -761,25 +759,7 @@ def _blocos_detalhes(c, m, itens, w, hist):
         blocos.append((52 + len(series) * 76 + 8, historico))
     # servicos por grupo
     if itens:
-        cont = {}
-        for it in itens:
-            t = cont.setdefault(it.get("grupo"), [0, 0])
-            t[1] += 1
-            t[0] += 1 if it.get("estado") == "ativo" else 0
-        grupos = [g for g in servicos.GRUPOS if g in cont]
-
-        def porgrupo(c, x, y, h):
-            _card(c, x, y, w, h)
-            c.texto(x + PAD, y + 14 + _cap(NEG, 26), "SERVICOS POR GRUPO", NEG, 26, ESCURO)
-            cw = (w - 2 * PAD) // len(grupos)
-            for i, g in enumerate(grupos):
-                gx = x + PAD + i * cw
-                _texto_c(c, gx, y + 44 + 22, servicos.TITULOS_GRUPO[g], NEG, 26, ESCURO)
-                a, t = cont[g]
-                _texto_c(c, gx, y + 44 + 22 + 40, "%d/%d" % (a, t), NEG, 34, PRETO if a == t else PRETO)
-                if a != t:
-                    c.retangulo(gx, y + 44 + 22 + 40 + 20, int(c.medir("%d/%d" % (a, t), NEG, 34)), 3, PRETO)
-        blocos.append((44 + 22 + 40 + 34, porgrupo))
+        blocos.append((H_GRUPOS, lambda c, x, y, h: _card_grupos(c, itens, x, y, w, h)))
     # ragnarok
     if m.get("ragnarok") is not None or m.get("portas"):
         blocos.append((60, lambda c, x, y, h: _linha_ragnarok(c, m, x, y, w, h)))
@@ -848,10 +828,13 @@ def _card_grupos(c, itens, x, y, w, h):
     _card(c, x, y, w, h)
     c.texto(x + PAD, y + 14 + _cap(NEG, 26), "SERVICOS POR GRUPO", NEG, 26, ESCURO)
     cw = (w - 2 * PAD) // max(1, len(grupos))
+    titulos = {g: servicos.TITULOS_GRUPO[g] for g in grupos}
+    if any(c.medir(t, NEG, 26) > cw - 10 for t in titulos.values()):  # tela estreita: nomes curtos
+        titulos = {g: g.upper() for g in grupos}
     for i, g in enumerate(grupos):
         gx = x + PAD + i * cw
         a, t = cont[g]
-        _texto_c(c, gx, y + 44 + 22, servicos.TITULOS_GRUPO[g], NEG, 26, ESCURO)
+        _texto_c(c, gx, y + 44 + 22, _ajustar(c, titulos[g], NEG, 26, cw - 10), NEG, 26, ESCURO)
         txt = "%d/%d" % (a, t)
         _texto_c(c, gx, y + 44 + 22 + 40, txt, NEG, 34, PRETO)
         if a != t:  # sublinhado: nem todos ativos

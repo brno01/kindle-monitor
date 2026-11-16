@@ -73,7 +73,7 @@ def limite(altura=1648):
 
 def medidas_linha(largura):
     """(largura do botao, largura da coluna de estado) conforme a largura da tela."""
-    return (190, 190) if largura >= 1100 else (150, 110)
+    return (190, 190) if largura >= 1100 else (170, 110)
 
 
 def geometria_servicos(itens, largura=1236, altura=1648, p=1):
