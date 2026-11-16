@@ -8,11 +8,11 @@ if [ -f /tmp/kindle-monitor-sup.pid ] && kill -0 "$(cat /tmp/kindle-monitor-sup.
   exit 0
 fi
 # the supervisor runs from RAM so USB drive mode (which unmounts /mnt/us) cannot kill it
-mkdir -p /var/tmp/kindle-monitor && cp /mnt/us/kindle-monitor/supervisor.sh /var/tmp/kindle-monitor/supervisor.sh
+mkdir -p /var/tmp/kindle-monitor && cp /mnt/us/kindle-monitor/supervisor.sh /mnt/us/kindle-monitor/tap.sh /var/tmp/kindle-monitor/
 ( setsid nohup sh /var/tmp/kindle-monitor/supervisor.sh >/dev/null 2>&1 < /dev/null & )
 sleep 3
 if [ -f /tmp/kindle-monitor-sup.pid ] && kill -0 "$(cat /tmp/kindle-monitor-sup.pid)" 2>/dev/null; then
-  echo "Monitor ligado. O toque fica desligado; para sair, aperte o botao de energia."
+  echo "Monitor ligado. So os botoes da tela respondem; para sair, aperte o botao de energia."
 else
   echo "Falhou ao ligar. Veja /tmp/kindle-monitor.log"
 fi
