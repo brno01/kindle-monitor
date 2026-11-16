@@ -2,7 +2,8 @@
 Description=kindle-monitor: watch the command spool
 
 [Path]
-DirectoryNotEmpty=/run/kindle-monitor/spool
+# Only a real request triggers the executor; a stray .tmp or subdirectory cannot loop it.
+PathExistsGlob=/run/kindle-monitor/spool/*.req
 Unit=kindle-monitor-executor.service
 
 [Install]

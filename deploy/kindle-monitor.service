@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=nobody
+Group=nogroup
 ExecStart=/usr/bin/python3 -I /opt/kindle-monitor/server/monitor_server.py --bind 100.64.0.1 --porta 8765 --config /etc/kindle-monitor/config.json
 Restart=always
 RestartSec=10
@@ -19,11 +20,9 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 CapabilityBoundingSet=
 SystemCallArchitectures=native
 MemoryMax=128M
-# Spool and status of the command API; kept across restarts (the executor writes status as root).
-RuntimeDirectory=kindle-monitor
-RuntimeDirectoryMode=0755
-RuntimeDirectoryPreserve=yes
-ReadWritePaths=/run/kindle-monitor
+# The directories under /run/kindle-monitor are created by root (kindle-monitor.tmpfiles); the web
+# service may only create files in the spool (sticky, group nogroup), never own or rename the directories.
+ReadWritePaths=/run/kindle-monitor/spool
 
 [Install]
 WantedBy=multi-user.target

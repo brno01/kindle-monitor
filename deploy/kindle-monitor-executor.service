@@ -1,5 +1,7 @@
 [Unit]
 Description=kindle-monitor: run requested commands (root, fixed action table)
+# The path unit re-triggers this on every new request; do not let systemd rate-limit it into failure.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
@@ -9,3 +11,11 @@ NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
 TimeoutStartSec=180
+# Hardening. VALIDATE ON THE HOST (see server/README.md): systemctl needs D-Bus, incus its unix socket.
+ProtectSystem=strict
+ReadWritePaths=/run/kindle-monitor
+ReadWritePaths=-/var/lib/incus/unix.socket
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+# AF_UNIX is required (D-Bus, incus socket); do not remove it.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

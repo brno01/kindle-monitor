@@ -5,12 +5,19 @@ O servidor web (User=nobody) so grava arquivos vazios "<epoch_ns>-<acao>.req" no
 roda como root (kindle-monitor-executor.service, acionado pela .path), valida o NOME do arquivo, apaga o
 pedido ANTES de executar (nunca repete), ignora o conteudo e procura o id numa tabela FIXA de acoes.
 Nada do pedido entra em comando algum; nunca ha shell. Resultado em JSON no diretorio de estado.
+
+Seguranca dos diretorios: /run/kindle-monitor, o spool e o status sao criados pelo tmpfiles.d (root). Aqui
+cada um e aberto com O_DIRECTORY|O_NOFOLLOW e conferido com fstat (dono, permissoes); dai em diante tudo
+usa dir_fd, nunca caminho, entao trocar um diretorio por symlink nao leva o root para fora. Se algo nao
+bater, recusa tudo (excecao Recusa, saida 1). Se os diretorios nao existem, sai 0 sem criar nada.
 Biblioteca padrao apenas.
 """
 import argparse
+import grp
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -27,10 +34,14 @@ TIMEOUT_CMD = 40
 TIMEOUT_BOT = 20
 TIMEOUT_HTTP = 5
 DETALHE_MAX = 80
-PASSADAS_MAX = 10
+PEDIDOS_MAX = 10          # pedidos por passada
+VALIDADE_S = 60           # pedido mais velho que isso e descartado
+TEMP_VELHO_S = 60         # temporarios "." mais velhos que isso sao apagados
+COOLDOWN_S = 30           # intervalo minimo entre duas execucoes da mesma acao
+COOLDOWN_ARQ = ".cooldown.json"
 RE_REQ = re.compile(r"^(\d{1,20})-([a-z-]{3,32})\.req$")
 RE_JSON = re.compile(r"^(\d{1,20})-[a-z-]{3,32}\.json$")
-RE_BOT = re.compile(r"^[a-z0-9_-]{1,32}$")
+RE_BOT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")  # nunca comeca com "-" (viraria opcao)
 PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 INCUS = ["incus", "exec", "games", "--project", "core", "--"]
@@ -49,7 +60,61 @@ BLOQUEADAS_NO_AUTOUPDATE = ("ragnarok-reiniciar", "ollama-reiniciar")
 
 
 class Falha(Exception):
-    """Falha esperada; o texto vira o detalhe (ASCII, ate 80 chars)."""
+    """Falha esperada; o texto vira o detalhe (ASCII, ate 80 chars). rc e o codigo de saida, se houver."""
+    def __init__(self, msg, rc=1):
+        super().__init__(msg)
+        self.rc = rc
+
+
+class Recusa(Exception):
+    """Diretorio fora do esperado (symlink, dono, permissoes): o executor recusa tudo."""
+
+
+class Interrompido(BaseException):
+    """SIGTERM durante um pedido (BaseException para nao cair nos 'except Exception')."""
+
+
+def _sigterm(signum, frame):
+    raise Interrompido()
+
+
+def _log_padrao(linha):
+    print(linha, file=sys.stderr, flush=True)
+
+
+def _curto(texto, limite=DETALHE_MAX):
+    return re.sub(r"[^A-Za-z0-9 _.,:;()/=+-]", "?", str(texto))[:limite]
+
+
+def linha_log(acao, pid, rc, estado, detalhe):
+    return "acao=%s id=%s rc=%s estado=%s detalhe=%s" % (_curto(acao, 32), _curto(pid, 20), rc, estado,
+                                                         _curto(detalhe))
+
+
+def validar_cfg(c):
+    """Valida a secao "comandos" da config. ValueError com a causa."""
+    if not isinstance(c, dict):
+        raise ValueError("comandos deve ser um objeto")
+    r = {"spool": SPOOL_PADRAO, "estado": ESTADO_PADRAO, "acoes": list(ACOES)}
+    r.update({k: v for k, v in c.items() if k in r})
+    for k in ("spool", "estado"):
+        if not isinstance(r[k], str) or not os.path.isabs(r[k]):
+            raise ValueError("comandos.%s deve ser um caminho absoluto (texto)" % k)
+    if os.path.dirname(r["spool"]) != os.path.dirname(r["estado"]) or \
+            os.path.basename(r["spool"]) == os.path.basename(r["estado"]):
+        raise ValueError("comandos.spool e comandos.estado devem ser irmaos no mesmo diretorio")
+    if not isinstance(r["acoes"], list) or not all(isinstance(a, str) and a in ACOES for a in r["acoes"]):
+        raise ValueError("comandos.acoes deve ser lista de ids conhecidos: %s" % ", ".join(ACOES))
+    return r
+
+
+def _gid_nogroup():
+    for nome in ("nogroup", "nobody"):
+        try:
+            return grp.getgrnam(nome).gr_gid
+        except KeyError:
+            pass
+    raise Recusa("grupo nogroup inexistente")
 
 
 def executar_padrao(argv, timeout):
@@ -81,123 +146,267 @@ def bots_ativos(texto):
 
 class Executor:
     def __init__(self, cfg, executar=executar_padrao, http=http_padrao, agora_ns=time.time_ns,
-                 ollama=OLLAMA_PADRAO):
-        self.spool = cfg.get("spool", SPOOL_PADRAO)
-        self.estado = cfg.get("estado", ESTADO_PADRAO)
-        self.habilitadas = [a for a in cfg.get("acoes", ACOES) if a in ACOES]
+                 ollama=OLLAMA_PADRAO, dono=None, log=_log_padrao):
+        """`dono` = (uid, gid do spool) esperado; padrao (0, nogroup). Injetavel para testes sem root."""
+        cfg = validar_cfg(cfg)
+        self.spool = cfg["spool"]
+        self.estado = cfg["estado"]
+        self.habilitadas = list(cfg["acoes"])
         self.executar = executar
         self.http = http
         self.agora_ns = agora_ns
         self.ollama = ollama.rstrip("/")
+        self.dono = dono
+        self.log = log
+        self.fd_spool = self.fd_estado = None
 
-    # ---------------------------------------------------------------- fila
-    def _pedidos(self):
+    # ------------------------------------------------------- diretorios
+    @staticmethod
+    def _abrir_dir(nome, rotulo, dir_fd=None):
         try:
-            nomes = os.listdir(self.spool)
-        except OSError:
-            return []
-        achados = []
-        for n in nomes:
-            m = RE_REQ.match(n)
-            if m:
-                achados.append((int(m.group(1)), n, m.group(2)))
-        achados.sort()
-        return achados
+            return os.open(nome, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        except FileNotFoundError:
+            raise
+        except OSError as e:  # ELOOP (symlink), ENOTDIR, EACCES...
+            raise Recusa("%s: nao abre como diretorio sem symlink (%s)" % (rotulo, e.strerror))
 
-    def _varrer_lixo(self):
-        """Remove (sem seguir links) o que nao tem nome valido, para a .path nao disparar em laco.
-        Nomes com '.' inicial sao os temporarios do servidor web e ficam."""
+    def _conferir(self, fd, rotulo, grupo=None):
+        uid, gid_spool = self.dono if self.dono else (0, None)
+        st = os.fstat(fd)
+        if st.st_uid != uid:
+            raise Recusa("%s: dono uid=%d, esperado %d" % (rotulo, st.st_uid, uid))
+        if grupo:  # spool: root:nogroup, sticky, sem escrita para "outros"
+            esperado = gid_spool if gid_spool is not None else _gid_nogroup()
+            if st.st_gid != esperado:
+                raise Recusa("%s: grupo gid=%d, esperado %d" % (rotulo, st.st_gid, esperado))
+            if not st.st_mode & stat.S_ISVTX:
+                raise Recusa("%s: sem sticky bit" % rotulo)
+            if st.st_mode & stat.S_IWOTH:
+                raise Recusa("%s: gravavel por outros" % rotulo)
+        elif st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise Recusa("%s: gravavel por grupo/outros" % rotulo)
+
+    def _abrir(self):
+        """Abre pai, spool e status (nesta ordem) com verificacao. None se ainda nao existem."""
+        pai = os.path.dirname(self.spool)
+        abertos = []
         try:
-            nomes = os.listdir(self.spool)
-        except OSError:
-            return
-        for n in nomes:
-            if n.startswith(".") or RE_REQ.match(n):
-                continue
-            caminho = os.path.join(self.spool, n)
             try:
-                if not stat.S_ISDIR(os.lstat(caminho).st_mode):
-                    os.unlink(caminho)
+                fd_pai = self._abrir_dir(pai, "pai")
+            except FileNotFoundError:
+                return self._ausente()
+            abertos.append(fd_pai)
+            self._conferir(fd_pai, "pai")
+            novos = []
+            for nome, rotulo, grupo in ((os.path.basename(self.spool), "spool", True),
+                                        (os.path.basename(self.estado), "status", False)):
+                try:
+                    fd = self._abrir_dir(nome, rotulo, dir_fd=fd_pai)
+                except FileNotFoundError:
+                    return self._ausente()
+                abertos.append(fd)
+                novos.append(fd)
+                self._conferir(fd, rotulo, grupo)
+            self.fd_spool, self.fd_estado = novos
+            return True
+        except BaseException:
+            self._fechar(abertos)
+            raise
+        finally:
+            self._pai_fds = abertos
+
+    def _ausente(self):
+        self.log("diretorios do spool/status ainda nao existem (tmpfiles.d); nada a fazer")
+        return None
+
+    @staticmethod
+    def _fechar(fds):
+        for fd in fds:
+            try:
+                os.close(fd)
             except OSError:
                 pass
 
+    # ---------------------------------------------------------------- fila
+    def processar_spool(self):
+        self._pai_fds = []
+        try:
+            if self._abrir() is None:
+                return 0
+            return self._passada()
+        finally:
+            self._fechar(self._pai_fds)
+            self._pai_fds = []
+            self.fd_spool = self.fd_estado = None
+
+    def _passada(self):
+        agora = self.agora_ns()
+        self._varrer(self.fd_spool, agora)
+        self._varrer(self.fd_estado, agora)
+        try:
+            nomes = os.listdir(self.fd_spool)
+        except OSError as e:
+            self.log("nao consegui listar o spool: %s" % e.strerror)
+            return 0
+        pedidos = []
+        for n in nomes:
+            if not n.endswith(".req"):
+                continue  # fora do glob da .path: ignorado
+            m = RE_REQ.match(n)
+            if m:
+                pedidos.append((int(m.group(1)), n, m.group(2)))
+            else:
+                self._descartar(n)
+        pedidos.sort()
+        vistos = set()
+        cooldown = self._ler_cooldown()
+        feitos = 0
+        for num, nome, acao in pedidos[:PEDIDOS_MAX]:
+            if not self._consumir(nome):
+                continue
+            feitos += 1
+            self._executar_pedido(num, nome[:-len(".req")], acao, agora, vistos, cooldown)
+        return feitos
+
+    def _varrer(self, fd, agora_ns):
+        """Apaga temporarios (nome com '.' inicial) com mais de TEMP_VELHO_S s; nunca segue link nem apaga diretorio."""
+        try:
+            nomes = os.listdir(fd)
+        except OSError:
+            return
+        for n in nomes:
+            if not n.startswith(".") or n == COOLDOWN_ARQ:
+                continue
+            try:
+                st = os.stat(n, dir_fd=fd, follow_symlinks=False)
+                if not stat.S_ISDIR(st.st_mode) and agora_ns / 1e9 - st.st_mtime > TEMP_VELHO_S:
+                    os.unlink(n, dir_fd=fd)
+            except OSError:
+                pass
+
+    def _descartar(self, nome):
+        try:
+            if not stat.S_ISDIR(os.stat(nome, dir_fd=self.fd_spool, follow_symlinks=False).st_mode):
+                os.unlink(nome, dir_fd=self.fd_spool)
+        except OSError:
+            pass
+
     def _consumir(self, nome):
         """Abre sem seguir symlink, confere que e arquivo comum e apaga. Conteudo nunca e lido."""
-        caminho = os.path.join(self.spool, nome)
         try:
-            fd = os.open(caminho, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            fd = os.open(nome, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.fd_spool)
         except OSError:
-            self._descartar(caminho)  # symlink ou sumiu: nao executa
+            self._descartar(nome)  # symlink, diretorio ou sumiu: nao executa
             return False
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
-                self._descartar(caminho)
+                self._descartar(nome)
                 return False
-            os.unlink(caminho)
+            os.unlink(nome, dir_fd=self.fd_spool)
             return True
         except OSError:
             return False
         finally:
             os.close(fd)
 
-    @staticmethod
-    def _descartar(caminho):
-        try:
-            if not stat.S_ISDIR(os.lstat(caminho).st_mode):
-                os.unlink(caminho)
-        except OSError:
-            pass
-
-    def processar_spool(self):
-        self._varrer_lixo()
-        n = 0
-        for _, nome, acao in self._pedidos():
-            if not self._consumir(nome):
-                continue
-            pid = nome[:-len(".req")]
-            n += 1
-            self._executar_pedido(pid, acao)
-        return n
-
-    def _executar_pedido(self, pid, acao):
+    def _executar_pedido(self, num, pid, acao, agora_ns, vistos, cooldown):
+        if agora_ns - num > VALIDADE_S * 10 ** 9:
+            return self._final(num, pid, acao, "falhou", "pedido expirado")
         if acao not in ACOES:
-            return self._gravar(pid, acao, "falhou", "acao desconhecida")
+            return self._final(num, pid, acao, "falhou", "acao desconhecida")
         if acao not in self.habilitadas:
-            return self._gravar(pid, acao, "falhou", "acao desligada na config")
+            return self._final(num, pid, acao, "falhou", "acao desligada na config")
+        if acao in vistos:
+            return self._final(num, pid, acao, "falhou", "duplicado")
+        vistos.add(acao)
+        agora_s = agora_ns / 1e9
+        ultimo = cooldown.get(acao)
+        if ultimo is not None and 0 <= agora_s - ultimo < COOLDOWN_S:
+            return self._final(num, pid, acao, "falhou", "cooldown de %d s" % COOLDOWN_S)
+        cooldown[acao] = agora_s  # registrado ANTES de executar: queda no meio tambem conta
+        self._gravar_cooldown(cooldown)
         self._gravar(pid, acao, "executando", "")
         try:
             detalhe = self._rodar(acao)
-            self._gravar(pid, acao, "ok", detalhe)
         except Falha as e:
-            self._gravar(pid, acao, "falhou", str(e))
+            return self._final(num, pid, acao, "falhou", str(e), e.rc)
+        except Interrompido:
+            self._final(num, pid, acao, "falhou", "interrompido")
+            raise
         except Exception:
-            self._gravar(pid, acao, "falhou", "erro inesperado")
+            return self._final(num, pid, acao, "falhou", "erro inesperado")
+        self._final(num, pid, acao, "ok", detalhe, 0)
+
+    def _final(self, num, pid, acao, estado, detalhe, rc=1):
+        self.log(linha_log(acao, num, rc, estado, detalhe))
+        self._gravar(pid, acao, estado, detalhe)
 
     # ------------------------------------------------------------- estado
+    def _gravar_arquivo(self, nome, dados):
+        """tmp (O_EXCL, root, no dir_fd do status) + rename. Erros de E/S viram log, nunca derrubam a passada."""
+        tmp = ".%s.tmp" % nome.lstrip(".")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK
+        try:
+            try:
+                fd = os.open(tmp, flags, 0o644, dir_fd=self.fd_estado)
+            except FileExistsError:  # sobra de uma queda; nao segue: unlink remove o link, nao o alvo
+                os.unlink(tmp, dir_fd=self.fd_estado)
+                fd = os.open(tmp, flags, 0o644, dir_fd=self.fd_estado)
+            with os.fdopen(fd, "wb") as f:
+                os.fchmod(f.fileno(), 0o644)
+                f.write(dados)
+            os.rename(tmp, nome, src_dir_fd=self.fd_estado, dst_dir_fd=self.fd_estado)
+        except OSError as e:
+            self.log("falha ao gravar %s: %s" % (_curto(nome, 40), e.strerror))
+            try:
+                os.unlink(tmp, dir_fd=self.fd_estado)
+            except OSError:
+                pass
+
     def _gravar(self, pid, acao, estado, detalhe):
-        os.makedirs(self.estado, mode=0o755, exist_ok=True)
-        os.chmod(self.estado, 0o755)
         dados = {"acao": acao, "estado": estado, "quando": time.strftime("%H:%M:%S"),
                  "detalhe": detalhe[:DETALHE_MAX]}
-        tmp = os.path.join(self.estado, ".%s.tmp" % pid)
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(dados, f)
-        os.chmod(tmp, 0o644)
-        os.rename(tmp, os.path.join(self.estado, pid + ".json"))
+        self._gravar_arquivo(pid + ".json", json.dumps(dados).encode("utf-8"))
         if estado != "executando":
             self._limpar()
 
+    def _ler_cooldown(self):
+        try:
+            fd = os.open(COOLDOWN_ARQ, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.fd_estado)
+        except OSError:
+            return {}
+        try:
+            st = os.fstat(fd)
+            uid = self.dono[0] if self.dono else 0
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != uid:
+                return {}
+            dados = json.loads(os.read(fd, 4096).decode("utf-8"))
+        except (OSError, ValueError):
+            return {}
+        finally:
+            os.close(fd)
+        if not isinstance(dados, dict):
+            return {}
+        return {k: float(v) for k, v in dados.items()
+                if k in ACOES and isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+    def _gravar_cooldown(self, cooldown):
+        self._gravar_arquivo(COOLDOWN_ARQ, json.dumps(cooldown).encode("utf-8"))
+
     def _limpar(self):
+        try:
+            nomes = os.listdir(self.fd_estado)
+        except OSError:
+            return
         achados = []
-        for n in os.listdir(self.estado):
+        for n in nomes:
             m = RE_JSON.match(n)
             if m:
                 achados.append((int(m.group(1)), n))
         achados.sort(reverse=True)
         for _, n in achados[GUARDAR:]:
             try:
-                os.unlink(os.path.join(self.estado, n))
+                os.unlink(n, dir_fd=self.fd_estado)
             except OSError:
                 pass
 
@@ -210,7 +419,7 @@ class Executor:
         except OSError:
             raise Falha("comando indisponivel")
         if rc != 0:
-            raise Falha("codigo de saida %s" % rc)
+            raise Falha("codigo de saida %s" % rc, rc)
         return out
 
     def _autoupdate_ativo(self):
@@ -260,24 +469,33 @@ class Executor:
 
 
 def carregar_cfg(caminho):
+    """Le e valida a secao "comandos". OSError/ValueError com a causa."""
     with open(caminho, "r", encoding="utf-8") as f:
-        c = json.load(f).get("comandos", {})
-    return c if isinstance(c, dict) else {}
+        dados = json.load(f)
+    if not isinstance(dados, dict):
+        raise ValueError("config: raiz deve ser um objeto")
+    return validar_cfg(dados.get("comandos", {}))
 
 
-def main(argv=None):
+def main(argv=None, log=_log_padrao):
     p = argparse.ArgumentParser(description="Executor root do kindle-monitor.")
     p.add_argument("--config", required=True)
     args = p.parse_args(argv)
     try:
         cfg = carregar_cfg(args.config)
     except (OSError, ValueError) as e:
-        print("erro na config: %s" % e, file=sys.stderr)
-        return 2
-    ex = Executor(cfg)
-    for _ in range(PASSADAS_MAX):
-        if ex.processar_spool() == 0:
-            break
+        # exit 0: config ruim nao pode virar laco de falhas disparado pela .path
+        log("config invalida, nada feito: %s" % _curto(e, 120))
+        return 0
+    signal.signal(signal.SIGTERM, _sigterm)
+    try:
+        Executor(cfg, log=log).processar_spool()
+    except Recusa as e:
+        log("recusado: %s" % _curto(e, 160))
+        return 1
+    except Interrompido:
+        log("interrompido por SIGTERM")
+        return 143
     return 0
 
 

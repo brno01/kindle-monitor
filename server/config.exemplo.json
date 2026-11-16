@@ -35,9 +35,9 @@
     "redes": [{"rotulo": "LAN", "if": "enp2s0f1"}, {"rotulo": "Tailnet", "if": "tailscale0"}]
   },
 
-  "_comentario_comandos": "API de comandos (POST /comando), so para o atheron com o executor root instalado (deploy/). token_arquivo: primeira linha com 64 caracteres hex; sem o arquivo os comandos ficam desligados (503). permitidos_de: IPs de origem aceitos. acoes: ids ligados (gpu-descarregar, bots-pausar, bots-retomar, monitor-reiniciar, ragnarok-reiniciar, ollama-reiniciar). spool e estado: diretorios em /run/kindle-monitor. Omita a secao para usar os padroes.",
+  "_comentario_comandos": "API de comandos (POST /comando), so para o atheron com o executor root instalado (deploy/). token_hash_arquivo: primeira linha com o sha256 (64 hex) do token; o web nunca le o token cru (fica em token.raw, so root); sem o arquivo os comandos ficam desligados (503). permitidos_de: IPs de origem aceitos. acoes: ids ligados (gpu-descarregar, bots-pausar, bots-retomar, monitor-reiniciar, ragnarok-reiniciar, ollama-reiniciar). spool e estado: diretorios em /run/kindle-monitor. Omita a secao para usar os padroes.",
   "comandos": {
-    "token_arquivo": "/etc/kindle-monitor/token",
+    "token_hash_arquivo": "/etc/kindle-monitor/token.sha256",
     "permitidos_de": ["100.64.0.2", "100.64.0.3"],
     "acoes": ["gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar", "ragnarok-reiniciar", "ollama-reiniciar"],
     "spool": "/run/kindle-monitor/spool",

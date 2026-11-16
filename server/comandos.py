@@ -4,6 +4,7 @@ O processo web so REGISTRA o pedido: grava um arquivo vazio "<epoch_ns>-<acao>.r
 Quem executa e o executor root (deploy/kindle-monitor-executor.py), com uma tabela FIXA de acoes.
 Nada aqui monta comando a partir do texto do pedido.
 """
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -18,7 +19,7 @@ ACOES = (
     "gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar",
     "ragnarok-reiniciar", "ollama-reiniciar",
 )
-TOKEN_PADRAO = "/etc/kindle-monitor/token"
+TOKEN_HASH_PADRAO = "/etc/kindle-monitor/token.sha256"
 PERMITIDOS_PADRAO = ("100.64.0.2", "100.64.0.3")  # Kindle e nomad
 SPOOL_PADRAO = "/run/kindle-monitor/spool"
 ESTADO_PADRAO = "/run/kindle-monitor/status"
@@ -39,10 +40,10 @@ def validar_config(raw):
     if not isinstance(raw, dict):
         raise ValueError("config: comandos deve ser um objeto")
     raw = {k: v for k, v in raw.items() if not str(k).startswith("_")}
-    c = {"token_arquivo": TOKEN_PADRAO, "permitidos_de": list(PERMITIDOS_PADRAO),
+    c = {"token_hash_arquivo": TOKEN_HASH_PADRAO, "permitidos_de": list(PERMITIDOS_PADRAO),
          "acoes": list(ACOES), "spool": SPOOL_PADRAO, "estado": ESTADO_PADRAO}
     c.update(raw)
-    for k in ("token_arquivo", "spool", "estado"):
+    for k in ("token_hash_arquivo", "spool", "estado"):
         if not isinstance(c[k], str) or not c[k]:
             raise ValueError("config: comandos.%s deve ser um caminho" % k)
     if not isinstance(c["permitidos_de"], list):
@@ -82,13 +83,14 @@ class Comandos:
             time.strftime("%Y-%m-%d %H:%M:%S"), _seguro(ip, 45), _seguro(acao) if acao else "-",
             resultado, (" motivo=" + motivo) if motivo else ""))
 
-    def _token(self):
+    def _hash(self):
+        """sha256 (64 hex) do token, lido do arquivo. O web nunca ve o token cru."""
         try:
-            with open(self.cfg["token_arquivo"], "r", encoding="ascii") as f:
+            with open(self.cfg["token_hash_arquivo"], "r", encoding="ascii") as f:
                 linha = f.readline().strip()
         except (OSError, ValueError):
             return None
-        return linha.encode("ascii") if RE_TOKEN.match(linha) else None
+        return linha.lower() if RE_TOKEN.match(linha) else None
 
     def processar(self, ip, token, tipo, tamanho, corpo):
         """Devolve (status, dict, cabecalhos extras). `corpo` e um arquivo com read()."""
@@ -96,13 +98,13 @@ class Comandos:
             self._auditar(ip, acao, "recusado", motivo)
             return status, {"erro": msg}, extra or {}
 
-        esperado = self._token()
-        if esperado is None:
-            return recusa(503, "comandos desligados", "token ausente ou ilegivel")
-        if ip not in self.cfg["permitidos_de"]:
+        if ip not in self.cfg["permitidos_de"]:  # antes de revelar se os comandos estao ligados
             return recusa(403, "origem nao permitida", "ip fora da lista")
+        esperado = self._hash()
+        if esperado is None:
+            return recusa(503, "comandos desligados", "hash do token ausente ou ilegivel")
         enviado = token.encode("utf-8", "replace") if isinstance(token, str) else b""
-        if not hmac.compare_digest(enviado, esperado):
+        if not hmac.compare_digest(hashlib.sha256(enviado).hexdigest(), esperado):
             return recusa(401, "nao autorizado", "token ausente ou errado")
         if (tipo or "").split(";")[0].strip().lower() != JSON_TIPO:
             return recusa(415, "use application/json", "content-type")
@@ -110,7 +112,10 @@ class Comandos:
             return recusa(400, "corpo invalido", "content-length")
         if tamanho > CORPO_MAX:
             return recusa(413, "corpo grande demais", "corpo > 1 KB")
-        dados = corpo.read(tamanho)
+        try:
+            dados = corpo.read(tamanho)
+        except OSError:  # inclui TimeoutError: cliente lento
+            return recusa(408, "tempo esgotado", "leitura do corpo")
         try:
             pedido = json.loads(dados.decode("utf-8"))
             acao = pedido["acao"]
@@ -128,6 +133,8 @@ class Comandos:
                               {"Retry-After": str(espera)})
             try:
                 pid = self._gravar(acao)
+            except (FileNotFoundError, NotADirectoryError):
+                return recusa(503, "comandos desligados", "spool ausente", acao)
             except OSError:
                 return recusa(500, "erro interno", "falha ao gravar o pedido", acao)
             self._ultimo = agora
@@ -136,8 +143,7 @@ class Comandos:
 
     def _gravar(self, acao):
         spool = self.cfg["spool"]
-        os.makedirs(spool, mode=0o700, exist_ok=True)
-        os.chmod(spool, 0o700)
+        # O spool e criado pelo tmpfiles.d (root); o web nunca cria nem muda modo.
         pid = "%d-%s" % (self.agora_ns(), acao)
         tmp = os.path.join(spool, ".%s.tmp" % pid)
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)

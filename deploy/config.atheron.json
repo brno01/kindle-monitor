@@ -26,7 +26,7 @@
     "redes": [{"rotulo": "LAN", "if": "enp2s0f1"}, {"rotulo": "Tailnet", "if": "tailscale0"}]
   },
   "comandos": {
-    "token_arquivo": "/etc/kindle-monitor/token",
+    "token_hash_arquivo": "/etc/kindle-monitor/token.sha256",
     "permitidos_de": ["100.64.0.2", "100.64.0.3"],
     "acoes": ["gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar", "ragnarok-reiniciar", "ollama-reiniciar"],
     "spool": "/run/kindle-monitor/spool",

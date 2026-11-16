@@ -1,0 +1,5 @@
+# Directories of the command API, created by root at boot (and by the installer).
+# The web service (nobody) must NOT own anything here: it only creates files in the spool.
+d /run/kindle-monitor        0755 root root -
+d /run/kindle-monitor/spool  1730 root nogroup -
+d /run/kindle-monitor/status 0755 root root -

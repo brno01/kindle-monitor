@@ -117,6 +117,7 @@ def _parametros(query):
 class Handler(BaseHTTPRequestHandler):
     server_version = "kindle-monitor"
     protocol_version = "HTTP/1.0"
+    timeout = 10  # segundos: cliente lento nao prende a thread (leitura de cabecalho e corpo)
 
     def _responder(self, status, corpo, tipo="text/plain; charset=utf-8", extra=None):
         dados = corpo if isinstance(corpo, bytes) else corpo.encode("utf-8")

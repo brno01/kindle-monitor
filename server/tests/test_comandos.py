@@ -1,4 +1,6 @@
+import hashlib
 import http.client
+import io
 import json
 import os
 import stat
@@ -12,6 +14,7 @@ import monitor_server as ms
 from test_servidor import coletor_fake
 
 TOKEN = "ab" * 32
+HASH = hashlib.sha256(TOKEN.encode()).hexdigest()
 
 
 class Base(unittest.TestCase):
@@ -19,17 +22,19 @@ class Base(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         d = self._tmp.name
-        self.token_arq = os.path.join(d, "token")
+        self.token_arq = os.path.join(d, "token.sha256")
         with open(self.token_arq, "w") as f:
-            f.write(TOKEN + "\n")
+            f.write(HASH + "\n")
         self.spool = os.path.join(d, "run", "spool")
         self.estado = os.path.join(d, "run", "status")
+        os.makedirs(self.spool)  # no host real quem cria e o tmpfiles.d, nunca o web
+        os.makedirs(self.estado)
         self.t = [100.0]
         self.ns = [1_700_000_000_000_000_000]
         self.logs = []
 
     def cfg(self, **extra):
-        c = {"token_arquivo": self.token_arq, "spool": self.spool, "estado": self.estado,
+        c = {"token_hash_arquivo": self.token_arq, "spool": self.spool, "estado": self.estado,
              "permitidos_de": ["127.0.0.1"]}
         c.update(extra)
         return comandos.validar_config(c)
@@ -45,7 +50,7 @@ class Base(unittest.TestCase):
 class ConfigTest(unittest.TestCase):
     def test_padroes(self):
         c = comandos.validar_config({})
-        self.assertEqual(c["token_arquivo"], "/etc/kindle-monitor/token")
+        self.assertEqual(c["token_hash_arquivo"], "/etc/kindle-monitor/token.sha256")
         self.assertEqual(c["permitidos_de"], ["100.64.0.2", "100.64.0.3"])
         self.assertEqual(c["spool"], "/run/kindle-monitor/spool")
         self.assertEqual(c["estado"], "/run/kindle-monitor/status")
@@ -58,7 +63,7 @@ class ConfigTest(unittest.TestCase):
 
     def test_invalidos(self):
         for ruim in ({"acoes": ["rm-rf"]}, {"permitidos_de": ["nao-ip"]}, {"spool": ""},
-                     {"acoes": "gpu-descarregar"}, {"token_arquivo": 3}):
+                     {"acoes": "gpu-descarregar"}, {"token_hash_arquivo": 3}):
             with self.assertRaises(ValueError, msg=str(ruim)):
                 comandos.validar_config(ruim)
         with self.assertRaises(ValueError):
@@ -72,7 +77,6 @@ class ConfigTest(unittest.TestCase):
 class ProcessarTest(Base):
     def post(self, c, corpo=b'{"acao": "bots-pausar"}', ip="127.0.0.1", token=TOKEN,
              tipo="application/json", tamanho=None):
-        import io
         return c.processar(ip, token, tipo, len(corpo) if tamanho is None else tamanho, io.BytesIO(corpo))
 
     def test_aceito_grava_req_atomico(self):
@@ -85,7 +89,6 @@ class ProcessarTest(Base):
         self.assertEqual(nomes, [corpo["id"] + ".req"])
         self.assertRegex(nomes[0], r"^\d{1,20}-bots-pausar\.req$")
         self.assertEqual(os.path.getsize(os.path.join(self.spool, nomes[0])), 0)
-        self.assertEqual(stat.S_IMODE(os.stat(self.spool).st_mode), 0o700)
 
     def test_gravacao_usa_rename_sem_tmp_residual(self):
         chamadas = []
@@ -113,7 +116,7 @@ class ProcessarTest(Base):
             st, corpo, _ = self.post(c, token=tk)
             self.assertEqual(st, 401)
             self.assertEqual(corpo, {"erro": "nao autorizado"})
-        self.assertFalse(os.path.exists(self.spool) and os.listdir(self.spool))
+        self.assertEqual(os.listdir(self.spool), [])
 
     def test_token_nao_vai_para_o_log(self):
         c = self.novo()
@@ -124,7 +127,7 @@ class ProcessarTest(Base):
         self.assertNotIn("00" * 32, texto)
 
     def test_arquivo_de_token_ausente_503(self):
-        c = self.novo(token_arquivo=os.path.join(self._tmp.name, "nao-existe"))
+        c = self.novo(token_hash_arquivo=os.path.join(self._tmp.name, "nao-existe"))
         self.assertEqual(self.post(c)[0], 503)
 
     def test_arquivo_de_token_invalido_503(self):
@@ -190,6 +193,45 @@ class ProcessarTest(Base):
         self.assertIn("recusado", self.logs[1])
         self.assertIn("ip=9.9.9.9", self.logs[1])
 
+    def test_hash_nao_e_o_token_cru(self):
+        # o arquivo com o token cru no lugar do hash nunca autentica
+        with open(self.token_arq, "w") as f:
+            f.write(TOKEN + "\n")
+        self.assertEqual(self.post(self.novo())[0], 401)
+
+    def test_hash_maiusculo_aceito_e_formato_invalido_503(self):
+        with open(self.token_arq, "w") as f:
+            f.write(HASH.upper() + "\n")
+        self.assertEqual(self.post(self.novo())[0], 202)
+        for ruim in ("g" * 64, HASH[:-1], HASH + "00", ""):
+            with open(self.token_arq, "w") as f:
+                f.write(ruim + "\n")
+            self.assertEqual(self.post(self.novo())[0], 503, ruim)
+
+    def test_ip_checado_antes_do_503(self):
+        c = self.novo(token_hash_arquivo=os.path.join(self._tmp.name, "nao-existe"))
+        self.assertEqual(self.post(c, ip="100.1.2.3")[0], 403)
+        self.assertEqual(self.post(c)[0], 503)
+
+    def test_spool_ausente_503_sem_criar(self):
+        os.rmdir(self.spool)
+        st, corpo, _ = self.post(self.novo())
+        self.assertEqual(st, 503)
+        self.assertFalse(os.path.exists(self.spool))
+
+    def test_nao_faz_chmod_nem_makedirs(self):
+        os.chmod(self.spool, 0o1730)
+        self.assertEqual(self.post(self.novo())[0], 202)
+        self.assertEqual(stat.S_IMODE(os.stat(self.spool).st_mode), 0o1730)
+
+    def test_corpo_lento_408(self):
+        class Lento:
+            def read(self, n):
+                raise TimeoutError("lento")
+        st, _, _ = self.novo().processar("127.0.0.1", TOKEN, "application/json", 10, Lento())
+        self.assertEqual(st, 408)
+        self.assertEqual(os.listdir(self.spool), [])
+
     def test_acao_hostil_sanitizada_no_log(self):
         c = self.novo()
         self.post(c, corpo=json.dumps({"acao": "a\nFALSO linha\x1b[31m" + "z" * 100}).encode())
@@ -199,10 +241,6 @@ class ProcessarTest(Base):
 
 
 class UltimosTest(Base):
-    def setUp(self):
-        super().setUp()
-        os.makedirs(self.spool)
-        os.makedirs(self.estado)
 
     def estado_arq(self, nome, dados):
         with open(os.path.join(self.estado, nome), "w") as f:
@@ -309,11 +347,13 @@ class HttpTest(Base):
         st, _, _ = self.req("POST", "/comando", b"x" * 1500, self.cab())
         self.assertEqual(st, 413)
 
+    def test_handler_timeout_10s(self):
+        self.assertEqual(ms.Handler.timeout, 10)
+
     def test_post_outro_caminho_405(self):
         self.assertEqual(self.req("POST", "/metricas.json", "{}", self.cab())[0], 405)
 
     def test_estado_e_metricas(self):
-        os.makedirs(self.spool, exist_ok=True)
         open(os.path.join(self.spool, "400-bots-retomar.req"), "w").close()
         st, dados, _ = self.req("GET", "/comando/estado")
         self.assertEqual(st, 200)
