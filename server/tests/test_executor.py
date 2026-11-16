@@ -30,14 +30,21 @@ LISTA = (
 class Fake:
     """Executar injetavel: grava o que seria rodado, nunca roda nada."""
     def __init__(self, respostas=None, autoupdate=False):
+        """autoupdate: False = inactive; True = activating (rodando); ou (rc, saida) / excecao para falhas."""
         self.chamadas = []
         self.respostas = respostas or {}
         self.autoupdate = autoupdate
 
     def __call__(self, argv, timeout):
         self.chamadas.append(list(argv))
-        if argv[:3] == ["systemctl", "is-active", "--quiet"]:
-            return (0 if self.autoupdate else 3), "", ""
+        if argv == ex.AUTOUPDATE:
+            self.timeout_autoupdate = timeout
+            a = self.autoupdate
+            if isinstance(a, BaseException):
+                raise a
+            if isinstance(a, tuple):
+                return a[0], a[1], ""
+            return 0, ("activating\n" if a else "inactive\n"), ""
         r = self.respostas.get(tuple(argv))
         if isinstance(r, BaseException):
             raise r
@@ -213,7 +220,7 @@ class FilaTest(Base):
         self.assertEqual(r["estado"], "falhou")
         self.assertIn("atualizacao automatica em andamento", r["detalhe"])
         self.assertEqual(r["acao"], "svc:ollama-gpu:reiniciar")
-        self.assertEqual(self.fake.chamadas, [["systemctl", "is-active", "--quiet", "cerberus-autoupdate.service"]])
+        self.assertEqual(self.fake.chamadas, [ex.AUTOUPDATE])
 
     def test_autoupdate_nao_bloqueia_leves(self):
         self.req("10-bots-retomar.req")
@@ -495,7 +502,7 @@ class LacoETempTest(Base):
         os.makedirs(os.path.join(self.spool, "1-monitor-reiniciar.req"))
         self.req("2-bots-retomar.req")
         self.assertEqual(self.executor().processar_spool(), 1)
-        self.assertEqual(os.listdir(self.spool), ["1-monitor-reiniciar.req"])
+        self.assertEqual(os.listdir(self.spool), [])  # o diretorio e renomeado para .lixo-* e removido (vazio)
 
     def test_nada_a_fazer_zero(self):
         self.assertEqual(self.executor().processar_spool(), 0)
@@ -563,7 +570,12 @@ class ExpiraDuplicaCooldownTest(Base):
             f.write("{quebrado")
         self.req("%d-monitor-reiniciar.req" % (t + 2 * NS))
         self.executor(agora_ns=lambda: t + 2 * NS).processar_spool()
-        self.assertEqual(self.resultados()["%d-monitor-reiniciar.json" % (t + 2 * NS)]["estado"], "ok")
+        # v5 (fail-safe): arquivo ilegivel = nenhuma acao nessa passada; o arquivo e reescrito vazio
+        r = self.resultados()["%d-monitor-reiniciar.json" % (t + 2 * NS)]
+        self.assertEqual((r["estado"], r["detalhe"]), ("falhou", "cooldown indisponivel"))
+        self.req("%d-monitor-reiniciar.req" % (t + 3 * NS))
+        self.executor(agora_ns=lambda: t + 3 * NS).processar_spool()
+        self.assertEqual(self.resultados()["%d-monitor-reiniciar.json" % (t + 3 * NS)]["estado"], "ok")
 
     def test_cooldown_symlink_nao_e_seguido(self):
         alvo = os.path.join(self._tmp.name, "alvo.json")

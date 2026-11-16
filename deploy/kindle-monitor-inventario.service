@@ -5,6 +5,8 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
+# runs every ~15 s: keep the journal quiet (errors and warnings still show)
+LogLevelMax=warning
 User=root
 ExecStart=/usr/bin/python3 -I /opt/kindle-monitor/deploy/kindle-monitor-executor.py --inventario --config /etc/kindle-monitor/config.json
 NoNewPrivileges=yes

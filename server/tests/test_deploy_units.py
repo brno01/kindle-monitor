@@ -18,9 +18,17 @@ def linhas(texto):
 class UnidadesTest(unittest.TestCase):
     def test_timer_do_inventario(self):
         t = linhas(ler("kindle-monitor-inventario.timer"))
-        for l in ("OnBootSec=20s", "OnUnitActiveSec=15s", "AccuracySec=1s",
+        for l in ("OnBootSec=20s", "OnUnitInactiveSec=15s", "AccuracySec=1s",
                   "Unit=kindle-monitor-inventario.service", "WantedBy=timers.target"):
             self.assertIn(l, t)
+
+    def test_inventario_nao_se_sobrepoe_e_nao_enche_o_journal(self):
+        self.assertNotIn("OnUnitActiveSec", ler("kindle-monitor-inventario.timer"))
+        self.assertIn("LogLevelMax=warning", linhas(ler("kindle-monitor-inventario.service")))
+
+    def test_path_explica_o_tratamento_de_diretorios(self):
+        self.assertIn("PathExistsGlob=/run/kindle-monitor/spool/*.req", ler("kindle-monitor-executor.path"))
+        self.assertIn(".lixo-", ler("kindle-monitor-executor.path"))
 
     def test_servico_do_inventario_tem_o_mesmo_endurecimento_do_executor(self):
         inv, exe = linhas(ler("kindle-monitor-inventario.service")), linhas(ler("kindle-monitor-executor.service"))

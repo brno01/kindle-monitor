@@ -49,21 +49,27 @@ TEMP_VELHO_S = 60         # temporarios "." mais velhos que isso sao apagados
 COOLDOWN_S = 30           # intervalo minimo entre duas execucoes da mesma acao
 COOLDOWN_ARQ = ".cooldown.json"
 TOKEN_ARQ = r"(?:svc--[a-z0-9-]{1,40}--(?:reiniciar|ligar|parar)|[a-z-]{3,32})"
-RE_REQ = re.compile(r"^(\d{1,20})-(" + TOKEN_ARQ + r")\.req$")
-RE_JSON = re.compile(r"^(\d{1,20})-" + TOKEN_ARQ + r"\.json$")
-RE_SVC_ACAO = re.compile(r"^svc:([a-z0-9-]{1,40}):(reiniciar|ligar|parar)$")
-RE_SVC_ARQ = re.compile(r"^svc--([a-z0-9-]{1,40})--(reiniciar|ligar|parar)$")
-RE_ACAO_ARQ = re.compile(r"^[a-z-]{3,32}$")
-RE_ID = re.compile(r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$")
-RE_ALVO = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
-RE_PROJETO = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+RE_REQ = re.compile(r"^(\d{1,20})-(" + TOKEN_ARQ + r")\.req\Z")
+RE_JSON = re.compile(r"^(\d{1,20})-" + TOKEN_ARQ + r"\.json\Z")
+RE_SVC_ACAO = re.compile(r"^svc:([a-z0-9-]{1,40}):(reiniciar|ligar|parar)\Z")
+RE_SVC_ARQ = re.compile(r"^svc--([a-z0-9-]{1,40})--(reiniciar|ligar|parar)\Z")
+RE_ACAO_ARQ = re.compile(r"^[a-z-]{3,32}\Z")
+RE_ID = re.compile(r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?\Z")
+RE_ALVO = re.compile(r"^[A-Za-z0-9_.@-]{1,64}\Z")
+RE_PROJETO = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}\Z")
 CHAVES_CATALOGO = {"id", "rotulo", "grupo", "tipo", "alvo", "projeto", "prefixo", "verbos", "protegido", "opcional"}
-RE_BOT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")  # nunca comeca com "-" (viraria opcao)
+RE_BOT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}\Z")  # nunca comeca com "-" (viraria opcao)
 PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 INCUS = ["incus", "exec", "games", "--project", "core", "--"]
 TIMER = "ro-bot-scheduler.timer"
-AUTOUPDATE = ["systemctl", "is-active", "--quiet", "cerberus-autoupdate.service"]
+# is-active e fail-open (oneshot sem RemainAfterExit fica "activating", rc 3): le o valor e so libera inactive/failed.
+AUTOUPDATE = ["systemctl", "show", "-p", "ActiveState", "--value", "cerberus-autoupdate.service"]
+AUTOUPDATE_LIVRE = ("inactive", "failed")
+TIMEOUT_AUTOUPDATE = 10
+PASSADA_ORCAMENTO_S = 400  # depois disso nao pega pedido novo; o resto fica no spool para o proximo disparo
+COOLDOWN_LER_MAX = 65536
+COOLDOWN_GUARDAR_S = max(COOLDOWN_S, VALIDADE_S)
 
 # Tabela FIXA das acoes que sao so argv. As outras duas (gpu-descarregar, bots-pausar) tem funcao propria.
 TABELA_ARGV = {
@@ -206,7 +212,7 @@ def _gid_nogroup():
 def executar_padrao(argv, timeout):
     """Roda argv (lista, sem shell). Devolve (rc, stdout, stderr); TimeoutExpired sobe."""
     p = subprocess.run(argv, shell=False, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                       errors="replace", timeout=timeout, env={"PATH": PATH, "LANG": "C"})
+                       errors="replace", timeout=timeout, env={"PATH": PATH, "LANG": "C", "HOME": "/root"})
     return p.returncode, p.stdout, p.stderr
 
 
@@ -232,7 +238,7 @@ def bots_ativos(texto):
 
 class Executor:
     def __init__(self, cfg, executar=executar_padrao, http=http_padrao, agora_ns=time.time_ns,
-                 ollama=OLLAMA_PADRAO, dono=None, log=_log_padrao):
+                 ollama=OLLAMA_PADRAO, dono=None, log=_log_padrao, relogio=time.monotonic):
         """`dono` = (uid, gid do spool) esperado; padrao (0, nogroup). Injetavel para testes sem root."""
         cfg = validar_cfg(cfg)
         self.spool = cfg["spool"]
@@ -246,6 +252,9 @@ class Executor:
         self.ollama = ollama.rstrip("/")
         self.dono = dono
         self.log = log
+        self.relogio = relogio
+        self._lixo_n = 0
+        self._cooldown_ruim = False
         self.fd_spool = self.fd_estado = None
 
     # ------------------------------------------------------- diretorios
@@ -365,7 +374,11 @@ class Executor:
         vistos = set()
         cooldown = self._ler_cooldown()
         feitos = 0
+        t0 = self.relogio()
         for num, nome, acao in pedidos[:PEDIDOS_MAX]:
+            if self.relogio() - t0 >= PASSADA_ORCAMENTO_S:
+                self.log("orcamento de tempo da passada esgotado; o resto fica no spool")
+                break
             if not self._consumir(nome):
                 continue
             feitos += 1
@@ -389,9 +402,20 @@ class Executor:
                 pass
 
     def _descartar(self, nome):
+        """Arquivo/symlink e apagado. Diretorio (que casaria com a glob e religaria a .path sem parar) e
+        renomeado no lugar para ".lixo-<epoch>-<n>" e, se estiver vazio, removido; senao fica la, fora da glob."""
         try:
             if not stat.S_ISDIR(os.stat(nome, dir_fd=self.fd_spool, follow_symlinks=False).st_mode):
                 os.unlink(nome, dir_fd=self.fd_spool)
+                return
+            self._lixo_n += 1
+            novo = ".lixo-%d-%d" % (self.agora_ns() // 10 ** 9, self._lixo_n)
+            os.rename(nome, novo, src_dir_fd=self.fd_spool, dst_dir_fd=self.fd_spool)
+            self.log("diretorio no spool movido para %s" % novo)
+            try:
+                os.rmdir(novo, dir_fd=self.fd_spool)
+            except OSError:
+                pass
         except OSError:
             pass
 
@@ -431,11 +455,13 @@ class Executor:
             return self._final(num, pid, acao, "falhou", "duplicado")
         vistos.add(acao)
         agora_s = agora_ns / 1e9
+        if self._cooldown_ruim:  # arquivo de cooldown ilegivel: fail-safe, nada roda nesta passada
+            return self._final(num, pid, acao, "falhou", "cooldown indisponivel")
         ultimo = cooldown.get(acao)
         if ultimo is not None and 0 <= agora_s - ultimo < COOLDOWN_S:
             return self._final(num, pid, acao, "falhou", "cooldown de %d s" % COOLDOWN_S)
         cooldown[acao] = agora_s  # registrado ANTES de executar: queda no meio tambem conta
-        self._gravar_cooldown(cooldown)
+        self._gravar_cooldown(cooldown, agora_s)
         self._gravar(pid, acao, "executando", "")
         try:
             detalhe = self._rodar(acao)
@@ -482,26 +508,43 @@ class Executor:
             self._limpar()
 
     def _ler_cooldown(self):
+        """{acao: epoch}. Ausente = {}. Ilegivel/corrompido/grande demais: loga, marca `_cooldown_ruim` (nada roda
+        nesta passada) e reescreve vazio para a proxima funcionar."""
+        self._cooldown_ruim = False
         try:
             fd = os.open(COOLDOWN_ARQ, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.fd_estado)
-        except OSError:
+        except FileNotFoundError:
             return {}
+        except OSError:
+            return self._cooldown_falhou("nao abre")
         try:
             st = os.fstat(fd)
             uid = self.dono[0] if self.dono else 0
             if not stat.S_ISREG(st.st_mode) or st.st_uid != uid:
-                return {}
-            dados = json.loads(os.read(fd, 4096).decode("utf-8"))
+                return self._cooldown_falhou("tipo ou dono errado")
+            bruto = os.read(fd, COOLDOWN_LER_MAX + 1)
+            if len(bruto) > COOLDOWN_LER_MAX:
+                return self._cooldown_falhou("grande demais")
+            dados = json.loads(bruto.decode("utf-8"))
         except (OSError, ValueError):
-            return {}
+            return self._cooldown_falhou("ilegivel")
         finally:
             os.close(fd)
         if not isinstance(dados, dict):
-            return {}
+            return self._cooldown_falhou("nao e um objeto")
         return {k: float(v) for k, v in dados.items()
                 if acao_valida(k) and isinstance(v, (int, float)) and not isinstance(v, bool)}
 
-    def _gravar_cooldown(self, cooldown):
+    def _cooldown_falhou(self, motivo):
+        self.log("cooldown %s: nenhuma acao roda nesta passada" % motivo)
+        self._cooldown_ruim = True
+        self._gravar_arquivo(COOLDOWN_ARQ, b"{}")
+        return {}
+
+    def _gravar_cooldown(self, cooldown, agora_s):
+        """Grava so o que ainda importa (ate max(cooldown, validade) de idade): o arquivo nao cresce sem limite."""
+        for k in [k for k, v in cooldown.items() if not 0 <= agora_s - v <= COOLDOWN_GUARDAR_S]:
+            del cooldown[k]
         self._gravar_arquivo(COOLDOWN_ARQ, json.dumps(cooldown).encode("utf-8"))
 
     def _limpar(self):
@@ -534,11 +577,12 @@ class Executor:
         return out
 
     def _autoupdate_ativo(self):
+        """True = bloqueia. Fail-closed: so libera com rc 0 e ActiveState exatamente inactive ou failed."""
         try:
-            rc, _, _ = self.executar(AUTOUPDATE, TIMEOUT_CMD)
+            rc, out, _ = self.executar(AUTOUPDATE, TIMEOUT_AUTOUPDATE)
         except (subprocess.TimeoutExpired, OSError):
-            return False
-        return rc == 0
+            return True
+        return not (rc == 0 and out.strip() in AUTOUPDATE_LIVRE)
 
     @staticmethod
     def argv_servico(item, verbo):

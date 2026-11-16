@@ -26,9 +26,9 @@ CORPO_MAX = 1024
 INTERVALO_S = 5.0
 ESTADOS = ("executando", "ok", "falhou")
 DETALHE_MAX = 80
-RE_ARQ = re.compile(r"^(\d{1,20})-(" + servicos.TOKEN_ARQ + r")\.(req|json)$")
-RE_HORA = re.compile(r"^\d\d:\d\d:\d\d$")
-RE_TOKEN = re.compile(r"^[0-9a-fA-F]{64}$")
+RE_ARQ = re.compile(r"^(\d{1,20})-(" + servicos.TOKEN_ARQ + r")\.(req|json)\Z")
+RE_HORA = re.compile(r"^\d\d:\d\d:\d\d\Z")
+RE_TOKEN = re.compile(r"^[0-9a-fA-F]{64}\Z")
 JSON_TIPO = "application/json"
 
 
@@ -217,7 +217,7 @@ class Comandos:
         if not isinstance(d, dict):
             return None
         acao, estado, quando, detalhe = (d.get(k) for k in ("acao", "estado", "quando", "detalhe"))
-        if not (isinstance(acao, str) and (re.match(r"^[a-z-]{3,32}$", acao) or servicos.acao_svc(acao))):
+        if not (isinstance(acao, str) and (re.match(r"^[a-z-]{3,32}\Z", acao) or servicos.acao_svc(acao))):
             return None
         if estado not in ESTADOS or not (isinstance(quando, str) and RE_HORA.match(quando)):
             return None

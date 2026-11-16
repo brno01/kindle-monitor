@@ -10,14 +10,14 @@ TIPOS = ("systemd", "incus", "docker", "rathena")
 VERBOS = ("reiniciar", "ligar", "parar")
 ESTADOS = ("ativo", "parado", "falha", "desconhecido")
 TITULOS_GRUPO = {"host": "HOST", "incus": "CONTEINERES", "docker": "DOCKER", "ragnarok": "RAGNAROK"}
-RE_ID = re.compile(r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$")
-RE_ALVO = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
-RE_PROJETO = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+RE_ID = re.compile(r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?\Z")
+RE_ALVO = re.compile(r"^[A-Za-z0-9_.@-]{1,64}\Z")
+RE_PROJETO = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}\Z")
 ROTULO_MAX = 28
 CHAVES = {"id", "rotulo", "grupo", "tipo", "alvo", "projeto", "prefixo", "verbos", "protegido", "opcional"}
-RE_SVC_ACAO = re.compile(r"^svc:([a-z0-9-]{1,40}):(reiniciar|ligar|parar)$")
-RE_SVC_ARQ = re.compile(r"^svc--([a-z0-9-]{1,40})--(reiniciar|ligar|parar)$")
-RE_ACAO_ARQ = re.compile(r"^[a-z-]{3,32}$")
+RE_SVC_ACAO = re.compile(r"^svc:([a-z0-9-]{1,40}):(reiniciar|ligar|parar)\Z")
+RE_SVC_ARQ = re.compile(r"^svc--([a-z0-9-]{1,40})--(reiniciar|ligar|parar)\Z")
+RE_ACAO_ARQ = re.compile(r"^[a-z-]{3,32}\Z")
 # fragmento de regex para o nome do arquivo no spool (depois de "<epoch>-")
 TOKEN_ARQ = r"(?:svc--[a-z0-9-]{1,40}--(?:reiniciar|ligar|parar)|[a-z-]{3,32})"
 

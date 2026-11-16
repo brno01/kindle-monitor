@@ -3,7 +3,7 @@ Description=kindle-monitor: refresh the service inventory every 15 s
 
 [Timer]
 OnBootSec=20s
-OnUnitActiveSec=15s
+OnUnitInactiveSec=15s
 AccuracySec=1s
 Unit=kindle-monitor-inventario.service
 

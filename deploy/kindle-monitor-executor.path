@@ -2,7 +2,8 @@
 Description=kindle-monitor: watch the command spool
 
 [Path]
-# Only a real request triggers the executor; a stray .tmp or subdirectory cannot loop it.
+# Only a name ending in .req triggers the executor. A stray .tmp does not match; a directory named *.req would,
+# so the executor renames such directories to .lixo-<epoch>-<n> (outside the glob) instead of leaving them.
 PathExistsGlob=/run/kindle-monitor/spool/*.req
 Unit=kindle-monitor-executor.service
 
