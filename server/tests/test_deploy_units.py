@@ -38,7 +38,7 @@ class UnidadesTest(unittest.TestCase):
         self.assertIn("kindle-monitor-inventario.service", s)
         self.assertIn("kindle-monitor-inventario.timer", s)
         self.assertIn("systemctl enable --now kindle-monitor-inventario.timer", s)
-        self.assertLess(s.index("kindle-monitor-inventario.timer /etc"), s.index("daemon-reload"))
+        self.assertLess(s.index("/etc/systemd/system/kindle-monitor-inventario.timer"), s.index("daemon-reload"))
 
     def test_executor_demora_o_bastante_para_10_pedidos_de_90s(self):
         self.assertIn("TimeoutStartSec=600", ler("kindle-monitor-executor.service"))
