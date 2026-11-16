@@ -1,5 +1,6 @@
 import http.client
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -100,6 +101,49 @@ class CacheServidorTest(unittest.TestCase):
         self.srv._relogio = lambda: 1e9
         self.srv.preaquecer(self.coletor.atualizar_snapshot())
         self.assertEqual(len(self.chamadas), 1)
+
+
+    def test_preaquecer_uma_vez_por_snapshot_via_thread(self):
+        self.coletor._intervalo_coleta = 0.01
+        self.coletor.ao_atualizar = self.srv.preaquecer
+        self.get("/tela.png?pagina=resumo")
+        self.coletor.iniciar_coleta()
+        try:
+            fim = time.monotonic() + 3
+            while time.monotonic() < fim and (self.coletor.snapshot() is None or self.coletor.snapshot().id < 4):
+                time.sleep(0.01)
+        finally:
+            self.coletor.parar()
+        snaps = self.coletor.snapshot().id
+        # one render for the first request (no snapshot yet) + at most one pre-render per snapshot
+        self.assertLessEqual(len(self.chamadas), 1 + snaps)
+
+    def test_pedido_durante_preaquecimento_nao_renderiza_de_novo(self):
+        snap = self.coletor.atualizar_snapshot()
+        self.get("/tela.png?pagina=resumo")
+        novo = self.coletor.atualizar_snapshot()
+        entrou, liberar = threading.Event(), threading.Event()
+        original = render_png.render_png
+
+        def lento(*a, **k):
+            entrou.set()
+            liberar.wait(5)
+            return original(*a, **k)
+        n0 = len(self.chamadas)
+        with mock.patch.object(render_png, "render_png", lento):
+            t = threading.Thread(target=self.srv.preaquecer, args=(novo,))
+            t.start()
+            self.assertTrue(entrou.wait(5))
+            res = []
+            r = threading.Thread(target=lambda: res.append(self.get("/tela.png?pagina=resumo")))
+            r.start()
+            r.join(0.2)
+            self.assertTrue(r.is_alive())  # espera o preaquecimento da mesma chave
+            liberar.set()
+            t.join(5)
+            r.join(5)
+        self.assertEqual(res[0][0], 200)
+        self.assertEqual(len(self.chamadas), n0 + 1)  # so o preaquecimento renderizou; o pedido esperou
 
 
 class ConfigColetaTest(unittest.TestCase):

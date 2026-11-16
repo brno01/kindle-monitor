@@ -59,6 +59,10 @@ class _Fixo:
         m["gerado_em"] = "2026-11-16T12:00:00"
         return m
 
+    def obter_metricas(self, com_pares=True):
+        # nao usa o snapshot em segundo plano: cada requisicao coleta de novo, com a hora fixa (deterministico)
+        return None, self.coletar(com_pares=com_pares)
+
     def __getattr__(self, n):
         return getattr(self._c, n)
 

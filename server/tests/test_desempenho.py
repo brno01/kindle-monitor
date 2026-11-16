@@ -7,7 +7,29 @@ import monitor_server as ms
 import coletores
 import render_png
 
-ORCAMENTO_S = 0.060  # esta maquina e ~10x mais rapida que o atheron: alvo de <250 ms la.
+ORCAMENTO_S = 0.060  # no nomad; em CPU mais lenta o orcamento escala pela calibracao abaixo
+CALIBRACAO_REF_S = 0.010  # tempo do laco de calibracao no nomad (melhor de 5)
+
+
+def calibrar():
+    """Tempo do melhor de 5 de um laco Python fixo: mede a velocidade da CPU nesta execucao."""
+    melhor = None
+    for _ in range(5):
+        t = time.perf_counter()
+        b = bytearray(1000)
+        for i in range(300000):
+            b[i % 1000] = (i * 7) % 256
+        d = time.perf_counter() - t
+        melhor = d if melhor is None else min(melhor, d)
+    return melhor
+
+
+def orcamento_s():
+    """KM_ORCAMENTO_MS (ms) fixa o orcamento; senao 60 ms vezes (calibracao / referencia do nomad), no minimo 60 ms."""
+    env = os.environ.get("KM_ORCAMENTO_MS")
+    if env:
+        return float(env) / 1000.0
+    return ORCAMENTO_S * max(1.0, calibrar() / CALIBRACAO_REF_S)
 CONFIG = os.path.join(_caminho.RAIZ, "config.exemplo.json")
 
 
@@ -36,9 +58,10 @@ def snapshot_completo():
 class OrcamentoTest(unittest.TestCase):
     def test_render_e_encode_da_pagina_completa_cabem_no_orcamento(self):
         m = snapshot_completo()
+        limite = orcamento_s()
         for pagina in ("resumo", "servicos", "detalhes", "comandos"):
             melhor = min(self._medir(m, pagina) for _ in range(3))
-            self.assertLess(melhor, ORCAMENTO_S, "%s: %.1f ms" % (pagina, melhor * 1e3))
+            self.assertLess(melhor, limite, "%s: %.1f ms (orcamento %.0f ms)" % (pagina, melhor * 1e3, limite * 1e3))
 
     def _medir(self, m, pagina):
         t = time.perf_counter()

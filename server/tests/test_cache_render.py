@@ -53,6 +53,66 @@ class CacheLruTest(unittest.TestCase):
         self.assertEqual(erros, [])
         self.assertLessEqual(len(c), 4)
 
+    def test_single_flight_mesma_chave_renderiza_uma_vez(self):
+        c = cache_render.CacheLru(4)
+        entrou = threading.Event()
+        liberar = threading.Event()
+        n = []
+
+        def lenta():
+            n.append(1)
+            entrou.set()
+            liberar.wait(5)
+            return b"IMG"
+        res = []
+        t1 = threading.Thread(target=lambda: res.append(c.obter("k", lenta)))
+        t1.start()
+        self.assertTrue(entrou.wait(5))
+        t2 = threading.Thread(target=lambda: res.append(c.obter("k", lambda: n.append(1) or b"OUTRA")))
+        t2.start()
+        t2.join(0.1)
+        self.assertTrue(t2.is_alive())  # esperando a primeira, nao renderizando em paralelo
+        liberar.set()
+        t1.join(5)
+        t2.join(5)
+        self.assertEqual(res, [b"IMG", b"IMG"])
+        self.assertEqual(len(n), 1)
+
+    def test_chaves_diferentes_nao_se_bloqueiam(self):
+        c = cache_render.CacheLru(4)
+        liberar = threading.Event()
+        entrou = threading.Event()
+        t1 = threading.Thread(target=lambda: c.obter("a", lambda: (entrou.set(), liberar.wait(5))[1]))
+        t1.start()
+        self.assertTrue(entrou.wait(5))
+        self.assertEqual(c.obter("b", lambda: 2), 2)
+        liberar.set()
+        t1.join(5)
+
+    def test_falha_na_primeira_deixa_a_espera_tentar(self):
+        c = cache_render.CacheLru(4)
+        entrou = threading.Event()
+        liberar = threading.Event()
+
+        def falha():
+            entrou.set()
+            liberar.wait(5)
+            raise ValueError("x")
+
+        def primeira():
+            with self.assertRaises(ValueError):
+                c.obter("k", falha)
+        t1 = threading.Thread(target=primeira)
+        t1.start()
+        self.assertTrue(entrou.wait(5))
+        res = []
+        t2 = threading.Thread(target=lambda: res.append(c.obter("k", lambda: 7)))
+        t2.start()
+        liberar.set()
+        t1.join(5)
+        t2.join(5)
+        self.assertEqual(res, [7])
+
     def test_maximo_invalido(self):
         with self.assertRaises(ValueError):
             cache_render.CacheLru(0)
