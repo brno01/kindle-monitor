@@ -10,7 +10,7 @@ PIDF=/tmp/kindle-monitor.pid
 LOG=/tmp/kindle-monitor.log
 IMG=/tmp/kindle-monitor.png
 BTN=/tmp/kindle-monitor-botoes.txt
-STF=/tmp/kindle-monitor.state
+STF=/var/tmp/kindle-monitor/state
 
 if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then exit 0; fi
 echo $$ > "$PIDF"
@@ -41,12 +41,22 @@ ensure_ts() {
   sleep 10
 }
 
-# page and armed button written by tap.sh (values are validated there and here)
-state() {
+# state is parsed field by field (never sourced): only known keys and validated values
+read_state() {
   PAGINA=resumo; ARMADO=; ARMADO_ATE=0
-  [ -f "$STF" ] && . "$STF"
-  case "$PAGINA" in resumo|detalhes|comandos) ;; *) PAGINA=resumo ;; esac
-  case "$ARMADO" in *[!a-z-]*) ARMADO= ;; esac
+  [ -f "$STF" ] || return 0
+  while IFS='=' read -r k v; do
+    case "$k" in
+      PAGINA) case "$v" in resumo|detalhes|comandos) PAGINA=$v ;; esac ;;
+      ARMADO) case "$v" in ''|*[!a-z-]*) ;; *) ARMADO=$v ;; esac ;;
+      ARMADO_ATE) case "$v" in ''|*[!0-9]*) ;; *) ARMADO_ATE=$v ;; esac ;;
+    esac
+  done < "$STF"
+}
+
+# page and armed button written by tap.sh
+state() {
+  read_state
   [ "$ARMADO_ATE" -ge "$(date +%s)" ] 2>/dev/null || ARMADO=
   Q="pagina=$PAGINA"
   [ -n "$ARMADO" ] && Q="$Q&armado=$ARMADO"

@@ -4,11 +4,12 @@
 # server sent (/tmp/kindle-monitor-botoes.txt, one "id tipo x y w h" per line),
 # updates the page / armed state and wakes the loop so the screen follows at once.
 # Commands need two taps: the first arms the button, the second (within ARM_SECONDS)
-# sends it to the server with the token.
+# sends it to the server with the token (kept in /var/local, see TOKEN).
 x=$1
 y=$2
 D=/mnt/us/kindle-monitor
-STF=/tmp/kindle-monitor.state
+STF=/var/tmp/kindle-monitor/state
+TOKEN=/var/local/kindle-monitor/token   # ext3, root 0600; never on the FAT /mnt/us
 BTN=/tmp/kindle-monitor-botoes.txt
 PIDF=/tmp/kindle-monitor.pid
 LOG=/tmp/kindle-monitor.log
@@ -31,17 +32,28 @@ case "$id" in ''|*[!a-z:-]*) exit 0 ;; esac
 
 ARM_SECONDS=6
 [ -f "$D/config.sh" ] && . "$D/config.sh"
-PAGINA=resumo
-ARMADO=
-ARMADO_ATE=0
-[ -f "$STF" ] && . "$STF"
+# state is parsed field by field (never sourced): only known keys and validated values
+read_state() {
+  PAGINA=resumo; ARMADO=; ARMADO_ATE=0
+  [ -f "$STF" ] || return 0
+  while IFS='=' read -r k v; do
+    case "$k" in
+      PAGINA) case "$v" in resumo|detalhes|comandos) PAGINA=$v ;; esac ;;
+      ARMADO) case "$v" in ''|*[!a-z-]*) ;; *) ARMADO=$v ;; esac ;;
+      ARMADO_ATE) case "$v" in ''|*[!0-9]*) ;; *) ARMADO_ATE=$v ;; esac ;;
+    esac
+  done < "$STF"
+}
+read_state
 now=$(date +%s)
 
 send() {
-  tok=$(head -n 1 "$D/token" 2>/dev/null)
+  tok=$(head -n 1 "$TOKEN" 2>/dev/null)
   case "$tok" in ''|*[!0-9a-f]*) log "no valid token, $1 not sent"; return 1 ;; esac
-  code=$(curl -s -m 15 --socks5-hostname localhost:1055 -o /dev/null -w '%{http_code}' \
-    -H 'Content-Type: application/json' -H "X-Kindle-Token: $tok" \
+  [ ${#tok} -eq 64 ] || { log "no valid token, $1 not sent"; return 1; }
+  # the token header goes through stdin (-K -), so it never shows up in /proc/*/cmdline
+  code=$(printf 'header = "X-Kindle-Token: %s"\n' "$tok" | curl -s -m 15 -K - --socks5-hostname localhost:1055 \
+    -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
     -d "{\"acao\":\"$1\"}" "http://$SERVER/comando")
   log "sent $1 -> HTTP $code"
 }
@@ -61,6 +73,7 @@ case "$id" in
     fi ;;
 esac
 
+mkdir -p /var/tmp/kindle-monitor
 printf 'PAGINA=%s\nARMADO=%s\nARMADO_ATE=%s\n' "$PAGINA" "$ARMADO" "$ARMADO_ATE" > "$STF.new" && mv -f "$STF.new" "$STF"
 [ -f "$PIDF" ] && kill -USR1 "$(cat "$PIDF")" 2>/dev/null
 exit 0
