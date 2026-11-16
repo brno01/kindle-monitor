@@ -11,10 +11,25 @@ import monitor_server as ms
 from test_servidor import coletor_fake
 
 
+class _HoraFixa:
+    """Pins gerado_em: the header shows HH:MM:SS, so two renders a second apart differ byte for byte."""
+
+    def __init__(self, coletor):
+        self._c = coletor
+
+    def coletar(self, *a, **k):
+        m = self._c.coletar(*a, **k)
+        m["gerado_em"] = "2026-11-16T12:00:00"
+        return m
+
+    def __getattr__(self, nome):
+        return getattr(self._c, nome)
+
+
 class PaginasServidorTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.srv = ms.criar_servidor("127.0.0.1", 0, coletor_fake(), colunas=38, log=False)
+        cls.srv = ms.criar_servidor("127.0.0.1", 0, _HoraFixa(coletor_fake()), colunas=38, log=False)
         cls.porta = cls.srv.server_address[1]
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
 
