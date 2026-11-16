@@ -19,9 +19,12 @@ systemd-tmpfiles --create /etc/tmpfiles.d/kindle-monitor.conf
 install -m 0644 "$S/kindle-monitor.service" /etc/systemd/system/kindle-monitor.service
 install -m 0644 "$S/kindle-monitor-executor.service" /etc/systemd/system/kindle-monitor-executor.service
 install -m 0644 "$S/kindle-monitor-executor.path" /etc/systemd/system/kindle-monitor-executor.path
+install -m 0644 "$S/kindle-monitor-inventario.service" /etc/systemd/system/kindle-monitor-inventario.service
+install -m 0644 "$S/kindle-monitor-inventario.timer" /etc/systemd/system/kindle-monitor-inventario.timer
 systemctl daemon-reload
 systemctl enable kindle-monitor.service
 systemctl enable --now kindle-monitor-executor.path
+systemctl enable --now kindle-monitor-inventario.timer   # service inventory for the Services page (root, every 15 s)
 systemctl restart kindle-monitor.service   # enable --now does not restart a running service
 sleep 4
 systemctl is-active kindle-monitor.service

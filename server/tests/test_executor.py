@@ -79,13 +79,13 @@ class TabelaTest(unittest.TestCase):
     def test_argv_fixos(self):
         t = ex.TABELA_ARGV
         self.assertEqual(t["monitor-reiniciar"], [["systemctl", "restart", "kindle-monitor.service"]])
-        self.assertEqual(t["ollama-reiniciar"], [["systemctl", "restart", "ollama-gpu.service"]])
         self.assertEqual(t["bots-retomar"], [INC + ["systemctl", "start", "ro-bot-scheduler.timer"]])
-        self.assertEqual(t["ragnarok-reiniciar"], [INC + ["systemctl", "restart", "rathena-login", "rathena-char", "rathena-map"]])
+        self.assertNotIn("ragnarok-reiniciar", t)
+        self.assertNotIn("ollama-reiniciar", t)
 
     def test_ids(self):
         self.assertEqual(set(ex.ACOES), {"gpu-descarregar", "bots-pausar", "bots-retomar",
-                                         "monitor-reiniciar", "ragnarok-reiniciar", "ollama-reiniciar"})
+                                         "monitor-reiniciar"})
 
     def test_acoes_do_web_batem_com_o_executor(self):
         import comandos
@@ -202,17 +202,18 @@ class FilaTest(Base):
         rc, out, _ = ex.executar_padrao(["echo", "a; echo b"], 5)
         self.assertEqual((rc, out.strip()), (0, "a; echo b"))
 
-    def test_autoupdate_recusa_servicos(self):
-        for acao in ("ragnarok-reiniciar", "ollama-reiniciar"):
-            self.req("10-%s.req" % acao)
-            e = self.executor(Fake(autoupdate=True))
-            e.processar_spool()
-            r = self.resultados()["10-%s.json" % acao]
-            self.assertEqual(r["estado"], "falhou")
-            self.assertIn("atualizacao automatica em andamento", r["detalhe"])
-            self.assertEqual(self.fake.chamadas,
-                             [["systemctl", "is-active", "--quiet", "cerberus-autoupdate.service"]])
-            os.unlink(os.path.join(self.estado, "10-%s.json" % acao))
+    def test_autoupdate_recusa_protegidos(self):
+        self.cfg["catalogo"] = ex.validar_catalogo([
+            {"id": "ollama-gpu", "rotulo": "Ollama", "grupo": "host", "tipo": "systemd",
+             "alvo": "ollama-gpu.service", "verbos": ["reiniciar"], "protegido": True}])
+        self.req("10-svc--ollama-gpu--reiniciar.req")
+        e = self.executor(Fake(autoupdate=True))
+        e.processar_spool()
+        r = self.resultados()["10-svc--ollama-gpu--reiniciar.json"]
+        self.assertEqual(r["estado"], "falhou")
+        self.assertIn("atualizacao automatica em andamento", r["detalhe"])
+        self.assertEqual(r["acao"], "svc:ollama-gpu:reiniciar")
+        self.assertEqual(self.fake.chamadas, [["systemctl", "is-active", "--quiet", "cerberus-autoupdate.service"]])
 
     def test_autoupdate_nao_bloqueia_leves(self):
         self.req("10-bots-retomar.req")
@@ -220,7 +221,10 @@ class FilaTest(Base):
         self.assertEqual(self.resultados()["10-bots-retomar.json"]["estado"], "ok")
 
     def test_autoupdate_inativo_executa(self):
-        self.req("10-ollama-reiniciar.req")
+        self.cfg["catalogo"] = ex.validar_catalogo([
+            {"id": "ollama-gpu", "rotulo": "Ollama", "grupo": "host", "tipo": "systemd",
+             "alvo": "ollama-gpu.service", "verbos": ["reiniciar"], "protegido": True}])
+        self.req("10-svc--ollama-gpu--reiniciar.req")
         self.executor(Fake(autoupdate=False)).processar_spool()
         self.assertIn(["systemctl", "restart", "ollama-gpu.service"], self.fake.chamadas)
 
@@ -497,7 +501,7 @@ class LacoETempTest(Base):
         self.assertEqual(self.executor().processar_spool(), 0)
 
     def test_maximo_10_por_passada(self):
-        acoes = ["bots-retomar", "monitor-reiniciar", "ollama-reiniciar", "ragnarok-reiniciar"]
+        acoes = ["bots-retomar", "monitor-reiniciar", "bots-retomar", "monitor-reiniciar"]
         for i in range(25):
             self.req("%d-%s.req" % (i + 1, acoes[i % 4]))
         self.assertEqual(self.executor().processar_spool(), 10)

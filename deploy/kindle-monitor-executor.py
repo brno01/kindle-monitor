@@ -1,7 +1,8 @@
 #!/usr/bin/python3 -I
 """Executor root do kindle-monitor: cumpre os pedidos registrados pelo servidor web.
 
-O servidor web (User=nobody) so grava arquivos vazios "<epoch_ns>-<acao>.req" no spool. Este programa
+O servidor web (User=nobody) so grava arquivos vazios "<epoch_ns>-<acao>.req" no spool (para servicos,
+"<epoch_ns>-svc--<id>--<verbo>.req"; o id e validado contra o catalogo "servicos_kindle" da config root-owned). Este programa
 roda como root (kindle-monitor-executor.service, acionado pela .path), valida o NOME do arquivo, apaga o
 pedido ANTES de executar (nunca repete), ignora o conteudo e procura o id numa tabela FIXA de acoes.
 Nada do pedido entra em comando algum; nunca ha shell. Resultado em JSON no diretorio de estado.
@@ -10,7 +11,8 @@ Seguranca dos diretorios: /run/kindle-monitor, o spool e o status sao criados pe
 cada um e aberto com O_DIRECTORY|O_NOFOLLOW e conferido com fstat (dono, permissoes); dai em diante tudo
 usa dir_fd, nunca caminho, entao trocar um diretorio por symlink nao leva o root para fora. Se algo nao
 bater, recusa tudo (excecao Recusa, saida 1). Se os diretorios nao existem, sai 0 sem criar nada.
-Biblioteca padrao apenas.
+Com --inventario, em vez de processar o spool, coleta o estado de todos os servicos do catalogo (em lote, sem
+shell) e grava status/servicos.json para o web ler. Biblioteca padrao apenas.
 """
 import argparse
 import grp
@@ -24,8 +26,15 @@ import sys
 import time
 import urllib.request
 
-ACOES = ("gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar",
-         "ragnarok-reiniciar", "ollama-reiniciar")
+ACOES = ("gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar")
+GRUPOS = ("host", "incus", "docker", "ragnarok")
+TIPOS = ("systemd", "incus", "docker", "rathena")
+VERBOS = ("reiniciar", "ligar", "parar")
+VERBO_CLI = {"reiniciar": "restart", "ligar": "start", "parar": "stop"}
+INVENTARIO_ARQ = "servicos.json"
+TIMEOUT_INVENTARIO = 10
+TIMEOUT_INCUS = 90
+TIMEOUT_EXEC = 60
 SPOOL_PADRAO = "/run/kindle-monitor/spool"
 ESTADO_PADRAO = "/run/kindle-monitor/status"
 OLLAMA_PADRAO = "http://10.0.0.1:11435"
@@ -39,8 +48,16 @@ VALIDADE_S = 60           # pedido mais velho que isso e descartado
 TEMP_VELHO_S = 60         # temporarios "." mais velhos que isso sao apagados
 COOLDOWN_S = 30           # intervalo minimo entre duas execucoes da mesma acao
 COOLDOWN_ARQ = ".cooldown.json"
-RE_REQ = re.compile(r"^(\d{1,20})-([a-z-]{3,32})\.req$")
-RE_JSON = re.compile(r"^(\d{1,20})-[a-z-]{3,32}\.json$")
+TOKEN_ARQ = r"(?:svc--[a-z0-9-]{1,40}--(?:reiniciar|ligar|parar)|[a-z-]{3,32})"
+RE_REQ = re.compile(r"^(\d{1,20})-(" + TOKEN_ARQ + r")\.req$")
+RE_JSON = re.compile(r"^(\d{1,20})-" + TOKEN_ARQ + r"\.json$")
+RE_SVC_ACAO = re.compile(r"^svc:([a-z0-9-]{1,40}):(reiniciar|ligar|parar)$")
+RE_SVC_ARQ = re.compile(r"^svc--([a-z0-9-]{1,40})--(reiniciar|ligar|parar)$")
+RE_ACAO_ARQ = re.compile(r"^[a-z-]{3,32}$")
+RE_ID = re.compile(r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$")
+RE_ALVO = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
+RE_PROJETO = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+CHAVES_CATALOGO = {"id", "rotulo", "grupo", "tipo", "alvo", "projeto", "prefixo", "verbos", "protegido", "opcional"}
 RE_BOT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")  # nunca comeca com "-" (viraria opcao)
 PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
@@ -52,11 +69,10 @@ AUTOUPDATE = ["systemctl", "is-active", "--quiet", "cerberus-autoupdate.service"
 TABELA_ARGV = {
     "bots-retomar": [INCUS + ["systemctl", "start", TIMER]],
     "monitor-reiniciar": [["systemctl", "restart", "kindle-monitor.service"]],
-    "ragnarok-reiniciar": [INCUS + ["systemctl", "restart", "rathena-login", "rathena-char", "rathena-map"]],
-    "ollama-reiniciar": [["systemctl", "restart", "ollama-gpu.service"]],
 }
 # Recusadas enquanto a janela de atualizacao automatica roda.
-BLOQUEADAS_NO_AUTOUPDATE = ("ragnarok-reiniciar", "ollama-reiniciar")
+BLOQUEADAS_NO_AUTOUPDATE = ()  # as acoes rapidas atuais nao precisam; servicos "protegido" sempre sao
+INCUS_MICRO = ["incus", "exec", "microservices", "--project", "core", "--"]
 
 
 class Falha(Exception):
@@ -91,12 +107,82 @@ def linha_log(acao, pid, rc, estado, detalhe):
                                                          _curto(detalhe))
 
 
+def validar_catalogo(lista):
+    """Valida `servicos_kindle` (mesmas regras de server/servicos.py; um teste confere). ValueError com a causa."""
+    if lista is None:
+        return []
+    if not isinstance(lista, list):
+        raise ValueError("servicos_kindle deve ser uma lista")
+    ids, saida = set(), []
+    for i, it in enumerate(lista):
+        r = "servicos_kindle[%d]" % i
+        if not isinstance(it, dict):
+            raise ValueError("%s deve ser um objeto" % r)
+        if set(it) - CHAVES_CATALOGO:
+            raise ValueError("%s: chave desconhecida" % r)
+        sid = it.get("id")
+        if not isinstance(sid, str) or not RE_ID.match(sid) or "--" in sid:
+            raise ValueError("%s: id invalido" % r)
+        if sid in ids:
+            raise ValueError("%s: id repetido" % r)
+        ids.add(sid)
+        rot = it.get("rotulo")
+        if not isinstance(rot, str) or not 1 <= len(rot) <= 28 or not all(32 <= ord(ch) < 127 for ch in rot):
+            raise ValueError("%s: rotulo invalido" % r)
+        if it.get("grupo") not in GRUPOS:
+            raise ValueError("%s: grupo invalido" % r)
+        tipo = it.get("tipo")
+        if tipo not in TIPOS:
+            raise ValueError("%s: tipo invalido" % r)
+        alvo = it.get("alvo")
+        if not isinstance(alvo, str) or not RE_ALVO.match(alvo) or alvo.startswith("-"):
+            raise ValueError("%s: alvo invalido" % r)
+        if tipo in ("systemd", "rathena") and not alvo.endswith(".service"):
+            raise ValueError("%s: alvo de unit deve terminar em .service" % r)
+        if "projeto" in it and tipo != "incus":
+            raise ValueError("%s: projeto so vale para incus" % r)
+        projeto = it.get("projeto", "core")
+        if tipo == "incus" and (not isinstance(projeto, str) or not RE_PROJETO.match(projeto)):
+            raise ValueError("%s: projeto invalido" % r)
+        prefixo = it.get("prefixo", False)
+        if not isinstance(prefixo, bool) or (prefixo and tipo != "docker"):
+            raise ValueError("%s: prefixo so vale (booleano) para docker" % r)
+        verbos = it.get("verbos")
+        if not isinstance(verbos, list) or not all(isinstance(v, str) and v in VERBOS for v in verbos) or \
+                len(set(verbos)) != len(verbos):
+            raise ValueError("%s: verbos invalidos" % r)
+        if prefixo and verbos:
+            raise ValueError("%s: prefixo exige verbos []" % r)
+        for k in ("protegido", "opcional"):
+            if not isinstance(it.get(k, False), bool):
+                raise ValueError("%s: %s deve ser booleano" % (r, k))
+        n = {"id": sid, "rotulo": rot, "grupo": it["grupo"], "tipo": tipo, "alvo": alvo, "verbos": list(verbos),
+             "protegido": it.get("protegido", False), "opcional": it.get("opcional", False), "prefixo": prefixo}
+        if tipo == "incus":
+            n["projeto"] = projeto
+        saida.append(n)
+    return saida
+
+
+def acao_valida(acao):
+    return acao in ACOES or bool(RE_SVC_ACAO.match(acao))
+
+
+def nome_para_acao(token):
+    """'svc--<id>--<verbo>' -> 'svc:<id>:<verbo>'; acoes rapidas como estao; None se invalido."""
+    if token.startswith("svc--"):
+        m = RE_SVC_ARQ.match(token)
+        return "svc:%s:%s" % m.groups() if m else None
+    return token if RE_ACAO_ARQ.match(token) else None
+
+
 def validar_cfg(c):
     """Valida a secao "comandos" da config. ValueError com a causa."""
     if not isinstance(c, dict):
         raise ValueError("comandos deve ser um objeto")
-    r = {"spool": SPOOL_PADRAO, "estado": ESTADO_PADRAO, "acoes": list(ACOES)}
+    r = {"spool": SPOOL_PADRAO, "estado": ESTADO_PADRAO, "acoes": list(ACOES), "catalogo": []}
     r.update({k: v for k, v in c.items() if k in r})
+    r["catalogo"] = validar_catalogo(r["catalogo"])
     for k in ("spool", "estado"):
         if not isinstance(r[k], str) or not os.path.isabs(r[k]):
             raise ValueError("comandos.%s deve ser um caminho absoluto (texto)" % k)
@@ -152,6 +238,8 @@ class Executor:
         self.spool = cfg["spool"]
         self.estado = cfg["estado"]
         self.habilitadas = list(cfg["acoes"])
+        self.catalogo = {i["id"]: i for i in cfg["catalogo"]}
+        self.agora_inv = time.time
         self.executar = executar
         self.http = http
         self.agora_ns = agora_ns
@@ -239,6 +327,21 @@ class Executor:
             self._pai_fds = []
             self.fd_spool = self.fd_estado = None
 
+    def inventariar(self):
+        """Coleta o inventario e grava status/servicos.json. 1 se gravou, 0 se os diretorios ainda nao existem."""
+        self._pai_fds = []
+        try:
+            if self._abrir() is None:
+                return 0
+            dados = coletar_inventario(list(self.catalogo.values()), self.executar)
+            doc = {"gerado": int(self.agora_inv()), "servicos": dados}
+            self._gravar_arquivo(INVENTARIO_ARQ, json.dumps(doc, separators=(",", ":")).encode("utf-8"))
+            return 1
+        finally:
+            self._fechar(self._pai_fds)
+            self._pai_fds = []
+            self.fd_spool = self.fd_estado = None
+
     def _passada(self):
         agora = self.agora_ns()
         self._varrer(self.fd_spool, agora)
@@ -253,8 +356,9 @@ class Executor:
             if not n.endswith(".req"):
                 continue  # fora do glob da .path: ignorado
             m = RE_REQ.match(n)
-            if m:
-                pedidos.append((int(m.group(1)), n, m.group(2)))
+            acao = nome_para_acao(m.group(2)) if m else None
+            if acao:
+                pedidos.append((int(m.group(1)), n, acao))
             else:
                 self._descartar(n)
         pedidos.sort()
@@ -312,9 +416,16 @@ class Executor:
     def _executar_pedido(self, num, pid, acao, agora_ns, vistos, cooldown):
         if agora_ns - num > VALIDADE_S * 10 ** 9:
             return self._final(num, pid, acao, "falhou", "pedido expirado")
-        if acao not in ACOES:
+        svc = RE_SVC_ACAO.match(acao)
+        if svc:
+            item = self.catalogo.get(svc.group(1))
+            if item is None:
+                return self._final(num, pid, acao, "falhou", "servico fora do catalogo")
+            if svc.group(2) not in item["verbos"]:
+                return self._final(num, pid, acao, "falhou", "verbo nao permitido")
+        elif acao not in ACOES:
             return self._final(num, pid, acao, "falhou", "acao desconhecida")
-        if acao not in self.habilitadas:
+        elif acao not in self.habilitadas:
             return self._final(num, pid, acao, "falhou", "acao desligada na config")
         if acao in vistos:
             return self._final(num, pid, acao, "falhou", "duplicado")
@@ -388,7 +499,7 @@ class Executor:
         if not isinstance(dados, dict):
             return {}
         return {k: float(v) for k, v in dados.items()
-                if k in ACOES and isinstance(v, (int, float)) and not isinstance(v, bool)}
+                if acao_valida(k) and isinstance(v, (int, float)) and not isinstance(v, bool)}
 
     def _gravar_cooldown(self, cooldown):
         self._gravar_arquivo(COOLDOWN_ARQ, json.dumps(cooldown).encode("utf-8"))
@@ -429,7 +540,31 @@ class Executor:
             return False
         return rc == 0
 
+    @staticmethod
+    def argv_servico(item, verbo):
+        """argv FIXO por tipo; so o alvo (validado, root-owned) e o projeto entram. -> (argv, timeout)"""
+        v = VERBO_CLI[verbo]
+        tipo = item["tipo"]
+        if tipo == "systemd":
+            return ["systemctl", v, item["alvo"]], TIMEOUT_CMD
+        if tipo == "incus":
+            return ["incus", v, item["alvo"], "--project", item.get("projeto", "core")], TIMEOUT_INCUS
+        if tipo == "docker":
+            return INCUS_MICRO + ["docker", v, item["alvo"]], TIMEOUT_EXEC
+        return INCUS + ["systemctl", v, item["alvo"]], TIMEOUT_EXEC
+
+    def _servico(self, acao):
+        sid, verbo = RE_SVC_ACAO.match(acao).groups()
+        item = self.catalogo[sid]
+        if item["protegido"] and self._autoupdate_ativo():
+            raise Falha("atualizacao automatica em andamento")
+        argv, timeout = self.argv_servico(item, verbo)
+        self._cmd(argv, timeout)
+        return "concluido"
+
     def _rodar(self, acao):
+        if RE_SVC_ACAO.match(acao):
+            return self._servico(acao)
         if acao in BLOQUEADAS_NO_AUTOUPDATE and self._autoupdate_ativo():
             raise Falha("atualizacao automatica em andamento")
         if acao == "gpu-descarregar":
@@ -468,18 +603,176 @@ class Executor:
         return "descarregado: " + ", ".join(modelos) if modelos else "nenhum modelo carregado"
 
 
+# ------------------------------------------------------------------ inventario
+
+def _detalhe(texto):
+    return re.sub(r"[^A-Za-z0-9 _.,:/()=+-]", "?", str(texto))[:24]
+
+
+def parse_systemctl_show(texto):
+    """{unit: (ActiveState, SubState)} da saida de `systemctl show -p Id,ActiveState,SubState ...` (blocos separados por linha vazia)."""
+    r = {}
+    for bloco in texto.split("\n\n"):
+        kv = {}
+        for linha in bloco.splitlines():
+            k, sep, v = linha.partition("=")
+            if sep:
+                kv[k.strip()] = v.strip()
+        if kv.get("Id"):
+            r[kv["Id"]] = (kv.get("ActiveState", ""), kv.get("SubState", ""))
+    return r
+
+
+def parse_incus_csv(texto):
+    """{(nome, projeto): ESTADO} de `incus list --all-projects --format csv -c n,s,e`."""
+    r = {}
+    for linha in texto.splitlines():
+        col = linha.strip().split(",")
+        if len(col) >= 3 and col[0]:
+            r[(col[0], col[2])] = col[1].strip().upper()
+    return r
+
+
+def parse_docker_ps(texto):
+    """[(nome, estado)] de `docker ps -a --format '{{.Names}} {{.State}}'`."""
+    r = []
+    for linha in texto.splitlines():
+        col = linha.split()
+        if len(col) >= 2:
+            r.append((col[0], col[1].lower()))
+    return r
+
+
+def estado_systemd(ativo, sub):
+    if ativo in ("active", "reloading", "activating"):
+        return "ativo", _detalhe(sub or ativo)
+    if ativo in ("inactive", "deactivating"):
+        return "parado", _detalhe(sub or ativo)
+    if ativo == "failed":
+        return "falha", _detalhe(sub or ativo)
+    return "desconhecido", _detalhe(ativo or "sem dados")
+
+
+def estado_incus(estado):
+    if estado == "RUNNING":
+        return "ativo", "rodando"
+    if estado in ("STOPPED", "FROZEN"):
+        return "parado", _detalhe(estado.lower())
+    if estado == "ERROR":
+        return "falha", "erro"
+    return "desconhecido", _detalhe(estado.lower())
+
+
+def estado_docker(estado):
+    if estado == "running":
+        return "ativo", "rodando"
+    if estado in ("exited", "created", "paused"):
+        return "parado", _detalhe(estado)
+    if estado in ("restarting", "dead"):
+        return "falha", _detalhe(estado)
+    return "desconhecido", _detalhe(estado)
+
+
+def _estado_docker_prefixo(estados):
+    """Tarefas do swarm: todas rodando = ativo (N/N); alguma nao = falha; nenhuma = parado."""
+    if not estados:
+        return "parado", "sem tarefas"
+    n = sum(1 for e in estados if e == "running")
+    return ("ativo" if n == len(estados) else "falha"), "%d/%d" % (n, len(estados))
+
+
+def coletar_inventario(catalogo, executar):
+    """{id: {"estado", "detalhe"}} do catalogo (ja validado). `executar(argv, timeout)` -> (rc, stdout, stderr).
+
+    Uma chamada em lote por tipo, timeout de 10 s, nunca shell. Chamada que falha deixa seus itens "desconhecido".
+    """
+    saida = {}
+
+    def chamar(argv):
+        try:
+            rc, out, _ = executar(argv, TIMEOUT_INVENTARIO)
+        except subprocess.TimeoutExpired:
+            return None, "tempo esgotado"
+        except OSError:
+            return None, "comando indisponivel"
+        if rc != 0:
+            return None, "codigo %s" % rc
+        return out, ""
+
+    def tudo(itens, motivo):
+        for i in itens:
+            saida[i["id"]] = {"estado": "desconhecido", "detalhe": _detalhe(motivo)}
+
+    def porti(tipo):
+        return [i for i in catalogo if i["tipo"] == tipo]
+
+    def systemd(itens, prefixo_argv):
+        if not itens:
+            return
+        out, erro = chamar(prefixo_argv + ["systemctl", "show", "-p", "Id,ActiveState,SubState"] +
+                           [i["alvo"] for i in itens])
+        if out is None:
+            return tudo(itens, erro)
+        achados = parse_systemctl_show(out)
+        for i in itens:
+            if i["alvo"] in achados:
+                e, d = estado_systemd(*achados[i["alvo"]])
+                saida[i["id"]] = {"estado": e, "detalhe": d}
+            else:
+                saida[i["id"]] = {"estado": "desconhecido", "detalhe": "nao encontrado"}
+
+    systemd(porti("systemd"), [])
+    systemd(porti("rathena"), INCUS)
+
+    itens = porti("incus")
+    if itens:
+        out, erro = chamar(["incus", "list", "--all-projects", "--format", "csv", "-c", "n,s,e"])
+        if out is None:
+            tudo(itens, erro)
+        else:
+            achados = parse_incus_csv(out)
+            for i in itens:
+                est = achados.get((i["alvo"], i.get("projeto", "core")))
+                if est is None:
+                    saida[i["id"]] = {"estado": "desconhecido", "detalhe": "nao encontrado"}
+                else:
+                    e, d = estado_incus(est)
+                    saida[i["id"]] = {"estado": e, "detalhe": d}
+
+    itens = porti("docker")
+    if itens:
+        out, erro = chamar(INCUS_MICRO + ["docker", "ps", "-a", "--format", "{{.Names}} {{.State}}"])
+        if out is None:
+            tudo(itens, erro)
+        else:
+            lista = parse_docker_ps(out)
+            for i in itens:
+                if i.get("prefixo"):
+                    e, d = _estado_docker_prefixo([s for n, s in lista if n.startswith(i["alvo"])])
+                else:
+                    est = [s for n, s in lista if n == i["alvo"]]
+                    e, d = estado_docker(est[0]) if est else ("desconhecido", "nao encontrado")
+                saida[i["id"]] = {"estado": e, "detalhe": d}
+    return saida
+
+
 def carregar_cfg(caminho):
     """Le e valida a secao "comandos". OSError/ValueError com a causa."""
     with open(caminho, "r", encoding="utf-8") as f:
         dados = json.load(f)
     if not isinstance(dados, dict):
         raise ValueError("config: raiz deve ser um objeto")
-    return validar_cfg(dados.get("comandos", {}))
+    cfg = validar_cfg(dict(dados.get("comandos", {})) if isinstance(dados.get("comandos", {}), dict)
+                      else dados.get("comandos"))
+    cfg["catalogo"] = validar_catalogo(dados.get("servicos_kindle", []))
+    return cfg
 
 
 def main(argv=None, log=_log_padrao):
     p = argparse.ArgumentParser(description="Executor root do kindle-monitor.")
     p.add_argument("--config", required=True)
+    p.add_argument("--inventario", action="store_true",
+                   help="coleta o estado dos servicos do catalogo e grava status/servicos.json (sem tocar no spool)")
     args = p.parse_args(argv)
     try:
         cfg = carregar_cfg(args.config)
@@ -489,7 +782,11 @@ def main(argv=None, log=_log_padrao):
         return 0
     signal.signal(signal.SIGTERM, _sigterm)
     try:
-        Executor(cfg, log=log).processar_spool()
+        ex = Executor(cfg, log=log)
+        if args.inventario:
+            ex.inventariar()
+        else:
+            ex.processar_spool()
     except Recusa as e:
         log("recusado: %s" % _curto(e, 160))
         return 1

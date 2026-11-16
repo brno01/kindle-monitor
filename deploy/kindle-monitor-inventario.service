@@ -1,0 +1,23 @@
+[Unit]
+Description=kindle-monitor: inventory of service states (root, read-only commands)
+# Triggered by the timer every 15 s; a slow run must not be rate-limited into failure.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 -I /opt/kindle-monitor/deploy/kindle-monitor-executor.py --inventario --config /etc/kindle-monitor/config.json
+NoNewPrivileges=yes
+# incus reads its client config under /root/.config: read-only keeps /root unwritable but readable
+ProtectHome=read-only
+PrivateTmp=yes
+# up to 4 batched calls with a 10 s timeout each
+TimeoutStartSec=60
+# Same hardening as the executor. VALIDATE ON THE HOST (see server/README.md): systemctl needs D-Bus, incus its unix socket.
+ProtectSystem=strict
+ReadWritePaths=/run/kindle-monitor
+ReadWritePaths=-/var/lib/incus/unix.socket
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+# AF_UNIX is required (D-Bus, incus socket); do not remove it.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
