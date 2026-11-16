@@ -36,8 +36,9 @@ class CpuTest(unittest.TestCase):
         a = c.parse_cpu_stat(STAT_A)
         self.assertEqual(c.calcular_cpu(a, a), 0.0)
 
-    def test_amostrador_cacheia_5s(self):
-        leituras = iter([STAT_A, STAT_B, STAT_A, STAT_B])
+    def test_amostrador_cacheia_e_nao_dorme_depois_da_primeira(self):
+        c3 = "cpu  200 0 150 900 150 0 0 0 0 0\n"  # vs STAT_B: total 200, idle 100 -> 50%
+        leituras = iter([STAT_A, STAT_B, c3])
         relogio = [100.0]
         dormidas = []
         am = c.CpuAmostrador(
@@ -45,15 +46,15 @@ class CpuTest(unittest.TestCase):
             dormir=dormidas.append,
             relogio=lambda: relogio[0],
             intervalo_s=0.5,
+            cache_s=5.0,
         )
         self.assertEqual(am.medir(), 50.0)
         self.assertEqual(dormidas, [0.5])
         relogio[0] = 103.0
         self.assertEqual(am.medir(), 50.0)  # do cache: nao consome leituras
-        self.assertEqual(len(dormidas), 1)
         relogio[0] = 106.0
-        self.assertEqual(am.medir(), 50.0)  # recalculou
-        self.assertEqual(len(dormidas), 2)
+        self.assertEqual(am.medir(), 50.0)  # recalculou com a amostra anterior, sem dormir
+        self.assertEqual(dormidas, [0.5])
 
 
 class ProcTest(unittest.TestCase):

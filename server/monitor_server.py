@@ -39,6 +39,9 @@ def carregar_config(caminho):
         "balanceador": coletores.BALANCEADOR_PADRAO,
         "pares": [],
         "intervalo_cpu_s": 0.5,
+        "cache_cpu_s": coletores.CACHE_CPU_PADRAO,
+        "io": {"discos": [], "redes": []},
+        "intervalo_io_s": coletores.INTERVALO_IO_PADRAO,
         "portas": [],
         "intervalo_historico_s": coletores.INTERVALO_HISTORICO_PADRAO,
     }
@@ -76,6 +79,13 @@ def _validar(cfg):
     i = cfg["intervalo_cpu_s"]
     if isinstance(i, bool) or not isinstance(i, (int, float)) or not 0 < i <= 5:
         raise ValueError("config: intervalo_cpu_s deve estar entre 0 e 5")
+    c = cfg["cache_cpu_s"]
+    if isinstance(c, bool) or not isinstance(c, (int, float)) or not 0 <= c <= 60:
+        raise ValueError("config: cache_cpu_s deve estar entre 0 e 60")
+    i = cfg["intervalo_io_s"]
+    if isinstance(i, bool) or not isinstance(i, (int, float)) or not 0 < i <= 5:
+        raise ValueError("config: intervalo_io_s deve estar entre 0 e 5")
+    cfg["io"] = coletores.validar_io(cfg["io"])  # ValueError com a causa
     if not isinstance(cfg["portas"], list):
         raise ValueError("config: portas deve ser lista de {rotulo, host, porta}")
     for p in cfg["portas"]:

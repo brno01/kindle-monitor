@@ -29,9 +29,21 @@
     {"rotulo": "MAP", "host": "10.0.0.60", "porta": 5121}
   ],
 
+  "_comentario_io": "I/O de disco (lido de /proc/diskstats; 'dev' e o nome do dispositivo, ex. nvme0n1, sda) e de rede (/proc/net/dev; 'if' e o nome da interface). Nomes: so letras, digitos, '.', '_' e '-'. Dispositivo ou interface que nao existe some da tela. Taxas em bytes/s pela diferenca entre duas requisicoes. Use {} ou omita para nao mostrar.",
+  "io": {
+    "discos": [{"rotulo": "NVMe", "dev": "nvme0n1"}, {"rotulo": "HD", "dev": "sda"}],
+    "redes": [{"rotulo": "LAN", "if": "enp2s0f1"}, {"rotulo": "Tailnet", "if": "tailscale0"}]
+  },
+
+  "_comentario_intervalo_io_s": "Intervalo (s) entre as duas leituras na primeira requisicao de I/O ou quando a amostra anterior tem mais de 30 s. Entre 0 e 5.",
+  "intervalo_io_s": 0.3,
+
   "_comentario_intervalo_historico_s": "Segundos entre as amostras do historico em memoria (CPU, RAM e GPU %, ultimas 60 amostras: com 15 s sao 15 min), usado no grafico da imagem e em /historico.json. Entre 0 e 3600. Nada vai para o disco.",
   "intervalo_historico_s": 15,
 
-  "_comentario_intervalo_cpu_s": "Segundos entre as duas leituras de /proc/stat para calcular o CPU %. Entre 0 e 5. O resultado fica em cache por ~5 s.",
-  "intervalo_cpu_s": 0.5
+  "_comentario_intervalo_cpu_s": "Segundos entre as duas leituras de /proc/stat para calcular o CPU %. Entre 0 e 5. So vale na primeira leitura ou quando a anterior tem mais de 30 s; nas demais o CPU % vem da diferenca entre requisicoes, sem dormir.",
+  "intervalo_cpu_s": 0.5,
+
+  "_comentario_cache_cpu_s": "Segundos em que o CPU % calculado fica em cache. Entre 0 e 60. Com o Kindle pedindo a cada ~2 s, 1.5 deixa o numero mudar a cada requisicao.",
+  "cache_cpu_s": 1.5
 }

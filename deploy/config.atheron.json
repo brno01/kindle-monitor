@@ -21,6 +21,11 @@
     {"rotulo": "CHAR", "host": "10.0.0.60", "porta": 6121},
     {"rotulo": "MAP", "host": "10.0.0.60", "porta": 5121}
   ],
+  "io": {
+    "discos": [{"rotulo": "NVMe", "dev": "nvme0n1"}, {"rotulo": "HD", "dev": "sda"}],
+    "redes": [{"rotulo": "LAN", "if": "enp2s0f1"}, {"rotulo": "Tailnet", "if": "tailscale0"}]
+  },
   "intervalo_historico_s": 15,
-  "intervalo_cpu_s": 0.5
+  "intervalo_cpu_s": 0.5,
+  "cache_cpu_s": 1.5
 }

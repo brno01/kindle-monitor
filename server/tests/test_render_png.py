@@ -210,3 +210,64 @@ class GpuRamPngTest(unittest.TestCase):
 
     def test_tamanho_binario(self):
         self.assertEqual(render_png._tamanho(7763836 * 1024, 20331012 * 1024, 1024), "7.4 / 19.4 GB")
+
+
+IO = {
+    "discos": [{"rotulo": "NVMe", "dev": "nvme0n1", "leitura_bps": 2.1 * 1024 ** 2, "escrita_bps": 0.8 * 1024 ** 2},
+               {"rotulo": "HD", "dev": "sda", "leitura_bps": 0.0, "escrita_bps": 0.1 * 1024 ** 2}],
+    "redes": [{"rotulo": "LAN", "if": "enp2s0f1", "rx_bps": 1.2 * 1024 ** 2, "tx_bps": 0.3 * 1024 ** 2},
+              {"rotulo": "Tailnet", "if": "tailscale0", "rx_bps": 40 * 1024, "tx_bps": 12 * 1024}],
+}
+
+
+class IoPngTest(unittest.TestCase):
+    def test_bloco_io_muda_a_imagem_e_mantem_dimensoes(self):
+        sem = render_png.render_png(completo(), historico())
+        com = render_png.render_png(completo(io=IO), historico())
+        self.assertEqual(ihdr(com), (1236, 1648))
+        self.assertNotEqual(sem, com)
+
+    def test_io_vazio_ou_invalido_nao_desenha_nem_quebra(self):
+        base = render_png.render_png(completo(), historico())
+        self.assertEqual(render_png.render_png(completo(io={"discos": [], "redes": []}), historico()), base)
+        for io in ({"erro": "n/d"}, "x", {"discos": "x", "redes": [1, None]},
+                   {"discos": [{"rotulo": "A"}], "redes": [{"rotulo": "B", "rx_bps": None, "tx_bps": -1}]}):
+            self.assertEqual(ihdr(render_png.render_png(completo(io=io), historico())), (1236, 1648))
+
+    def test_nada_fora_dos_limites_com_io(self):
+        for m in (completo(io=IO), cheio() | {"io": IO},
+                  cheio() | {"io": IO, "gpu": GpuRamPngTest.ON, "pares": [completo()["pares"][0]]},
+                  completo(io={"discos": [dict(IO["discos"][0], rotulo="R" * 16, leitura_bps=1023.9 * 1024 ** 4)],
+                               "redes": IO["redes"]})):
+            c = cv.Canvas(1236, 1648, estrito=True)
+            render_png.desenhar(c, m, historico())
+
+    def test_caso_cheio_com_io_cabe_na_menor_densidade_sem_omitir(self):
+        # the full case must not drop services ("+N servicos") just because of the I/O block
+        m = cheio() | {"io": IO, "gpu": GpuRamPngTest.ON}
+        blocos_usados = {}
+        orig = render_png._montar
+
+        def espia(m_, hist, d, w, ms=None, mp=None):
+            blocos_usados["ultimo"] = (d, ms, mp)
+            return orig(m_, hist, d, w, ms, mp)
+        render_png._montar = espia
+        try:
+            render_png.desenhar(cv.Canvas(1236, 1648, estrito=True), m, historico())
+        finally:
+            render_png._montar = orig
+        self.assertEqual(blocos_usados["ultimo"][1:], (None, None))
+
+    def test_margens_laterais_vazias_com_io(self):
+        larg, alt, linhas = pixels(render_png.render_png(cheio() | {"io": IO}, historico()))
+        for y in range(render_png.ALTURA_CABECALHO + 1, alt):
+            self.assertEqual(min(linhas[y][:40]), 255, y)
+            self.assertEqual(min(linhas[y][larg - 40:]), 255, y)
+
+    def test_tempo_de_render_com_io(self):
+        melhor = float("inf")
+        for _ in range(3):
+            t0 = time.monotonic()
+            render_png.render_png(cheio() | {"io": IO}, historico())
+            melhor = min(melhor, time.monotonic() - t0)
+        self.assertLess(melhor, 2.0)

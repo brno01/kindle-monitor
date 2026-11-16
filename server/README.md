@@ -16,10 +16,10 @@ Opcoes: `--bind` (padrao `127.0.0.1`), `--porta` (padrao `8765`), `--config` (ar
 ## Endpoints
 | Caminho | Resposta |
 |---|---|
-| `/tela.txt` | texto puro ASCII, uma linha por linha da tela (ate `--colunas` colunas e 26 linhas), barras como `[#####-----]  50%`; inclui a linha `Portas: LOGIN ok CHAR ok MAP FALHA` |
+| `/tela.txt` | texto puro ASCII, uma linha por linha da tela (ate `--colunas` colunas e 26 linhas; linhas `IO`/`NET` quando ha `io` na config), barras como `[#####-----]  50%`; inclui a linha `Portas: LOGIN ok CHAR ok MAP FALHA` |
 | `/tela.png` | imagem PNG 8-bit em tons de cinza (`image/png`), `--largura` x `--altura` (padrao 1236x1648, Kindle Paperwhite 5), gerada so com a biblioteca padrao |
 | `/historico.json` | anel em memoria das ultimas 60 amostras: `intervalo_s`, `max`, `t` (epoch), `cpu`, `ram` e `gpu` (so se houver GPU), em %, da mais antiga para a mais nova (`null` = leitura falhou) |
-| `/metricas.json` | metricas brutas em JSON (`host`, `gerado_em` ISO, cpu, ram, gpu, discos, servicos, ragnarok, portas, historico, pares). `?pares=0` nao consulta os pares |
+| `/metricas.json` | metricas brutas em JSON (`host`, `gerado_em` ISO, cpu, ram, gpu, discos, io, servicos, ragnarok, portas, historico, pares). `?pares=0` nao consulta os pares |
 | `/saude` | `ok` |
 
 Outro caminho: 404. Metodo diferente de GET: 405. Todas as respostas levam `Cache-Control: no-store`.
@@ -33,7 +33,17 @@ Copie para `config.json` e ajuste. Chaves que comecam com `_` sao comentarios e 
 - `pares`: lista de `{nome, url}` de outros servidores iguais a este; busca `<url>/metricas.json?pares=0` com timeout de 2 s. Se falhar, a tela mostra `nome: sem resposta`.
 - `portas`: lista de `{rotulo, host, porta}` testadas com conexao TCP (timeout de 0,6 s, em paralelo, resultado em cache por ~5 s). `rotulo` tem ate 12 caracteres (letras, digitos, `_`, `.`, `-`), `host` e IP literal ou nome simples e `porta` vai de 1 a 65535; valor invalido faz o servidor recusar a config. Aparece como `portas: [{rotulo, aberto}]` no JSON, como linha `Portas:` no texto e como "pilulas" na imagem (preenchida = aberta, so contorno com X = fechada). Os valores do exemplo (`10.0.0.60`, 6900/6121/5121) sao os padroes do rAthena: ajuste para o seu.
 - `intervalo_historico_s`: segundos entre as amostras do historico (padrao `15`; entre 0 e 3600). Uma thread de fundo (daemon) guarda CPU %, RAM % e GPU % das ultimas 60 amostras (15 min no padrao); alimenta o grafico da imagem e o `/historico.json`. So memoria: nada e escrito em disco, e o historico recomeca vazio ao reiniciar.
-- `intervalo_cpu_s`: intervalo entre as duas leituras de `/proc/stat` (CPU % fica em cache por ~5 s).
+- `intervalo_cpu_s`: intervalo entre as duas leituras de `/proc/stat` (padrao `0.5`, entre 0 e 5). So vale na primeira leitura ou quando a amostra anterior tem mais de 30 s; nas demais requisicoes o CPU % vem da diferenca entre a leitura atual e a anterior, sem dormir.
+- `cache_cpu_s`: segundos em que o CPU % calculado fica em cache (padrao `1.5`, entre 0 e 60). Com o Kindle pedindo a tela a cada ~2 s, o numero muda a cada requisicao. Requisicao a menos de 0,5 s da amostra anterior reutiliza o ultimo valor.
+- `io`: `{"discos": [{"rotulo", "dev"}], "redes": [{"rotulo", "if"}]}`. `dev` e o nome do dispositivo em `/proc/diskstats` (ex.: `nvme0n1`, `sda`; setores lidos = coluna 6, escritos = coluna 10, setor de 512 bytes) e `if` o da interface em `/proc/net/dev` (`rx_bytes` e `tx_bytes`). `dev` e `if` aceitam so letras, digitos, `.`, `_` e `-` (ate 32); `rotulo` tem de 1 a 16 caracteres ASCII simples; valor invalido faz o servidor recusar a config. Padrao: nada (`{"discos": [], "redes": []}`, sem bloco na tela).
+- `intervalo_io_s`: intervalo (padrao `0.3`, entre 0 e 5) entre as duas leituras feitas na primeira requisicao de I/O ou quando a amostra anterior tem mais de 30 s.
+
+### I/O: como as taxas sao calculadas
+As taxas (bytes/s) saem da diferenca entre a amostra atual e a anterior, guardada em memoria, dividida pelo tempo (relogio monotonico) entre elas. Na primeira requisicao, ou se a amostra anterior tiver mais de 30 s, o servidor le duas vezes com `intervalo_io_s` entre as leituras. Se a ultima amostra tem menos de 0,5 s, a ultima taxa e reutilizada (nada e lido). Contador que voltou para tras (reboot, overflow) da `null` (`n/d` na tela) naquela amostra, nunca taxa negativa. Dispositivo ou interface que nao existe em `/proc` some da tela e do JSON; se o proprio arquivo de `/proc` nao puder ser lido, as linhas aparecem com `n/d`.
+
+`metricas.io`: `{"discos": [{"rotulo", "dev", "leitura_bps", "escrita_bps"}], "redes": [{"rotulo", "if", "rx_bps", "tx_bps"}]}`, em bytes/s (numero ou `null`). A chave so existe se a config tiver algum dispositivo/interface; se a leitura falhar, vale `{"erro": "n/d"}`.
+
+Unidades na tela: **base 1024** (1 KB/s = 1024 B/s, 1 MB/s = 1024 KB/s, igual aos GiB da RAM), uma casa decimal: `512 B/s`, `40.0 KB/s`, `12.3 MB/s`. No `/tela.txt` a forma curta: `IO NVMe r 12.3M w 1.2M` e `NET LAN rx 3.4M tx 0.2M` (`B`, `K`, `M`, `G`; o rotulo e encurtado se a linha passar de `--colunas`).
 
 Cada coletor falha isolado: o que der erro aparece como `n/d` na tela e nunca derruba a requisicao. Sem GPU NVIDIA ou sem sensor de temperatura, a linha simplesmente nao aparece.
 
@@ -44,7 +54,7 @@ cd server && python3 -I -m unittest discover -s tests
 Os testes usam fixtures e fakes: nao precisam de rede, `nvidia-smi`, `systemctl` nem `/var/lib/cerberus`.
 
 ## Imagem (`/tela.png`)
-Retrato, faixa de cabecalho preta com o host e a hora, uma linha por metrica (CPU, RAM, GPU, VRAM, SWAP e discos) com numero grande e barra grossa, grafico do historico ao lado de CPU/RAM/GPU (na RAM o `usado / total GB` fica em x=228 e o grafico comeca depois do texto; `/tela.txt` mostra `7.4/19.4G` na linha da RAM e da SWAP, ou logo abaixo se nao couber), GPU "desativada" (util 0 % e memoria usada 0 MiB: uma linha so com `desativada · 39°C`, sem barra nem VRAM; `/tela.txt`: `GPU   desativada 39C`; `metricas.gpu.estado` e `desativada` ou `ativa`), temperaturas/carga/uptime, bloco Ragnarok (jogadores, pilulas LOGIN/CHAR/MAP e aviso `PARADO`), servicos (falhas primeiro) e cartoes compactos dos pares. Campos ausentes nao ocupam espaco; se nao couber, o layout reduz numeros e espacamentos e, no limite, omite itens (`+N servicos`), sem cortar texto nem desenhar fora da imagem. Textos sem acento (a fonte embutida e ASCII mais `°` e `·`).
+Retrato, faixa de cabecalho preta com o host e a hora, uma linha por metrica (CPU, RAM, GPU, VRAM, SWAP e discos) com numero grande e barra grossa, grafico do historico ao lado de CPU/RAM/GPU (na RAM o `usado / total GB` fica em x=228 e o grafico comeca depois do texto; `/tela.txt` mostra `7.4/19.4G` na linha da RAM e da SWAP, ou logo abaixo se nao couber), GPU "desativada" (util 0 % e memoria usada 0 MiB: uma linha so com `desativada · 39°C`, sem barra nem VRAM; `/tela.txt`: `GPU   desativada 39C`; `metricas.gpu.estado` e `desativada` ou `ativa`), bloco de I/O (linhas DISCO com `L` leitura e `E` escrita, REDE com `rx` e `tx`, em 1 ou 2 colunas conforme couber), temperaturas/carga/uptime (numa linha so quando cabem), bloco Ragnarok (jogadores, pilulas LOGIN/CHAR/MAP e aviso `PARADO`), servicos (falhas primeiro) e cartoes compactos dos pares. Campos ausentes nao ocupam espaco; se nao couber, o layout reduz numeros e espacamentos e, no limite, omite itens (`+N servicos`), sem cortar texto nem desenhar fora da imagem. Textos sem acento (a fonte embutida e ASCII mais `°` e `·`).
 
 Em producao so entram `png.py` (encoder PNG com `struct` + `zlib`), `canvas.py` (desenho) e `render_png.py` (layout). As fontes DejaVu vem **pre-rasterizadas** em `fonte_dados.py` (arquivo gerado, ~300 KB; licenca DejaVu/Bitstream Vera no topo do arquivo). Para regerar (ferramenta de desenvolvimento, usa Pillow so via `uv`, nada global):
 ```

@@ -24,6 +24,11 @@ from urllib.parse import urlsplit
 
 ND = {"erro": "n/d"}
 CACHE_S = 5.0
+CACHE_CPU_PADRAO = 1.5
+IDADE_AMOSTRA_MAX_S = 30.0  # older than this, a previous sample is useless: sample twice again
+INTERVALO_MIN_S = 0.5  # closer requests reuse the last computed rate
+INTERVALO_IO_PADRAO = 0.3
+SETOR_B = 512
 IDADE_PARADO_S = 120
 LIMITE_RESPOSTA_PAR = 1_000_000
 TIMEOUT_PAR_S = 2.0
@@ -34,6 +39,8 @@ HISTORICO_MAX = 60
 INTERVALO_HISTORICO_PADRAO = 15
 _ROTULO_PORTA = re.compile(r"^[A-Za-z0-9_.-]{1,12}$")
 _NOME_HOST = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
+_NOME_DEV = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
+_ROTULO_IO = re.compile(r"^[A-Za-z0-9 _.+/-]{1,16}$")
 _NOME_UNIDADE = re.compile(r"^[A-Za-z0-9@:._\\-]+$")
 
 
@@ -64,29 +71,170 @@ def calcular_cpu(antes, depois):
 
 
 class CpuAmostrador:
-    """Duas leituras de /proc/stat com intervalo curto; resultado em cache por ~5 s."""
+    """CPU % pela diferenca entre a leitura atual e a anterior de /proc/stat.
 
-    def __init__(self, leitor, dormir=time.sleep, relogio=time.monotonic, intervalo_s=0.5, cache_s=CACHE_S):
+    So a primeira leitura (ou uma anterior com mais de 30 s) dorme `intervalo_s` entre duas
+    leituras; depois cada chamada faz uma leitura e compara com a anterior. Resultado em cache
+    por `cache_s`; chamadas a menos de 0,5 s da amostra anterior reutilizam o ultimo valor.
+    """
+
+    def __init__(self, leitor, dormir=time.sleep, relogio=time.monotonic, intervalo_s=0.5, cache_s=CACHE_CPU_PADRAO):
         self._leitor = leitor
         self._dormir = dormir
         self._relogio = relogio
         self._intervalo = intervalo_s
         self._cache_s = cache_s
         self._lock = threading.Lock()
-        self._t = None
+        self._t = None  # when the cached value was computed
         self._valor = None
+        self._prev = None  # (total, ocioso)
+        self._prev_t = None
 
     def medir(self):
         with self._lock:
             agora = self._relogio()
             if self._t is not None and agora - self._t < self._cache_s:
                 return self._valor
-            a = parse_cpu_stat(self._leitor())
-            self._dormir(self._intervalo)
-            b = parse_cpu_stat(self._leitor())
-            self._valor = calcular_cpu(a, b)
+            if self._prev is None or agora - self._prev_t > IDADE_AMOSTRA_MAX_S:
+                a = parse_cpu_stat(self._leitor())
+                self._dormir(self._intervalo)
+                b = parse_cpu_stat(self._leitor())
+                self._prev, self._prev_t = b, self._relogio()
+                self._valor = calcular_cpu(a, b)
+            else:
+                if agora - self._prev_t < INTERVALO_MIN_S and self._valor is not None:
+                    return self._valor
+                b = parse_cpu_stat(self._leitor())
+                self._valor = calcular_cpu(self._prev, b)
+                self._prev, self._prev_t = b, agora
             self._t = self._relogio()
             return self._valor
+
+
+# --------------------------------------------------------------------------- I/O
+
+def parse_diskstats(texto):
+    """{dispositivo: (bytes_lidos, bytes_escritos)} de /proc/diskstats (setores = coluna 6 e 10, de 512 B)."""
+    r = {}
+    for linha in texto.splitlines():
+        p = linha.split()
+        if len(p) < 10:
+            continue
+        try:
+            r[p[2]] = (int(p[5]) * SETOR_B, int(p[9]) * SETOR_B)
+        except ValueError:
+            continue
+    return r
+
+
+def parse_net_dev(texto):
+    """{interface: (rx_bytes, tx_bytes)} de /proc/net/dev (as duas primeiras linhas sao cabecalho)."""
+    r = {}
+    for linha in texto.splitlines()[2:]:
+        nome, sep, resto = linha.partition(":")
+        campos = resto.split()
+        if not sep or len(campos) < 9:
+            continue
+        try:
+            r[nome.strip()] = (int(campos[0]), int(campos[8]))
+        except ValueError:
+            continue
+    return r
+
+
+def validar_io(io):
+    """Valida {"discos": [{rotulo, dev}], "redes": [{rotulo, if}]}; devolve a forma normalizada."""
+    if not isinstance(io, dict):
+        raise ValueError("io: deve ser um objeto {discos, redes}")
+    saida = {"discos": [], "redes": []}
+    for chave, campo in (("discos", "dev"), ("redes", "if")):
+        itens = io.get(chave, [])
+        if not isinstance(itens, list):
+            raise ValueError("io: %s deve ser lista de {rotulo, %s}" % (chave, campo))
+        for item in itens:
+            if not isinstance(item, dict):
+                raise ValueError("io: cada item de %s deve ser {rotulo, %s}" % (chave, campo))
+            rotulo, nome = item.get("rotulo"), item.get(campo)
+            if not isinstance(rotulo, str) or not _ROTULO_IO.match(rotulo):
+                raise ValueError("io: rotulo invalido (1 a 16 caracteres ASCII simples)")
+            if not isinstance(nome, str) or not _NOME_DEV.match(nome):
+                raise ValueError("io: %s invalido (so letras, digitos, '.', '_' e '-', ate 32)" % campo)
+            saida[chave].append({"rotulo": rotulo, campo: nome})
+    return saida
+
+
+def _taxa(antes, depois, dt):
+    """Bytes/s entre dois contadores; None se nao ha como calcular (contador voltou, sem dt, sem dado)."""
+    if antes is None or depois is None or dt <= 0 or depois < antes:
+        return None
+    return round((depois - antes) / dt, 1)
+
+
+class IoAmostrador:
+    """Taxas de I/O de disco e rede pela diferenca entre duas amostras de /proc/diskstats e /proc/net/dev.
+
+    Primeira chamada (ou amostra anterior com mais de 30 s): duas leituras com `intervalo_s` entre elas.
+    Depois: uma leitura por chamada, comparada com a anterior. Menos de 0,5 s desde a ultima amostra:
+    devolve a ultima taxa sem ler nada (a amostra de referencia nao muda, o proximo intervalo fica maior).
+    """
+
+    def __init__(self, leitor, io, dormir=time.sleep, relogio=time.monotonic, intervalo_s=INTERVALO_IO_PADRAO):
+        self._leitor = leitor
+        self._discos = list((io or {}).get("discos") or [])
+        self._redes = list((io or {}).get("redes") or [])
+        self._dormir = dormir
+        self._relogio = relogio
+        self._intervalo = intervalo_s
+        self._lock = threading.Lock()
+        self._prev = None
+        self._ultimo = None
+
+    def _ler(self, caminho, parse, itens):
+        if not itens:
+            return {}
+        try:
+            return parse(self._leitor(caminho))
+        except Exception:
+            return None  # unreadable file: every entry becomes n/d
+
+    def _amostra(self):
+        return (self._relogio(),
+                self._ler("/proc/diskstats", parse_diskstats, self._discos),
+                self._ler("/proc/net/dev", parse_net_dev, self._redes))
+
+    def _calcular(self, prev, cur):
+        dt = cur[0] - prev[0]
+        r = {"discos": [], "redes": []}
+        for chave, campo, idx, nomes in (("discos", "dev", 1, ("leitura_bps", "escrita_bps")),
+                                         ("redes", "if", 2, ("rx_bps", "tx_bps"))):
+            itens = self._discos if chave == "discos" else self._redes
+            antes, depois = prev[idx], cur[idx]
+            for item in itens:
+                nome = item[campo]
+                if depois is not None and nome not in depois:
+                    continue  # absent device/interface: row omitted
+                a = (antes or {}).get(nome)
+                d = (depois or {}).get(nome)
+                linha = dict(item)
+                for k, nome_taxa in enumerate(nomes):
+                    linha[nome_taxa] = _taxa(a[k] if a else None, d[k] if d else None, dt)
+                r[chave].append(linha)
+        return r
+
+    def medir(self):
+        with self._lock:
+            if not (self._discos or self._redes):
+                return {"discos": [], "redes": []}
+            agora = self._relogio()
+            if self._prev is None or agora - self._prev[0] > IDADE_AMOSTRA_MAX_S:
+                self._prev = self._amostra()
+                self._dormir(self._intervalo)
+            elif agora - self._prev[0] < INTERVALO_MIN_S and self._ultimo is not None:
+                return self._ultimo
+            cur = self._amostra()
+            self._ultimo = self._calcular(self._prev, cur)
+            self._prev = cur
+            return self._ultimo
 
 
 # ------------------------------------------------------------------------- /proc
@@ -416,6 +564,11 @@ class Coletor:
         self._cpu = CpuAmostrador(
             lambda: self._ler("/proc/stat"), dormir=dormir, relogio=relogio,
             intervalo_s=float(config.get("intervalo_cpu_s", 0.5)),
+            cache_s=float(config.get("cache_cpu_s", CACHE_CPU_PADRAO)),
+        )
+        self._io = IoAmostrador(
+            lambda caminho: self._ler(caminho), config.get("io"), dormir=dormir, relogio=relogio,
+            intervalo_s=float(config.get("intervalo_io_s", INTERVALO_IO_PADRAO)),
         )
         self._lock_pares = threading.Lock()
         self._pares_t = None
@@ -542,6 +695,9 @@ class Coletor:
             m["ragnarok"] = _isolado(
                 lambda: parse_ragnarok(self._ler(cfg["balanceador"]), self._agora())
             )
+        io = cfg.get("io")
+        if isinstance(io, dict) and (io.get("discos") or io.get("redes")):
+            m["io"] = _isolado(self._io.medir)
         m["historico"] = self.historico()
         if com_pares and cfg.get("pares"):
             try:

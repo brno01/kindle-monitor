@@ -3,6 +3,7 @@ import unicodedata
 from datetime import datetime
 
 import coletores
+import formato
 
 MAX_LINHAS = 26
 ETQ = 5  # largura fixa do rotulo das linhas com barra
@@ -88,6 +89,25 @@ def _temp_txt(v):
     return "%dC" % int(round(float(v)))
 
 
+def _linhas_io(io, cols):
+    """'IO NVMe r 12.3M w 1.2M' e 'NET LAN rx 3.4M tx 0.2M'; rotulo encurtado para caber em `cols`."""
+    if not _ok(io):
+        return []
+    linhas = []
+    for chave, pre, campo, a, b, la, lb in (
+            ("discos", "IO", "rotulo", "leitura_bps", "escrita_bps", "r", "w"),
+            ("redes", "NET", "rotulo", "rx_bps", "tx_bps", "rx", "tx")):
+        itens = io.get(chave)
+        for it in itens if isinstance(itens, list) else []:
+            try:
+                resto = " %s %s %s %s" % (la, formato.taxa_curta(it.get(a)), lb, formato.taxa_curta(it.get(b)))
+                rot = ascii_seguro(it.get(campo, "?"))[: max(1, cols - len(pre) - 1 - len(resto))]
+                linhas.append("%s %s%s" % (pre, rot, resto))
+            except Exception:
+                linhas.append("%s n/d" % pre)
+    return linhas
+
+
 def _secao(m, cols, compacto, nome=None):
     linhas = ["== %s ==" % (nome or m.get("host", "?"))]
     cpu, ram, swap, gpu = m.get("cpu"), m.get("ram"), m.get("swap"), m.get("gpu")
@@ -128,6 +148,7 @@ def _secao(m, cols, compacto, nome=None):
                     linhas.append(_nd("Disco", ew))
         elif discos is not None:
             linhas.append(_nd("Disco", ew))
+        linhas += _linhas_io(m.get("io"), cols)
         try:
             c = m["carga"]
             linhas.append("Carga %.2f %.2f %.2f" % (c["1m"], c["5m"], c["15m"]))

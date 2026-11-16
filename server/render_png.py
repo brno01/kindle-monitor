@@ -8,6 +8,7 @@ import unicodedata
 from datetime import datetime
 
 import coletores
+import formato
 from canvas import BRANCO, CLARO, ESCURO, MEDIO, PRETO, TRILHO, Canvas, altura_capital
 
 NEG, REG, MONO = "sans-bold", "sans", "mono"
@@ -18,10 +19,10 @@ HIST_MAX = 60
 
 # Densidades, da mais folgada a mais apertada.
 DENSIDADES = (
-    dict(num=72, pct=34, barra=26, esp_linha=26, esp_secao=34, svc_h=46, svc_cols=1, card_h=150),
-    dict(num=72, pct=34, barra=26, esp_linha=16, esp_secao=26, svc_h=42, svc_cols=2, card_h=146),
-    dict(num=48, pct=26, barra=24, esp_linha=14, esp_secao=22, svc_h=40, svc_cols=2, card_h=140),
-    dict(num=48, pct=26, barra=20, esp_linha=10, esp_secao=16, svc_h=36, svc_cols=2, card_h=134),
+    dict(num=72, pct=34, barra=26, esp_linha=26, esp_secao=34, svc_h=46, svc_cols=1, card_h=150, io_h=44),
+    dict(num=72, pct=34, barra=26, esp_linha=16, esp_secao=26, svc_h=42, svc_cols=2, card_h=146, io_h=42),
+    dict(num=48, pct=26, barra=24, esp_linha=14, esp_secao=22, svc_h=40, svc_cols=2, card_h=140, io_h=40),
+    dict(num=48, pct=26, barra=20, esp_linha=10, esp_secao=16, svc_h=36, svc_cols=2, card_h=134, io_h=36),
 )
 
 
@@ -264,27 +265,110 @@ def _bloco_info(m, d, w):
         pass
     if not (partes_temp or up or carga):
         return []
+    temp = "  \u00b7  ".join(partes_temp)
     linha_h = 46
-    topo = bool(partes_temp or up)  # primeira linha: temperaturas e uptime
+    cap = altura_capital(NEG, 34)
+
+    def itens(c, tam):
+        """[(etiqueta, valor)] na ordem TEMP, CARGA, UP, com a largura de cada um."""
+        r = []
+        for etq, val in (("TEMP", temp), ("CARGA", carga), ("UP", up)):
+            if val:
+                r.append((etq, val, c.medir(etq, NEG, 26) + 14 + c.medir(val, NEG, tam)))
+        return r
+
+    def cabe_numa_linha(c, tam):
+        it = itens(c, tam)
+        return sum(i[2] for i in it) + 36 * (len(it) - 1) <= w
 
     def desenhar(c, y, x):
-        base = y + altura_capital(NEG, 34)
-        if topo:
-            px = x
-            if partes_temp:
-                c.texto(px, base, "TEMP", NEG, 26, ESCURO)
-                px += c.medir("TEMP", NEG, 26) + 16
-                c.texto(px, base, "  \u00b7  ".join(partes_temp), NEG, 34, PRETO)
-            if up:
-                c.texto(x + w, base, up, NEG, 34, PRETO, alinhar="dir")
-                c.texto(x + w - c.medir(up, NEG, 34) - 16, base, "UP", NEG, 26, ESCURO, alinhar="dir")
+        if cabe_numa_linha(c, 34):
+            tam = 34
+            it = itens(c, tam)
+            livre = w - sum(i[2] for i in it)
+            gap = livre / float(max(1, len(it) - 1)) if len(it) > 1 else 0
+            base = y + altura_capital(NEG, tam)
+            px = float(x)
+            for etq, val, largura in it:
+                c.texto(int(px), base, etq, NEG, 26, ESCURO)
+                c.texto(int(px + c.medir(etq, NEG, 26) + 14), base, val, NEG, tam, PRETO)
+                px += largura + gap
+            return
+        base = y + cap
+        px = x
+        if partes_temp:
+            c.texto(px, base, "TEMP", NEG, 26, ESCURO)
+            px += c.medir("TEMP", NEG, 26) + 14
+            c.texto(px, base, temp, NEG, 34, PRETO)
+        if up:
+            c.texto(x + w, base, up, NEG, 34, PRETO, alinhar="dir")
+            c.texto(x + w - c.medir(up, NEG, 34) - 14, base, "UP", NEG, 26, ESCURO, alinhar="dir")
         if carga:
-            y2 = base + (linha_h if topo else 0)
+            y2 = base + (linha_h if (partes_temp or up) else 0)
             c.texto(x, y2, "CARGA", NEG, 26, ESCURO)
-            c.texto(x + c.medir("CARGA", NEG, 26) + 16, y2, carga, NEG, 34, PRETO)
+            c.texto(x + c.medir("CARGA", NEG, 26) + 14, y2, carga, NEG, 34, PRETO)
 
-    h = altura_capital(NEG, 34) + (linha_h if (topo and carga) else 0)
+    # height is decided at layout time (no canvas yet): measure with a throwaway one
+    medidor = Canvas(8, 8)
+    if cabe_numa_linha(medidor, 34):
+        h = altura_capital(NEG, 34)
+    else:
+        h = cap + (linha_h if ((partes_temp or up) and carga) else 0)
     return [(h, desenhar, d["esp_secao"], None)]
+
+
+def _bloco_io(m, d, w):
+    """Taxas de disco (L = leitura, E = escrita) e de rede (rx/tx): uma tabela compacta de 1 ou 2 colunas."""
+    io = m.get("io")
+    if not _ok(io):
+        return []
+    grupos = []  # (titulo, [(rotulo, (tag1, val1), (tag2, val2))])
+    for chave, titulo, tags, campos in (("discos", "DISCO", ("L", "E"), ("leitura_bps", "escrita_bps")),
+                                         ("redes", "REDE", ("rx", "tx"), ("rx_bps", "tx_bps"))):
+        lista = io.get(chave)
+        linhas = []
+        for it in lista if isinstance(lista, list) else []:
+            if isinstance(it, dict):
+                linhas.append((_limpar(it.get("rotulo", "?")),
+                               (tags[0], formato.taxa(it.get(campos[0]))), (tags[1], formato.taxa(it.get(campos[1])))))
+        if linhas:
+            grupos.append((titulo, linhas))
+    if not grupos:
+        return []
+    h_linha = d["io_h"]
+    tam = tam_tag = tam_rot = 26  # embedded fonts only come in 26 and 34 px (above 34: bold only)
+    medidor = Canvas(8, 8)
+    titulo_w = max(medidor.medir(t, NEG, 26) for t, _ in grupos) + 14
+    todas = [l for _, ls in grupos for l in ls]
+    rot_w = max(medidor.medir(l[0], NEG, tam_rot) for l in todas) + 14
+
+    def larg_par(par):
+        return medidor.medir(par[0], REG, tam_tag) + 8 + medidor.medir(par[1], NEG, tam)
+    a_w = max(larg_par(l[1]) for l in todas) + 18
+    b_w = max(larg_par(l[2]) for l in todas)
+    celula = int(rot_w + a_w + b_w)
+    gap_col = 20
+    cols = 2 if 2 * celula + gap_col <= w - titulo_w else 1
+    cw = (w - titulo_w - gap_col * (cols - 1)) // cols
+    n_linhas = sum(-(-len(ls) // cols) for _, ls in grupos)
+    h = n_linhas * h_linha
+
+    def desenhar(c, y, x):
+        yy = y
+        for titulo, ls in grupos:
+            n = -(-len(ls) // cols)
+            c.texto(x, yy + (h_linha + altura_capital(NEG, 26)) // 2, titulo, NEG, 26, ESCURO)
+            for i, (rot, a, b) in enumerate(ls):
+                cx = x + titulo_w + (i % cols) * (cw + gap_col)
+                base = yy + (i // cols) * h_linha + (h_linha + altura_capital(NEG, tam)) // 2
+                c.texto(cx, base, _ajustar(c, rot, NEG, tam_rot, rot_w - 6), NEG, tam_rot, PRETO)
+                for k, (tag, val) in enumerate((a, b)):
+                    px = cx + rot_w + (0 if k == 0 else a_w)
+                    c.texto(px, base, tag, REG, tam_tag, ESCURO)
+                    c.texto(px + c.medir(tag, REG, tam_tag) + 8, base, val, NEG, tam, PRETO)
+            yy += n * h_linha
+
+    return [(h, desenhar, d["esp_linha"] + 6, None)]
 
 
 def _bloco_ragnarok(m, d, w):
@@ -461,6 +545,7 @@ def _bloco_pares(m, d, w, max_pares=None):
 def _montar(m, hist, d, w, max_serv=None, max_pares=None):
     blocos = []
     blocos += _bloco_metricas(m, hist, d, w)
+    blocos += _bloco_io(m, d, w)
     blocos += _bloco_info(m, d, w)
     blocos += _bloco_ragnarok(m, d, w)
     blocos += _bloco_servicos(m, d, w, max_serv)
