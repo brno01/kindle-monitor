@@ -75,7 +75,7 @@ while :; do
   # interruptible sleep: a signal is handled right away instead of after the sleep ends
   # sleep only what is left of the interval, so the period stays close to INTERVAL
   left=$((INTERVAL - ($(date +%s) - T0)))
-  [ "$left" -lt 1 ] && left=1
+  [ "$left" -lt 0 ] && left=0
   sleep "$left" &
   wait $!
 done
