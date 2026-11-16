@@ -34,7 +34,7 @@ G2=""
 FIFO=/tmp/kindle-monitor-touch.fifo
 
 # touch reader (LOCK_TOUCH=buttons): evtest grabs the panel so the Kindle UI gets nothing;
-# `script` gives it a pty so it prints line by line; awk turns each lift into "x y" for tap.sh
+# `script` gives it a pty so it prints line by line; read_taps turns each lift into "x y" for tap.sh
 # one line per evtest event; a finger lift (tracking id -1) after a contact is one tap.
 # The kernel drops a position event whose value did not change, so a tap on the same
 # pixel as the previous one carries no X/Y: keep the last known position, never reset it.
