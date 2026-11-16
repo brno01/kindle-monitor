@@ -25,7 +25,14 @@ last_cs=$(cat /tmp/kindle-monitor.lasttap 2>/dev/null || echo 0)
 echo "$now_cs" > /tmp/kindle-monitor.lasttap
 [ $((now_cs - last_cs)) -lt 40 ] && exit 0
 
-hit=$(awk -v x="$x" -v y="$y" 'NF == 6 && $3 <= x && x < $3 + $5 && $4 <= y && y < $4 + $6 { print $1, $2; exit }' "$BTN")
+# a tap inside a button wins; otherwise the nearest button within SLOP pixels (e-ink touch lands a little off)
+hit=$(awk -v x="$x" -v y="$y" -v slop=24 'NF == 6 {
+    dx = 0; if (x < $3) dx = $3 - x; else if (x >= $3 + $5) dx = x - ($3 + $5 - 1)
+    dy = 0; if (y < $4) dy = $4 - y; else if (y >= $4 + $6) dy = y - ($4 + $6 - 1)
+    d = dx > dy ? dx : dy
+    if (d <= slop && (best == "" || d < bestd)) { best = $1 " " $2; bestd = d }
+  } END { if (best != "") print best }' "$BTN")
+log "touch x=$x y=$y -> ${hit:-nothing}"
 [ -n "$hit" ] || exit 0
 id=${hit% *}
 tipo=${hit#* }
