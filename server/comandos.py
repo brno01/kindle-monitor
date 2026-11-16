@@ -15,10 +15,9 @@ import sys
 import threading
 import time
 
-ACOES = (
-    "gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar",
-    "ragnarok-reiniciar", "ollama-reiniciar",
-)
+import servicos
+
+ACOES = ("gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar")
 TOKEN_HASH_PADRAO = "/etc/kindle-monitor/token.sha256"
 PERMITIDOS_PADRAO = ("100.64.0.2", "100.64.0.3")  # Kindle e nomad
 SPOOL_PADRAO = "/run/kindle-monitor/spool"
@@ -27,7 +26,7 @@ CORPO_MAX = 1024
 INTERVALO_S = 5.0
 ESTADOS = ("executando", "ok", "falhou")
 DETALHE_MAX = 80
-RE_ARQ = re.compile(r"^(\d{1,20})-([a-z-]{3,32})\.(req|json)$")
+RE_ARQ = re.compile(r"^(\d{1,20})-(" + servicos.TOKEN_ARQ + r")\.(req|json)$")
 RE_HORA = re.compile(r"^\d\d:\d\d:\d\d$")
 RE_TOKEN = re.compile(r"^[0-9a-fA-F]{64}$")
 JSON_TIPO = "application/json"
@@ -69,8 +68,9 @@ def _hora(ns):
 
 
 class Comandos:
-    def __init__(self, cfg, relogio=time.monotonic, agora_ns=time.time_ns, log=None):
+    def __init__(self, cfg, relogio=time.monotonic, agora_ns=time.time_ns, log=None, catalogo=None):
         self.cfg = cfg
+        self.catalogo = {c["id"]: c for c in servicos.validar_catalogo(catalogo or [])}
         self.relogio = relogio
         self.agora_ns = agora_ns
         self.log = log or (lambda linha: print(linha, file=sys.stderr, flush=True))
@@ -123,7 +123,7 @@ class Comandos:
             return recusa(400, "corpo invalido", "json invalido")
         if not isinstance(acao, str):
             return recusa(400, "acao invalida", "acao nao e texto")
-        if acao not in ACOES or acao not in self.cfg["acoes"]:
+        if not self._acao_valida(acao):
             return recusa(400, "acao invalida", "acao desconhecida ou desligada", acao)
         with self._lock:
             agora = self.relogio()
@@ -141,10 +141,18 @@ class Comandos:
         self._auditar(ip, acao, "aceito")
         return 202, {"estado": "aceito", "acao": acao, "id": pid}, {}
 
+    def _acao_valida(self, acao):
+        """Acao rapida ligada na config, ou svc:<id>:<verbo> com id no catalogo e verbo permitido."""
+        s = servicos.acao_svc(acao)
+        if s:
+            item = self.catalogo.get(s[0])
+            return bool(item) and s[1] in item["verbos"]
+        return acao in ACOES and acao in self.cfg["acoes"]
+
     def _gravar(self, acao):
         spool = self.cfg["spool"]
         # O spool e criado pelo tmpfiles.d (root); o web nunca cria nem muda modo.
-        pid = "%d-%s" % (self.agora_ns(), acao)
+        pid = "%d-%s" % (self.agora_ns(), servicos.acao_para_nome(acao))
         tmp = os.path.join(spool, ".%s.tmp" % pid)
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         os.close(fd)
@@ -175,7 +183,10 @@ class Comandos:
 
     def ultimos(self, n=5):
         itens = []
-        for num, nome, acao in self._listar(self.cfg["spool"], "req"):
+        for num, nome, token in self._listar(self.cfg["spool"], "req"):
+            acao = servicos.nome_para_acao(token)
+            if acao is None:
+                continue
             try:
                 if not os.path.isfile(os.path.join(self.cfg["spool"], nome)) or \
                         os.path.islink(os.path.join(self.cfg["spool"], nome)):
@@ -206,7 +217,7 @@ class Comandos:
         if not isinstance(d, dict):
             return None
         acao, estado, quando, detalhe = (d.get(k) for k in ("acao", "estado", "quando", "detalhe"))
-        if not (isinstance(acao, str) and re.match(r"^[a-z-]{3,32}$", acao)):
+        if not (isinstance(acao, str) and (re.match(r"^[a-z-]{3,32}$", acao) or servicos.acao_svc(acao))):
             return None
         if estado not in ESTADOS or not (isinstance(quando, str) and RE_HORA.match(quando)):
             return None

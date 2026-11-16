@@ -39,12 +39,12 @@ class Base(unittest.TestCase):
         c.update(extra)
         return comandos.validar_config(c)
 
-    def novo(self, **extra):
+    def novo(self, catalogo=None, **extra):
         def agora_ns():
             self.ns[0] += 1
             return self.ns[0]
         return comandos.Comandos(self.cfg(**extra), relogio=lambda: self.t[0], agora_ns=agora_ns,
-                                 log=self.logs.append)
+                                 log=self.logs.append, catalogo=catalogo)
 
 
 class ConfigTest(unittest.TestCase):
@@ -58,8 +58,10 @@ class ConfigTest(unittest.TestCase):
 
     def test_ids_do_contrato(self):
         self.assertEqual(set(comandos.ACOES), {
-            "gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar",
-            "ragnarok-reiniciar", "ollama-reiniciar"})
+            "gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar"})
+        # v5: ragnarok-reiniciar e ollama-reiniciar viraram comandos por servico (svc:<id>:<verbo>)
+        self.assertNotIn("ragnarok-reiniciar", comandos.ACOES)
+        self.assertNotIn("ollama-reiniciar", comandos.ACOES)
 
     def test_invalidos(self):
         for ruim in ({"acoes": ["rm-rf"]}, {"permitidos_de": ["nao-ip"]}, {"spool": ""},
@@ -238,6 +240,70 @@ class ProcessarTest(Base):
         self.assertEqual(len(self.logs), 1)
         self.assertNotIn("\n", self.logs[0])
         self.assertNotIn("\x1b", self.logs[0])
+
+
+CATALOGO = [
+    {"id": "ai-agent", "rotulo": "AI agent", "grupo": "incus", "tipo": "incus", "alvo": "ai-agent",
+     "verbos": ["reiniciar", "ligar", "parar"]},
+    {"id": "smbd", "rotulo": "Samba", "grupo": "host", "tipo": "systemd", "alvo": "smbd.service",
+     "verbos": ["reiniciar"]},
+    {"id": "tailscaled", "rotulo": "Tailscale", "grupo": "host", "tipo": "systemd", "alvo": "tailscaled.service",
+     "verbos": []},
+]
+
+
+class SvcTest(Base):
+    post = ProcessarTest.post
+
+    def svc(self, c, acao):
+        return self.post(c, corpo=json.dumps({"acao": acao}).encode())
+
+    def test_svc_valido_grava_nome_codificado(self):
+        c = self.novo(catalogo=CATALOGO)
+        st, corpo, _ = self.svc(c, "svc:ai-agent:parar")
+        self.assertEqual(st, 202)
+        self.assertEqual(corpo["acao"], "svc:ai-agent:parar")
+        nomes = os.listdir(self.spool)
+        self.assertRegex(nomes[0], r"^\d{1,20}-svc--ai-agent--parar\.req$")
+        self.assertEqual(nomes, [corpo["id"] + ".req"])
+
+    def test_svc_recusado(self):
+        c = self.novo(catalogo=CATALOGO)
+        for acao in ("svc:nao-existe:parar", "svc:smbd:parar", "svc:smbd:ligar", "svc:tailscaled:reiniciar",
+                     "svc:ai-agent:apagar", "svc:AI-agent:parar", "svc:ai-agent:", "svc::parar", "svc:ai-agent:parar:x",
+                     "svc--ai-agent--parar", "svc:../x:parar"):
+            self.t[0] += 10
+            self.assertEqual(self.svc(c, acao)[0], 400, acao)
+        self.assertEqual(os.listdir(self.spool), [])
+
+    def test_svc_sem_catalogo_recusa(self):
+        self.assertEqual(self.svc(self.novo(), "svc:smbd:reiniciar")[0], 400)
+
+    def test_svc_independe_da_lista_de_acoes_rapidas(self):
+        c = self.novo(catalogo=CATALOGO, acoes=[])
+        self.assertEqual(self.svc(c, "svc:smbd:reiniciar")[0], 202)
+        self.t[0] += 10
+        self.assertEqual(self.svc(c, "bots-pausar")[0], 400)
+
+    def test_acoes_removidas_recusadas(self):
+        c = self.novo(catalogo=CATALOGO)
+        for a in ("ragnarok-reiniciar", "ollama-reiniciar"):
+            self.t[0] += 10
+            self.assertEqual(self.svc(c, a)[0], 400)
+
+    def test_catalogo_invalido_levanta(self):
+        with self.assertRaises(ValueError):
+            self.novo(catalogo=[{"id": "x"}])
+
+    def test_ultimos_decodifica_svc(self):
+        c = self.novo(catalogo=CATALOGO)
+        self.svc(c, "svc:smbd:reiniciar")
+        with open(os.path.join(self.estado, "5-svc--ai-agent--ligar.json"), "w") as f:
+            json.dump({"acao": "svc:ai-agent:ligar", "estado": "ok", "quando": "10:00:00", "detalhe": ""}, f)
+        with open(os.path.join(self.estado, "6-svc--ai-agent--LIGAR.json"), "w") as f:
+            f.write("{}")
+        r = c.ultimos()
+        self.assertEqual({i["acao"] for i in r}, {"svc:smbd:reiniciar", "svc:ai-agent:ligar"})
 
 
 class UltimosTest(Base):
