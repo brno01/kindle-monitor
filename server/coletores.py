@@ -382,7 +382,7 @@ IDADE_TIER_MAX_S = 3 * 3600
 
 
 def _num_nao_neg(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
+    return _num_finito(v) and v >= 0
 
 
 def coletar_tier_state(rotulo, caminho, ler, agora):
@@ -423,8 +423,11 @@ IDADE_S10_MAX_S = 120
 _CAMPOS_INT_TOKENS = ("entrada", "saida", "cache_leitura", "cache_escrita", "total")
 
 
+INTEIRO_MAX = 2 ** 53  # acima disso o JSON e malformado para nos (e float()/isfinite() estouram)
+
+
 def _int_nao_neg(v):
-    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+    return isinstance(v, int) and not isinstance(v, bool) and 0 <= v < INTEIRO_MAX
 
 
 def _json_dict(ler, caminho):
@@ -447,7 +450,9 @@ def _janela_limite(j, agora):
 
 
 def _num_finito(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    if isinstance(v, int) and not isinstance(v, bool):
+        return -INTEIRO_MAX < v < INTEIRO_MAX
+    return isinstance(v, float) and math.isfinite(v)
 
 
 def _totais_tokens(t):

@@ -274,6 +274,73 @@ class LinhaClaudeS10Test(unittest.TestCase):
             self.assertEqual(ihdr(dados), (1236, 1648))
             self.assertNotEqual(dados, base)
 
+    def _espiar_linha(self, m):
+        textos, formas = [], []
+        orig_t, orig_f = cv.Canvas.texto, render_png._forma
+
+        def espia_t(self, x, y, t, *a, **k):
+            textos.append((t, a[2] if len(a) > 2 else None))
+            return orig_t(self, x, y, t, *a, **k)
+
+        def espia_f(c, x, y, lado, estado):
+            formas.append(estado)
+            return orig_f(c, x, y, lado, estado)
+        cv.Canvas.texto, render_png._forma = espia_t, espia_f
+        try:
+            c = cv.Canvas(1236, 1648, estrito=True)
+            render_png._linha_claude_s10(c, m, 24, 1400, 1188, 60)
+        finally:
+            cv.Canvas.texto, render_png._forma = orig_t, orig_f
+        return textos, formas
+
+    def test_limites_velhos_em_cinza_medio_com_a_idade(self):
+        velho = dict(CL, limites=dict(CL["limites"], idade_s=3 * 3600 + 5, velho=True))
+        textos, _ = self._espiar_linha({"claude": velho, "s10": S10})
+        parte = [(t, cor) for t, cor in textos if "5h 42%" in t]
+        self.assertEqual(len(parte), 1)
+        self.assertEqual(parte[0][1], render_png.MEDIO)
+        self.assertIn("ha 3 h", parte[0][0])
+        textos, _ = self._espiar_linha({"claude": CL, "s10": S10})
+        parte = [(t, cor) for t, cor in textos if "5h 42%" in t]
+        self.assertEqual(parte[0][1], render_png.PRETO)
+        self.assertNotIn("ha ", parte[0][0])
+
+    def test_marcas_com_bateria_nula_usb_falso_mostram_falha(self):
+        textos, formas = self._espiar_linha({"claude": CL, "s10": dict(
+            S10, bateria=None, caminhos={"usb": False, "adb_sem_fio": None, "vnc": "x"})})
+        self.assertEqual(formas, [None, None, "falha"])  # VNC, sem fio, USB (ordem de desenho)
+        self.assertIn("S10 n/d", "".join(t for t, _ in textos))
+
+    def test_marcas_velho_ou_erro_sao_interrogacao(self):
+        for s in (dict(S10, velho=True), {"erro": "n/d"}):
+            _, formas = self._espiar_linha({"claude": CL, "s10": s})
+            self.assertEqual(formas, [None, None, None], s)
+
+    def test_inteiro_gigante_vira_nd_sem_estourar(self):
+        self.assertEqual(render_png._tokens_txt(10 ** 400), "n/d")
+        dados = render_png.render_png(completo(claude=CL, s10=dict(S10, bateria={"nivel": 10 ** 400})), historico())
+        self.assertEqual(ihdr(dados), (1236, 1648))
+
+    def test_card_com_limites_e_tokens_velhos_mostra_as_duas_idades(self):
+        textos = []
+        orig = cv.Canvas.texto
+
+        def espia(self, x, y, t, *a, **k):
+            textos.append(t)
+            return orig(self, x, y, t, *a, **k)
+        tok = {"hoje": {"entrada": 1, "saida": 2, "cache_leitura": 3, "cache_escrita": 4, "total": 10, "custo_usd": 1.0},
+               "sete_dias": {"entrada": 1, "saida": 2, "cache_leitura": 3, "cache_escrita": 4, "total": 70,
+                             "custo_usd": 7.0}, "idade_s": 2 * 86400, "velho": True}
+        cl = {"limites": dict(CL["limites"], idade_s=3 * 3600, velho=True), "tokens": tok}
+        cv.Canvas.texto = espia
+        try:
+            c = cv.Canvas(1236, 1648, estrito=True)
+            render_png._card_claude(c, cl, 24, 100, 1188, render_png.CLAUDE_H)
+        finally:
+            cv.Canvas.texto = orig
+        self.assertIn("ha 3 h", textos)
+        self.assertIn("tokens ha 48 h", textos)
+
     def test_texto_so_ascii_grau_e_ponto_medio(self):
         textos = []
         orig = cv.Canvas.texto

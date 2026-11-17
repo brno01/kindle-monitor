@@ -53,7 +53,12 @@ def _ok(bloco):
 
 
 def _num(v):
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
+    """Numero finito e razoavel; inteiro >= 2**53 (JSON malformado) conta como ausente, nao estoura float()."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if isinstance(v, int):
+        return v if abs(v) < 2 ** 53 else None
+    return v if math.isfinite(v) else None
 
 
 def _pct(fn):
@@ -515,7 +520,7 @@ def _linha_claude_s10(c, m, x, y, w, h):
     xe, xd = x + PAD, x + w - PAD
     s = m.get("s10")
     if "s10" in m:
-        usavel = _ok(s) and s.get("velho") is not True and isinstance(s.get("bateria"), dict)
+        usavel = _ok(s) and s.get("velho") is not True
         cam = s.get("caminhos") if usavel and isinstance(s.get("caminhos"), dict) else {}
         for chave, rotulo in reversed(MARCAS_S10):
             v = cam.get(chave)
@@ -523,13 +528,14 @@ def _linha_claude_s10(c, m, x, y, w, h):
             xd -= int(c.medir(rotulo, NEG, 26)) + 8 + 22
             _forma(c, xd, yc - 11, 22, None if not usavel or not isinstance(v, bool) else ("ativo" if v else "falha"))
             xd -= 22
-    partes = []
+    partes = []  # (texto, cor)
     if "claude" in m:
         cl = m["claude"] if isinstance(m["claude"], dict) else {}
         lim = cl.get("limites")
         lim = lim if _ok(lim) else {}
-        partes.append("5h " + _pct_txt(lim.get("cinco_horas")))
-        partes.append("sem " + _pct_txt(lim.get("semanal")))
+        txt = "5h %s  ·  sem %s" % (_pct_txt(lim.get("cinco_horas")), _pct_txt(lim.get("semanal")))
+        velho = lim.get("velho") is True
+        partes.append([txt, MEDIO if velho else PRETO, _idade_txt(lim.get("idade_s")) if velho else ""])
         xe += c.icone(xe, yc - 15, "claude", 30, PRETO)
         if xe > x + PAD:
             xe += 12
@@ -540,8 +546,21 @@ def _linha_claude_s10(c, m, x, y, w, h):
             txt = "S10 %d%%" % round(min(100.0, max(0.0, float(bat["nivel"]))))
             carga = CARGA_CURTA.get(bat.get("status")) if isinstance(bat.get("status"), str) else None
             txt += " " + carga if carga else ""
-        partes.append(txt)
-    _texto_c(c, xe, yc, _ajustar(c, "  ·  ".join(partes), NEG, 26, max(0, xd - xe - 20)), NEG, 26, PRETO)
+        partes.append([txt, PRETO, ""])
+    disp = max(0, xd - xe - 20)
+    sep = "  ·  "
+    # a idade dos limites velhos so entra se a linha inteira couber; senao o trecho fica so cinza
+    if partes and partes[0][2]:
+        com_idade = sep.join(p[0] + ("  " + p[2] if p[2] else "") for p in partes)
+        if c.medir(com_idade, NEG, 26) <= disp:
+            partes[0][0] += "  " + partes[0][2]
+    for i, (txt, cor, _idade) in enumerate(partes):
+        if i:
+            _texto_c(c, xe, yc, sep, NEG, 26, PRETO)
+            xe += int(c.medir(sep, NEG, 26))
+        txt = _ajustar(c, txt, NEG, 26, max(0, xd - xe - 20))
+        _texto_c(c, xe, yc, txt, NEG, 26, cor)
+        xe += int(c.medir(txt, NEG, 26))
 
 
 # --------------------------------------------------------------------- resumo
@@ -1101,7 +1120,7 @@ def _card_claude(c, cl, x, y, w, h, agora=None):
     meio = (w - 2 * PAD) // 2
     _bloco_tokens(c, x + PAD, yy, meio - PAD, "HOJE", tok.get("hoje"))
     _bloco_tokens(c, x + PAD + meio, yy, meio - PAD, "7 DIAS", tok.get("sete_dias"))
-    if tok.get("velho") is True and not velho and _idade_txt(tok.get("idade_s")):
+    if tok.get("velho") is True and _idade_txt(tok.get("idade_s")):
         _texto_c(c, x + w - PAD, y + h - 28, "tokens " + _idade_txt(tok.get("idade_s")), REG, 26, MEDIO, "dir")
 
 

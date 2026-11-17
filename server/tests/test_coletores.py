@@ -818,5 +818,28 @@ class NaoFinitosClaudeTest(unittest.TestCase):
             self.assertNotEqual(r["limites"], {"erro": "n/d"})
 
 
+class InteirosGigantesClaudeTest(unittest.TestCase):
+    CFG = {"limites": "/l.json", "tokens": "/t.json"}
+
+    def test_inteiro_gigante_e_invalido_nao_levanta(self):
+        for campo in ("total", "entrada", "custo_usd"):
+            tok = json.dumps(_tok(hoje={**_tot(), campo: 10 ** 400}))
+            r = c.coletar_claude(self.CFG, _ler_de({"/l.json": json.dumps(_lim()), "/t.json": tok}), AGORA_CL)
+            self.assertEqual(r["tokens"], {"erro": "n/d"}, campo)
+        lim = json.dumps(_lim(cinco_horas={"pct": 10 ** 400, "volta_em": AGORA_CL + 5}))
+        r = c.coletar_claude(self.CFG, _ler_de({"/l.json": lim, "/t.json": json.dumps(_tok())}), AGORA_CL)
+        self.assertEqual(r["limites"], {"erro": "n/d"})
+        lim = json.dumps(_lim(cinco_horas={"pct": 1.0, "volta_em": 2 ** 53}))
+        r = c.coletar_claude(self.CFG, _ler_de({"/l.json": lim, "/t.json": json.dumps(_tok())}), AGORA_CL)
+        self.assertEqual(r["limites"], {"erro": "n/d"})
+
+    def test_total_2_elevado_53_e_invalido_e_abaixo_vale(self):
+        for n, esperado_ok in ((2 ** 53, False), (2 ** 53 - 1, True)):
+            r = c.coletar_claude(self.CFG, _ler_de({"/l.json": json.dumps(_lim()),
+                                                    "/t.json": json.dumps(_tok(hoje={**_tot(), "total": n}))}),
+                                 AGORA_CL)
+            self.assertEqual("erro" not in r["tokens"], esperado_ok, n)
+
+
 if __name__ == "__main__":
     unittest.main()
