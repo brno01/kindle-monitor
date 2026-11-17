@@ -13,6 +13,8 @@ SUPF=/tmp/kindle-monitor-sup.pid
 PIDF=/tmp/kindle-monitor.pid
 STOPF=/tmp/kindle-monitor.stop
 LOG=/tmp/kindle-monitor.log
+IMG=/tmp/kindle-monitor.png        # last image the loop drew
+FBINK=/mnt/us/libkh/bin/fbink
 
 log() {
   [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 20000 ] && : > "$LOG"
@@ -81,7 +83,13 @@ GUI_STOPPED=0
 # stop it while the loop runs, bring it back whenever the loop is not running and on exit
 gui_stop() {
   [ "${STOP_GUI:-0}" = 1 ] && [ "$GUI_STOPPED" = 0 ] || return 0
-  stop lab126_gui >/dev/null 2>&1 && GUI_STOPPED=1 && log "kindle UI stopped"
+  stop lab126_gui >/dev/null 2>&1 || return 0
+  GUI_STOPPED=1
+  log "kindle UI stopped"
+  # stopping the UI can wipe the screen to white after the loop's first draw; with a long interval
+  # (economia: 5 min) the loop would not draw again for minutes, leaving a blank screen with the
+  # touch panel grabbed. Redraw the last image now (needs /mnt/us, like the loop that drew it).
+  [ -x "$FBINK" ] && [ -f "$IMG" ] && "$FBINK" -q -f -g file="$IMG" >/dev/null 2>&1 && log "redrew after UI stop"
 }
 gui_start() {
   [ "$GUI_STOPPED" = 1 ] || return 0
