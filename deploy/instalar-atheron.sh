@@ -16,6 +16,13 @@ install -m 0644 "$S/config.atheron.json" /etc/kindle-monitor/config.json
 # /run/kindle-monitor is owned by root (the web service must not own it): create it BEFORE (re)starting anything.
 install -m 0644 "$S/kindle-monitor.tmpfiles" /etc/tmpfiles.d/kindle-monitor.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/kindle-monitor.conf
+# /var/lib/claude-uso for the Claude card: only when the `claude` user exists (otherwise the card shows n/d).
+if getent passwd claude >/dev/null; then
+    install -m 0644 "$S/kindle-monitor-claude.tmpfiles" /etc/tmpfiles.d/kindle-monitor-claude.conf
+    systemd-tmpfiles --create /etc/tmpfiles.d/kindle-monitor-claude.conf
+else
+    echo "aviso: usuario claude nao existe; /var/lib/claude-uso nao foi criado (cartao Claude fica n/d)" >&2
+fi
 install -m 0644 "$S/kindle-monitor.service" /etc/systemd/system/kindle-monitor.service
 install -m 0644 "$S/kindle-monitor-executor.service" /etc/systemd/system/kindle-monitor-executor.service
 install -m 0644 "$S/kindle-monitor-executor.path" /etc/systemd/system/kindle-monitor-executor.path
