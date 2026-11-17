@@ -301,10 +301,6 @@ class LinhaClaudeS10Test(unittest.TestCase):
                                                   "discharging": "bat.", "not_charging": "bat."})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 def _tinta_gpu(dados):
     """Linhas com tinta nos primeiros 120 px do tile da GPU (resumo, 3o tile), entre o rotulo e a barra.
 
@@ -403,3 +399,7 @@ class IoPngTest(unittest.TestCase):
             render_png.render_png(cheio() | {"io": IO}, historico())
             melhor = min(melhor, time.monotonic() - t0)
         self.assertLess(melhor, 2.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

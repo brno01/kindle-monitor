@@ -154,10 +154,6 @@ class CanvasTest(unittest.TestCase):
         self.assertEqual(dados[:8], b"\x89PNG\r\n\x1a\n")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class IconeTest(unittest.TestCase):
     def test_icones_dados_tamanhos(self):
         for tam in (40, 30):
@@ -179,3 +175,7 @@ class IconeTest(unittest.TestCase):
         self.assertEqual(c.icone(5, 5, "nao-existe", 40, 0), 0)
         self.assertEqual(c.icone(5, 5, "claude", 41, 0), 0)
         self.assertEqual(set(c.pixels), {255})
+
+
+if __name__ == "__main__":
+    unittest.main()

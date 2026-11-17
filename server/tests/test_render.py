@@ -136,10 +136,6 @@ class RenderTest(unittest.TestCase):
             self.assertLessEqual(len(l), 5)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RenderNovoTest(unittest.TestCase):
     RAM = {"total_kb": 20331012, "usado_kb": 7763836, "pct": 38.2}
 
@@ -213,3 +209,7 @@ class PaginaClaudeTextoTest(unittest.TestCase):
         self.assertIn("desligado", "\n".join(render.render_texto(local(), 38, pagina="claude")))
         render.render_texto(local() | {"claude": {"erro": "n/d"}, "s10": {"erro": "n/d"}}, 38, pagina="claude")
         render.render_texto(local() | {"claude": 3, "s10": "x"}, 38, pagina="claude")
+
+
+if __name__ == "__main__":
+    unittest.main()
