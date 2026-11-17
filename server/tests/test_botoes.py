@@ -220,10 +220,6 @@ class ServicosLayoutTest(unittest.TestCase):
         self.assertIsNone(botoes.armado_valido(None))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TapShTest(unittest.TestCase):
     def test_todas_as_paginas_do_nav_estao_no_case_do_tap_sh(self):
         import os
@@ -235,3 +231,26 @@ class TapShTest(unittest.TestCase):
             if bid.startswith("pagina:"):
                 self.assertIn(bid, linhas[0].replace(")", " ").split(), bid)
         self.assertIn("claude", botoes.PAGINAS)
+
+    def test_todo_case_de_pagina_dos_scripts_do_kindle_conhece_todas_as_paginas(self):
+        import glob
+        import os
+        import re
+        pasta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "kindle", "kindle-monitor")
+        encontrados = 0
+        for caminho in sorted(glob.glob(os.path.join(pasta, "*.sh"))):
+            with open(caminho, encoding="utf-8") as f:
+                texto = f.read()
+            for m in re.finditer(r'PAGINA\) case "\$v" in ([^)]*)\)', texto):
+                encontrados += 1
+                valores = set(m.group(1).split("|"))
+                self.assertEqual(valores, set(botoes.PAGINAS), caminho)
+            for m in re.finditer(r'^\s*(pagina:[^)]*)\)', texto, re.M):
+                encontrados += 1
+                ids = {x.strip() for x in m.group(1).split("|")}
+                self.assertEqual(ids, {"pagina:" + p for p in botoes.PAGINAS}, caminho)
+        self.assertGreaterEqual(encontrados, 3)
+
+
+if __name__ == "__main__":
+    unittest.main()
