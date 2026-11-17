@@ -136,9 +136,12 @@ kindle-monitor (nobody) lê os três ──► m["claude"], m["s10"] ──► p
 
 ## Passos do dono (root, no atheron)
 
-1. `bash atheron/user-step-s10.sh` (galaxy-s10) para o diretório público e o guardião novo.
-2. Instalador do kindle-monitor (cria `/var/lib/claude-uso`, instala a config e reinicia).
-3. `install.sh --servidor` do dotfiles (timer do `claude-uso`), como usuário `claude`.
+(Atualizado após a implementação; a ruling R10 substituiu o `install.sh --servidor`.)
+
+1. galaxy-s10: `bash atheron/user-step-s10.sh`, como o dono, com `sudo` onde o script pedir (diretório público e guardião novo).
+2. kindle-monitor: copiar `server/` + `deploy/` para `/root/kindle-monitor-deploy/` e rodar `deploy/instalar-atheron.sh` (cria `/var/lib/claude-uso` quando o usuário `claude` existe, instala a config e reinicia).
+3. dotfiles: `claude-mirror install` (põe `claude-limites` no PATH) e depois habilitar o timer manualmente, como no README do dotfiles.
+4. Kindle: copiar `tap.sh` E `loop.sh` para `/mnt/us/kindle-monitor/` (com a autorização do dono) e tocar em "Monitor Desligar" e "Monitor Ligar" (o laço em execução mantém o código antigo).
 
 ## Fica para quem constrói
 

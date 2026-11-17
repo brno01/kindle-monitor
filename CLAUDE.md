@@ -51,7 +51,7 @@ Kindle: Tailscale userspace (SOCKS5 localhost:1055) + /mnt/us/kindle-monitor/loo
 - Documentação do projeto no Obsidian: `projects/nomad/notes/Kindle monitor - *.md` (3 notas manuais) e a entrada `kindle-monitor` no `nomad-enhancement/obsidian/sources.toml`. O exportador só lê o que está commitado (o HEAD do checkout).
 
 ## Pendências
-- Copiar `kindle/kindle-monitor/tap.sh` para o Kindle (`/mnt/us/kindle-monitor/`, passo do dono): sem isso o botão novo "Claude" não troca de página (o `case` antigo não conhece `pagina:claude`).
+- Copiar `kindle/kindle-monitor/tap.sh` **e** `loop.sh` para o Kindle (`/mnt/us/kindle-monitor/`, passo do dono) e tocar em "Monitor Desligar" e "Monitor Ligar" (o laço em execução mantém o código antigo): sem isso o botão "Claude" não troca de página (o `case` antigo não conhece `pagina:claude`, e o `read_state` do `loop.sh` rejeita `PAGINA=claude`).
 - Cartão do nomad na tela (rodar o servidor no nomad e listar como par em `config.atheron.json`).
 - Início automático após reiniciar o Kindle (hoje: tocar em "Monitor Ligar").
 - Confirmar com o botão físico que a saída funciona (testado só por injeção de evento no `event0`).
