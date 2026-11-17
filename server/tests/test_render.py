@@ -186,3 +186,30 @@ class RenderNovoTest(unittest.TestCase):
         d = [{"rotulo": "NAS SSD", "total_b": 256 * 2**30, "usado_b": 100 * 2**30, "pct": 39.1, "parado": True}]
         linhas = render.render_texto(local(discos=d), 38)
         self.assertIn("parado", [l for l in linhas if l.startswith("NAS SSD")][0])
+
+
+class PaginaClaudeTextoTest(unittest.TestCase):
+    def test_pagina_claude_so_ascii_e_cabe(self):
+        m = local() | {
+            "claude": {"limites": {"cinco_horas": {"pct": 34.0, "volta_em": 1_794_000_000, "renovado": False},
+                                   "semanal": {"pct": 95.0, "volta_em": 1_794_400_000, "renovado": True},
+                                   "idade_s": 10, "velho": False},
+                       "tokens": {"hoje": {"total": 3_100_000, "custo_usd": 1.5},
+                                  "sete_dias": {"total": 950, "custo_usd": 0.1}, "idade_s": 1, "velho": False}},
+            "s10": {"bateria": {"nivel": 87, "status": "charging", "temperatura_c": 36.5, "saude": "good"},
+                    "caminhos": {"usb": True, "vnc": None}, "avisos": ["temperatura", "carga_cheia"],
+                    "idade_s": 5, "velho": False}}
+        for cols in (20, 38, 60):
+            linhas = render.render_texto(m, cols, pagina="claude")
+            self.assertLessEqual(len(linhas), 26)
+            for l in linhas:
+                self.assertTrue(l.isascii() and l.isprintable(), repr(l))
+                self.assertLessEqual(len(l), cols, l)
+        t = "\n".join(render.render_texto(m, 60, pagina="claude"))
+        self.assertIn("5h", t)
+        self.assertIn("S10", t)
+
+    def test_pagina_claude_desligada_e_erros(self):
+        self.assertIn("desligado", "\n".join(render.render_texto(local(), 38, pagina="claude")))
+        render.render_texto(local() | {"claude": {"erro": "n/d"}, "s10": {"erro": "n/d"}}, 38, pagina="claude")
+        render.render_texto(local() | {"claude": 3, "s10": "x"}, 38, pagina="claude")

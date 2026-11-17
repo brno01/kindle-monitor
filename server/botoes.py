@@ -4,14 +4,15 @@
 (`/botoes.json`, `/botoes.txt`). Coordenadas em pixels do PNG, origem no canto superior esquerdo.
 
 Pagina comandos tambem tem o bloco AJUSTES (botoes locais `modo:<perfil>`, ver perfis.py).
-Paginas: resumo, servicos (paginada, parametro `p`), detalhes e comandos (rotulo "Acoes").
+Paginas: resumo, servicos (paginada, parametro `p`), detalhes, comandos (rotulo "Acoes") e claude (limites e tokens
+do Claude Code + estado do S10; so leitura, sem botoes proprios).
 Os botoes da pagina servicos dependem do estado dos itens (ativo: Reiniciar e Parar; parado: Ligar...);
 a divisao em paginas so depende do catalogo.
 """
 import perfis
 import servicos
 
-PAGINAS = ("resumo", "servicos", "detalhes", "comandos")
+PAGINAS = ("resumo", "servicos", "detalhes", "comandos", "claude")
 PAGINA_PADRAO = "resumo"
 
 # (id, rotulo); sem acento (a fonte embutida e ASCII mais o grau e o ponto medio).
@@ -32,6 +33,7 @@ NAV = (
     ("pagina:servicos", "Servicos"),
     ("pagina:detalhes", "Detalhes"),
     ("pagina:comandos", "Acoes"),
+    ("pagina:claude", "Claude"),
 )
 
 MARGEM = 48

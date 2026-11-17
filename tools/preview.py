@@ -81,6 +81,18 @@ def exemplo(cheia=False):
                          {"rotulo": "Tailnet", "rx_bps": 3 * 1024, "tx_bps": 1024}]},
         "servicos_kindle": coletores.montar_servicos_kindle(cat, inventario(cat, cheia), AGORA),
         "pares": [],
+        # janela semanal a 91 % (negrito) e a de 5 h recem-renovada; o S10 com um caminho fora e um desconhecido
+        "claude": {"limites": {"cinco_horas": {"pct": 34.0, "volta_em": int(AGORA) + 3 * 3600, "renovado": True},
+                               "semanal": {"pct": 91.0, "volta_em": int(AGORA) + 3 * 86400, "renovado": False},
+                               "idade_s": 45, "velho": False},
+                   "tokens": {"hoje": {"entrada": 410_000, "saida": 160_000, "cache_leitura": 2_300_000,
+                                       "cache_escrita": 230_000, "total": 3_100_000, "custo_usd": 4.87},
+                              "sete_dias": {"entrada": 2_900_000, "saida": 1_100_000, "cache_leitura": 16_000_000,
+                                            "cache_escrita": 1_000_000, "total": 21_000_000, "custo_usd": 31.4},
+                              "idade_s": 45, "velho": False}},
+        "s10": {"bateria": {"nivel": 87, "status": "charging", "temperatura_c": 36.5, "saude": "good"},
+                "caminhos": {"usb": True, "adb_sem_fio": False, "tailscale": True, "ssh_termux": True, "vnc": None},
+                "avisos": ["temperatura"], "idade_s": 20, "velho": False},
     }
     n = 60
     hist = {
@@ -110,7 +122,7 @@ def main(argv=None):
     p.add_argument("--saida", required=True, help="arquivo PNG de saida")
     p.add_argument("--porta", type=int, default=None, help="busca /tela.png do servidor local nessa porta")
     p.add_argument("--cheia", action="store_true", help="52 servicos, varios em falha, 8 comandos recentes")
-    p.add_argument("--pagina", default="resumo", choices=("resumo", "servicos", "detalhes", "comandos"))
+    p.add_argument("--pagina", default="resumo", choices=("resumo", "servicos", "detalhes", "comandos", "claude"))
     p.add_argument("--p", type=int, default=1, help="pagina da lista (so em servicos)")
     p.add_argument("--modo", default=None, help="perfil de energia ativo (desempenho|balanceado|economia; pagina comandos)")
     p.add_argument("--armado", default=None, help="id do botao armado (acao rapida ou svc:<id>:<verbo>)")

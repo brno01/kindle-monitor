@@ -69,7 +69,7 @@ send() {
 
 case "$id" in
   atualizar) log "refresh" ;;
-  pagina:resumo | pagina:servicos | pagina:detalhes | pagina:comandos)
+  pagina:resumo | pagina:servicos | pagina:detalhes | pagina:comandos | pagina:claude)
     PAGINA=${id#pagina:}; P=1; ARMADO=; ARMADO_ATE=0; log "page $PAGINA" ;;
   modo:desempenho | modo:balanceado | modo:economia)
     # single tap, local: store the profile atomically; the loop re-reads it on the wake-up below

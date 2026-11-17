@@ -13,6 +13,7 @@ Kindle: Tailscale userspace (SOCKS5 localhost:1055) + /mnt/us/kindle-monitor/loo
 ```
 - **Servidor** (`server/`): `monitor_server.py` (CLI; recusa `--bind 0.0.0.0`), `coletores.py` (/proc, nvidia-smi, `systemctl is-active`, balanceador, portas TCP, pares), `render.py` (texto), `render_png.py` + `canvas.py` + `png.py` (imagem só com a stdlib), `fonte_dados.py` (DejaVu pré-rasterizada, gerada por `tools/gerar_fonte.py` com Pillow via `uv run --with pillow`). Endpoints: `/tela.png`, `/tela.txt`, `/metricas.json`, `/historico.json`, `/saude`.
 - **Kindle** (`kindle/`): `kindle-monitor/loop.sh`, `supervisor.sh` e `config.sh` vão para `/mnt/us/kindle-monitor/`; `documents/monitor-ligar.sh` e `monitor-desligar.sh` viram "livros" (scriptlets) que o usuário toca. O "Ligar" copia o `supervisor.sh` para `/var/tmp` (RAM) e o inicia: ele lança o `loop.sh`, vigia o botão de energia (`dd` em `/dev/input/event0` + `lipc-wait-event ... goingToScreenSaver`), religa o toque (`lipc-set-prop com.lab126.deviced enable_touch 1`) sempre que o laço não roda e relança o laço depois do modo disco USB.
+- **Páginas** (barra de 6 botões no rodapé): resumo, serviços, detalhes, ações (id `comandos`) e **Claude** (id `claude`, só leitura): limites de 5 h e semanal e tokens do Claude Code (`m["claude"]`) mais bateria e caminhos de acesso do S10 (`m["s10"]`); sem as chaves na config mostra "Claude/S10 desligado na config". Prévia: `python3 -I tools/preview.py --saida /tmp/c.png --pagina claude`.
 - **NAS**: `/srv/nas` é mergerfs (SSD + HD); a tela usa `/srv/nas-hd` (statvfs) e a camada SSD de `/var/lib/cerberus-nas/tier-state.json` (`tier_state` na config), como o painel do Cerberus. GPU com util 0 e VRAM 0 aparece como "desativada".
 - **Deploy** (`deploy/`): `config.atheron.json`, `kindle-monitor.service` (`User=nobody`, somente leitura), `instalar-atheron.sh`.
 
@@ -50,6 +51,7 @@ Kindle: Tailscale userspace (SOCKS5 localhost:1055) + /mnt/us/kindle-monitor/loo
 - Documentação do projeto no Obsidian: `projects/nomad/notes/Kindle monitor - *.md` (3 notas manuais) e a entrada `kindle-monitor` no `nomad-enhancement/obsidian/sources.toml`. O exportador só lê o que está commitado (o HEAD do checkout).
 
 ## Pendências
+- Copiar `kindle/kindle-monitor/tap.sh` para o Kindle (`/mnt/us/kindle-monitor/`, passo do dono): sem isso o botão novo "Claude" não troca de página (o `case` antigo não conhece `pagina:claude`).
 - Cartão do nomad na tela (rodar o servidor no nomad e listar como par em `config.atheron.json`).
 - Início automático após reiniciar o Kindle (hoje: tocar em "Monitor Ligar").
 - Confirmar com o botão físico que a saída funciona (testado só por injeção de evento no `event0`).

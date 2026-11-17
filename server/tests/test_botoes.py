@@ -40,7 +40,7 @@ class LayoutTest(unittest.TestCase):
         for pagina, _, larg, alt, p, bs in self.todos():
             for b in bs:
                 nav = b["tipo"] == "local" and b["id"].startswith("pagina:") or b["id"] == "atualizar"
-                self.assertGreaterEqual(b["w"], 120 if nav and larg < 1000 else 150, (pagina, b["id"], larg))
+                self.assertGreaterEqual(b["w"], 100 if nav and larg < 1100 else 150, (pagina, b["id"], larg))
                 self.assertGreaterEqual(b["h"], 84, (pagina, b["id"]))
 
     def test_dentro_da_tela_e_separados_por_16px(self):
@@ -222,3 +222,16 @@ class ServicosLayoutTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TapShTest(unittest.TestCase):
+    def test_todas_as_paginas_do_nav_estao_no_case_do_tap_sh(self):
+        import os
+        caminho = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "kindle", "kindle-monitor", "tap.sh")
+        with open(caminho, encoding="utf-8") as f:
+            linhas = [l for l in f if l.lstrip().startswith("pagina:") and l.rstrip().endswith(")")]
+        self.assertEqual(len(linhas), 1)
+        for bid, _ in botoes.NAV:
+            if bid.startswith("pagina:"):
+                self.assertIn(bid, linhas[0].replace(")", " ").split(), bid)
+        self.assertIn("claude", botoes.PAGINAS)

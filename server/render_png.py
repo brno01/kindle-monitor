@@ -1,6 +1,6 @@
 """Tela PNG (retrato, tons de cinza) do kindle-monitor. Funcoes puras: metricas -> bytes PNG.
 
-Quatro paginas (resumo, servicos, detalhes, comandos) mais a barra de navegacao fixa no rodape. Os botoes vem
+Cinco paginas (resumo, servicos, detalhes, comandos, claude) mais a barra de navegacao fixa no rodape. Os botoes vem
 sempre de `botoes.layout` (a mesma funcao que serve /botoes.json): aqui so se desenha o que ela devolve.
 Visual e-ink: alto contraste, contornos finos, raios pequenos, sem sombras; so os tamanhos de fonte embutidos
 (26 e 34; negrito tambem 48, 72 e 140). Estado de servico: forma antes da cor (cheia = ativo, vazia = parado,
@@ -916,6 +916,221 @@ def _desenhar_comandos(c, m, itens, modo=None):
         _card_grupos(c, itens, MARGEM, y, w, H_GRUPOS)
 
 
+# ---------------------------------------------------------------- claude / S10
+
+DIAS_SEMANA = ("seg", "ter", "qua", "qui", "sex", "sab", "dom")
+STATUS_BATERIA = {"charging": "carregando", "full": "cheia", "discharging": "descarregando",
+                  "not_charging": "descarregando"}
+AVISOS_S10 = {"temperatura": "temperatura alta", "carga_cheia": "100% ha horas: proteger bateria"}
+CAMINHOS_S10 = (("usb", "USB"), ("adb_sem_fio", "ADB sem fio"), ("tailscale", "Tailscale"),
+                ("ssh_termux", "SSH Termux"), ("vnc", "VNC"))
+CLAUDE_H = 520
+
+
+def _tokens_txt(n):
+    """950 -> "950"; 12000 -> "12 k"; 3100000 -> "3,1 M"; nao numero -> "n/d"."""
+    n = _num(n)
+    if n is None:
+        return "n/d"
+    n = max(0, n)
+    if n < 1000:
+        return "%d" % round(n)
+    if round(n / 1000.0) < 1000:
+        return "%d k" % round(n / 1000.0)
+    return ("%.1f M" % (n / 1e6)).replace(".", ",")
+
+
+def _volta_txt(epoch, agora, tz=None):
+    """"volta 14:30" se for hoje, "volta qui 02:00" em outro dia; "" se `epoch` nao for um instante valido."""
+    try:
+        e, a = _num(epoch), _num(agora)
+        if e is None or a is None:
+            return ""
+        d, hoje = datetime.fromtimestamp(e, tz), datetime.fromtimestamp(a, tz)
+    except (OverflowError, OSError, ValueError):
+        return ""
+    if d.date() == hoje.date():
+        return "volta %s" % d.strftime("%H:%M")
+    return "volta %s %s" % (DIAS_SEMANA[d.weekday()], d.strftime("%H:%M"))
+
+
+def _idade_txt(seg):
+    seg = _num(seg)
+    if seg is None:
+        return ""
+    return "ha %d h" % (seg // 3600) if seg >= 3600 else "ha %d min" % max(1, int(seg // 60))
+
+
+def _agora(m):
+    """(epoch, tzinfo) do instante da coleta (`gerado_em`); sem ele, o relogio local."""
+    try:
+        d = datetime.fromisoformat(m["gerado_em"])
+        return d.timestamp(), d.tzinfo
+    except Exception:
+        import time
+        return time.time(), None
+
+
+def _custo_txt(v):
+    v = _num(v)
+    return "n/d" if v is None else ("US$ %.2f" % v).replace(".", ",")
+
+
+def _cabecalho_card(c, x, y, w, titulo, velho=False, idade_s=None, icone=False):
+    """Linha de titulo de um cartao (64 px): icone opcional, titulo e, se os dados estao velhos, a idade em cinza."""
+    tx = x + PAD
+    if icone:
+        tx += (c.icone(x + PAD, y + 12, "claude", 40, PRETO) or 0) + 12
+    _texto_c(c, tx, y + 32, titulo, NEG, 34, PRETO)
+    if velho and _idade_txt(idade_s):
+        _texto_c(c, x + w - PAD, y + 32, _idade_txt(idade_s), REG, 26, MEDIO, "dir")
+    c.retangulo(x + PAD, y + 63, w - 2 * PAD, 2, TRILHO)
+    return y + 64
+
+
+def _linha_janela(c, x, y, w, nome, j, agora, tz):
+    """Uma janela de limite (100 px): nome, barra, % (>= 90 em negrito grande e preto) e quando volta."""
+    yc = y + 50
+    _texto_c(c, x + PAD, yc, nome, NEG, 34, PRETO)
+    j = j if isinstance(j, dict) else None
+    pct = _num(j.get("pct")) if j else None
+    if pct is None:
+        _texto_c(c, x + PAD + 186, yc, "n/d", REG, 34, ESCURO)
+        return
+    renovado = j.get("renovado") is True
+    pct = 0.0 if renovado else min(100.0, max(0.0, float(pct)))
+    bw = min(480, max(60, w - 596))
+    _barra(c, x + PAD + 186, yc - 15, bw, 30, pct)
+    alto = pct >= 90
+    _texto_c(c, x + PAD + 186 + bw + 18, yc, "%d%%" % round(pct), NEG, 48 if alto else 34, PRETO if alto else ESCURO)
+    sub = "renovado" if renovado else _volta_txt(j.get("volta_em"), agora, tz)
+    if sub:
+        _texto_c(c, x + w - PAD, yc, sub, REG, 26, ESCURO, "dir")
+
+
+def _bloco_tokens(c, x, y, w, titulo, t):
+    t = t if isinstance(t, dict) else {}
+    c.texto(x, y + _cap(NEG, 26), titulo, NEG, 26, ESCURO)
+    _texto_c(c, x, y + 62, "%s tokens" % _tokens_txt(t.get("total")), NEG, 34, PRETO)
+    _texto_c(c, x, y + 104, _custo_txt(t.get("custo_usd")), REG, 34, PRETO)
+    ent = "ent %s  sai %s" % (_tokens_txt(t.get("entrada")), _tokens_txt(t.get("saida")))
+    cache = "cache %s / %s" % (_tokens_txt(t.get("cache_leitura")), _tokens_txt(t.get("cache_escrita")))
+    _texto_c(c, x, y + 146, _ajustar(c, ent, REG, 26, w), REG, 26, ESCURO)
+    _texto_c(c, x, y + 180, _ajustar(c, cache, REG, 26, w), REG, 26, ESCURO)
+
+
+def _card_claude(c, cl, x, y, w, h, agora=None):
+    """Cartao Claude: janelas de 5 h e semanal, tokens de hoje e dos ultimos 7 dias."""
+    _card(c, x, y, w, h)
+    cl = cl if isinstance(cl, dict) else {}
+    lim, tok = cl.get("limites"), cl.get("tokens")
+    lim = lim if _ok(lim) else None
+    tok = tok if _ok(tok) else None
+    velho = bool(lim and lim.get("velho") is True)
+    yy = _cabecalho_card(c, x, y, w, "Claude", velho, lim.get("idade_s") if lim else None, icone=True)
+    agora, tz = agora or _agora({})
+    if lim is None:
+        _texto_c(c, x + PAD, yy + 50, "limites n/d", REG, 34, ESCURO)
+        yy += 100 * 2
+    else:
+        _linha_janela(c, x, yy, w, "5h", lim.get("cinco_horas"), agora, tz)
+        _linha_janela(c, x, yy + 100, w, "Semanal", lim.get("semanal"), agora, tz)
+        yy += 200
+    c.retangulo(x + PAD, yy + 6, w - 2 * PAD, 2, TRILHO)
+    yy += 24
+    if tok is None:
+        _texto_c(c, x + PAD, yy + 40, "tokens n/d", REG, 34, ESCURO)
+        return
+    meio = (w - 2 * PAD) // 2
+    _bloco_tokens(c, x + PAD, yy, meio - PAD, "HOJE", tok.get("hoje"))
+    _bloco_tokens(c, x + PAD + meio, yy, meio - PAD, "7 DIAS", tok.get("sete_dias"))
+    if tok.get("velho") is True and not velho and _idade_txt(tok.get("idade_s")):
+        _texto_c(c, x + w - PAD, y + h - 28, "tokens " + _idade_txt(tok.get("idade_s")), REG, 26, MEDIO, "dir")
+
+
+def _aviso_txt(codigo):
+    return AVISOS_S10.get(codigo, codigo) if isinstance(codigo, str) else None
+
+
+def _avisos(s):
+    av = s.get("avisos")
+    return [a for a in (_aviso_txt(x) for x in (av if isinstance(av, list) else [])) if a][:4]
+
+
+def _h_s10(s):
+    s = s if _ok(s) else {}
+    return 64 + 90 + 3 * 46 + 20 + (len(_avisos(s)) * 44 + 12 if _avisos(s) else 0)
+
+
+def _card_s10(c, s, x, y, w, h):
+    """Cartao S10: bateria (nivel, estado, temperatura), cinco caminhos de acesso e avisos."""
+    _card(c, x, y, w, h)
+    if not _ok(s):
+        _cabecalho_card(c, x, y, w, "S10", False)
+        _texto_c(c, x + PAD, y + 64 + 40, "n/d", REG, 34, ESCURO)
+        return
+    velho = s.get("velho") is True
+    titulo = "S10 sem dados %s" % _idade_txt(s.get("idade_s")) if velho else "S10"
+    yy = _cabecalho_card(c, x, y, w, titulo.strip(), False)
+    bat = s.get("bateria") if isinstance(s.get("bateria"), dict) else None
+    yc = yy + 45
+    if velho or bat is None:
+        _texto_c(c, x + PAD, yc, "bateria n/d", REG, 34, ESCURO)
+    else:
+        nivel = _num(bat.get("nivel"))
+        bw = min(300, max(60, w - 2 * PAD - 186 - 18 - 70 - 200))
+        _texto_c(c, x + PAD, yc, "Bateria", NEG, 34, PRETO)
+        if nivel is None:
+            _texto_c(c, x + PAD + 186, yc, "n/d", REG, 34, ESCURO)
+        else:
+            nivel = min(100.0, max(0.0, float(nivel)))
+            _barra(c, x + PAD + 186, yc - 15, bw, 30, nivel)
+            _texto_c(c, x + PAD + 186 + bw + 18, yc, "%d%%" % round(nivel), NEG, 34, PRETO)
+        partes = []
+        st = STATUS_BATERIA.get(bat.get("status")) if isinstance(bat.get("status"), str) else None
+        if st:
+            partes.append(st)
+        temp = _num(bat.get("temperatura_c"))
+        partes.append("n/d" if temp is None else "%.0f°C" % temp)
+        txt = _ajustar(c, "  ".join(partes), REG, 26, w - 2 * PAD - 186 - bw - 18 - 100)
+        _texto_c(c, x + w - PAD, yc, txt, REG, 26, ESCURO, "dir")
+    yy += 90
+    cam = s.get("caminhos") if isinstance(s.get("caminhos"), dict) else {}
+    for i, (chave, rotulo) in enumerate(CAMINHOS_S10):
+        cx = x + PAD + (i % 2) * ((w - 2 * PAD) // 2)
+        cy = yy + (i // 2) * 46 + 23
+        v = cam.get(chave)
+        if velho or not isinstance(v, bool):
+            _forma(c, cx, cy - 14, 28, None)
+        else:
+            _forma_ok(c, cx, cy - 14, 28, v)
+        _texto_c(c, cx + 40, cy, rotulo, NEG, 26, PRETO)
+    yy += 3 * 46 + 20
+    for a in _avisos(s):
+        _forma(c, x + PAD, yy + 6, 28, "falha")
+        _texto_c(c, x + PAD + 40, yy + 20, _ajustar(c, a, NEG, 26, w - 2 * PAD - 40), NEG, 26, PRETO)
+        yy += 44
+
+
+def _desenhar_claude(c, m):
+    w = c.largura - 2 * MARGEM
+    limite = botoes.limite(c.altura)
+    tem_c, tem_s = "claude" in m, "s10" in m
+    if not (tem_c or tem_s):
+        c.texto(c.largura // 2, (botoes.TOPO + limite) // 2 + _cap(NEG, 34) // 2, "Claude/S10 desligado na config",
+                NEG, 34, ESCURO, "centro")
+        return
+    y = botoes.TOPO
+    if tem_c:
+        h = min(CLAUDE_H, limite - y)
+        _card_claude(c, m["claude"], MARGEM, y, w, h, _agora(m))
+        y += h + GAP
+    if tem_s:
+        h = min(_h_s10(m["s10"]), limite - y)
+        if h >= 140:
+            _card_s10(c, m["s10"], MARGEM, y, w, h)
+
+
 # --------------------------------------------------------------------- entrada
 
 def desenhar(c, metricas, historico=None, pagina="resumo", armado=None, p=1, modo=None):
@@ -933,6 +1148,8 @@ def desenhar(c, metricas, historico=None, pagina="resumo", armado=None, p=1, mod
         _desenhar_servicos(c, m, itens, p)
     elif pagina == "detalhes":
         _desenhar_detalhes(c, m, itens, hist)
+    elif pagina == "claude":
+        _desenhar_claude(c, m)
     else:
         _desenhar_comandos(c, m, itens, modo)
     _desenhar_botoes(c, pagina, armado, p, itens, modo)
