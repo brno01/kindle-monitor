@@ -491,6 +491,59 @@ def _linha_ragnarok(c, m, x, y, w, h):
              MEDIO if parado else PRETO)
 
 
+# ----------------------------------------------------- claude / S10 (1 linha)
+
+H_LINHA_CLAUDE_S10 = 60
+CARGA_CURTA = {"charging": "carreg.", "full": "cheia", "discharging": "bat.", "not_charging": "bat."}
+MARCAS_S10 = (("usb", "USB"), ("adb_sem_fio", "sem fio"), ("vnc", "VNC"))
+
+
+def _pct_txt(j):
+    """"42%" de uma janela de limite; renovado vale 0%; sem numero -> "n/d"."""
+    j = j if isinstance(j, dict) else None
+    pct = _num(j.get("pct")) if j else None
+    if pct is None:
+        return "n/d"
+    return "0%" if j.get("renovado") is True else "%d%%" % round(min(100.0, max(0.0, float(pct))))
+
+
+def _linha_claude_s10(c, m, x, y, w, h):
+    """Uma linha: icone Claude, 5h e semanal, bateria do S10 com estado de carga e marcas USB/sem fio/VNC.
+    Parte ausente em `m` some da linha."""
+    _card(c, x, y, w, h)
+    yc = y + h // 2
+    xe, xd = x + PAD, x + w - PAD
+    s = m.get("s10")
+    if "s10" in m:
+        usavel = _ok(s) and s.get("velho") is not True and isinstance(s.get("bateria"), dict)
+        cam = s.get("caminhos") if usavel and isinstance(s.get("caminhos"), dict) else {}
+        for chave, rotulo in reversed(MARCAS_S10):
+            v = cam.get(chave)
+            c.texto(xd, yc + _cap(NEG, 26) // 2, rotulo, NEG, 26, PRETO, alinhar="dir")
+            xd -= int(c.medir(rotulo, NEG, 26)) + 8 + 22
+            _forma(c, xd, yc - 11, 22, None if not usavel or not isinstance(v, bool) else ("ativo" if v else "falha"))
+            xd -= 22
+    partes = []
+    if "claude" in m:
+        cl = m["claude"] if isinstance(m["claude"], dict) else {}
+        lim = cl.get("limites")
+        lim = lim if _ok(lim) else {}
+        partes.append("5h " + _pct_txt(lim.get("cinco_horas")))
+        partes.append("sem " + _pct_txt(lim.get("semanal")))
+        xe += c.icone(xe, yc - 15, "claude", 30, PRETO)
+        if xe > x + PAD:
+            xe += 12
+    if "s10" in m:
+        txt = "S10 n/d"
+        bat = s.get("bateria") if _ok(s) and s.get("velho") is not True else None
+        if isinstance(bat, dict) and _num(bat.get("nivel")) is not None:
+            txt = "S10 %d%%" % round(min(100.0, max(0.0, float(bat["nivel"]))))
+            carga = CARGA_CURTA.get(bat.get("status")) if isinstance(bat.get("status"), str) else None
+            txt += " " + carga if carga else ""
+        partes.append(txt)
+    _texto_c(c, xe, yc, _ajustar(c, "  ·  ".join(partes), NEG, 26, max(0, xd - xe - 20)), NEG, 26, PRETO)
+
+
 # --------------------------------------------------------------------- resumo
 
 TILE_PAD = 14
@@ -567,7 +620,7 @@ def _tile(c, x, y, w, h, t):
 
 
 def _desenhar_resumo(c, m, hist, itens):
-    """Tiles, armazenamento, I/O, Atencao, (grade de servicos | resumo por grupo se couber) e Ragnarok."""
+    """Tiles, armazenamento, I/O, Atencao, (grade de servicos | resumo por grupo se couber), linha Claude/S10 e Ragnarok."""
     x0, w = MARGEM, c.largura - 2 * MARGEM
     topo, limite = botoes.TOPO, botoes.limite(c.altura)
     discos = _discos(m)
@@ -585,7 +638,8 @@ def _desenhar_resumo(c, m, hist, itens):
     if h_io:
         blocos.append(("io", h_io))
     h_rag = 60 if rag else 0
-    util = limite - topo - (h_rag + GAP if h_rag else 0)
+    h_cl = H_LINHA_CLAUDE_S10 if "claude" in m or "s10" in m else 0
+    util = limite - topo - (h_rag + GAP if h_rag else 0) - (h_cl + GAP if h_cl else 0)
 
     def total(bl):
         return sum(h for _, h in bl) + GAP * (len(bl) - 1)
@@ -625,6 +679,8 @@ def _desenhar_resumo(c, m, hist, itens):
         y += h + gap
     if h_rag:
         _linha_ragnarok(c, m, x0, limite - h_rag, w, h_rag)
+    if h_cl:
+        _linha_claude_s10(c, m, x0, limite - h_rag - (GAP if h_rag else 0) - h_cl, w, h_cl)
 
 
 # ------------------------------------------------------------------- servicos
