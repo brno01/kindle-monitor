@@ -414,6 +414,105 @@ def coletar_tier_state(rotulo, caminho, ler, agora):
     return r
 
 
+# ------------------------------------------------------------- claude e s10
+
+IDADE_LIMITES_MAX_S = 900
+IDADE_TOKENS_MAX_S = 1200
+IDADE_S10_MAX_S = 120
+_CAMPOS_INT_TOKENS = ("entrada", "saida", "cache_leitura", "cache_escrita", "total")
+
+
+def _int_nao_neg(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+
+def _json_dict(ler, caminho):
+    dados = json.loads(ler(caminho))
+    if not isinstance(dados, dict):
+        raise ValueError("nao e objeto")
+    return dados
+
+
+def _janela_limite(j, agora):
+    """{"pct", "volta_em"} -> J. Ausente -> None; tipos errados -> ValueError. pct e limitado a 0-100."""
+    if j is None:
+        return None
+    if not isinstance(j, dict) or not _num_finito(j.get("pct")) or not _int_nao_neg(j.get("volta_em")):
+        raise ValueError("janela invalida")
+    volta_em = j["volta_em"]
+    if volta_em <= agora:
+        return {"pct": 0.0, "volta_em": volta_em, "renovado": True}
+    return {"pct": float(min(100.0, max(0.0, j["pct"]))), "volta_em": volta_em, "renovado": False}
+
+
+def _num_finito(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v
+
+
+def _totais_tokens(t):
+    if not isinstance(t, dict) or not _num_nao_neg(t.get("custo_usd")):
+        raise ValueError("totais invalidos")
+    r = {}
+    for k in _CAMPOS_INT_TOKENS:
+        if not _int_nao_neg(t.get(k)):
+            raise ValueError("totais invalidos")
+        r[k] = t[k]
+    r["custo_usd"] = float(t["custo_usd"])
+    return r
+
+
+def _idade(ts, agora):
+    if not _int_nao_neg(ts):
+        raise ValueError("timestamp invalido")
+    return max(0, int(agora - ts))
+
+
+def _limites_claude(caminho, ler, agora):
+    dados = _json_dict(ler, caminho)
+    idade = _idade(dados.get("atualizado_em"), agora)
+    cinco = _janela_limite(dados.get("cinco_horas"), agora)
+    semanal = _janela_limite(dados.get("semanal"), agora)
+    if cinco is None and semanal is None:
+        raise ValueError("sem janelas")
+    return {"cinco_horas": cinco, "semanal": semanal, "idade_s": idade,
+            "velho": idade > IDADE_LIMITES_MAX_S}
+
+
+def _tokens_claude(caminho, ler, agora):
+    dados = _json_dict(ler, caminho)
+    idade = _idade(dados.get("gerado_em"), agora)
+    return {"hoje": _totais_tokens(dados.get("hoje")), "sete_dias": _totais_tokens(dados.get("sete_dias")),
+            "idade_s": idade, "velho": idade > IDADE_TOKENS_MAX_S}
+
+
+def coletar_claude(cfg, ler, agora):
+    """Limites (limites.json) e tokens (tokens.json) do claude-uso. Cada parte falha sozinha: {"erro": "n/d"}."""
+    r = {}
+    for chave, fn in (("limites", _limites_claude), ("tokens", _tokens_claude)):
+        try:
+            r[chave] = fn(cfg[chave], ler, agora)
+        except Exception:
+            r[chave] = dict(ND)
+    return r
+
+
+def coletar_s10(caminho, ler, agora):
+    """Resumo publico do S10 (resumo.json). Ausente, invalido ou com tipos errados -> {"erro": "n/d"}."""
+    try:
+        dados = _json_dict(ler, caminho)
+        idade = _idade(dados.get("gerado_em"), agora)
+        bateria, caminhos, avisos = dados.get("bateria"), dados.get("caminhos"), dados.get("avisos")
+        if bateria is not None and not isinstance(bateria, dict):
+            return dict(ND)
+        if not isinstance(caminhos, dict) or not isinstance(avisos, list):
+            return dict(ND)
+        return {"bateria": bateria, "caminhos": caminhos,
+                "avisos": [a for a in avisos if isinstance(a, str)],
+                "idade_s": idade, "velho": idade > IDADE_S10_MAX_S}
+    except Exception:
+        return dict(ND)
+
+
 # --------------------------------------------------------------------- servicos
 
 def coletar_servicos(nomes, executar):
@@ -852,6 +951,10 @@ class Coletor:
         io = cfg.get("io")
         if isinstance(io, dict) and (io.get("discos") or io.get("redes")):
             m["io"] = _isolado(self._io.medir)
+        if cfg.get("claude"):
+            m["claude"] = _isolado(lambda: coletar_claude(cfg["claude"], self._ler, self._agora()))
+        if cfg.get("s10"):
+            m["s10"] = _isolado(lambda: coletar_s10(cfg["s10"]["resumo"], self._ler, self._agora()))
         m["historico"] = self.historico()
         if com_pares and cfg.get("pares"):
             try:

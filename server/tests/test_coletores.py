@@ -595,6 +595,200 @@ class TierStateTest(unittest.TestCase):
         self.assertEqual(d[2], {"rotulo": "ruim", "erro": "n/d"})
 
 
+AGORA_CL = 1_800_000_000
+
+
+def _lim(**kw):
+    d = {"versao": 1, "conta": "pessoal", "atualizado_em": AGORA_CL - 30,
+         "cinco_horas": {"pct": 42.5, "volta_em": AGORA_CL + 3600},
+         "semanal": {"pct": 10.0, "volta_em": AGORA_CL + 86400}}
+    d.update(kw)
+    return d
+
+
+def _tot(n=1):
+    return {"entrada": n, "saida": 2 * n, "cache_leitura": 3 * n, "cache_escrita": 4 * n,
+            "total": 10 * n, "custo_usd": 1.5 * n}
+
+
+def _tok(**kw):
+    d = {"versao": 1, "conta": "pessoal", "gerado_em": AGORA_CL - 60, "hoje": _tot(1),
+         "sete_dias": _tot(7), "por_modelo_7d": []}
+    d.update(kw)
+    return d
+
+
+def _ler_de(arqs):
+    def ler(p):
+        v = arqs[p]
+        return v if isinstance(v, str) else json.dumps(v)
+    return ler
+
+
+class ColetarClaudeTest(unittest.TestCase):
+    CFG = {"limites": "/l.json", "tokens": "/t.json"}
+
+    def _col(self, lim=None, tok=None, agora=AGORA_CL):
+        arqs = {}
+        if lim is not None:
+            arqs["/l.json"] = lim
+        if tok is not None:
+            arqs["/t.json"] = tok
+        return c.coletar_claude(self.CFG, _ler_de(arqs), agora)
+
+    def test_valido(self):
+        r = self._col(_lim(), _tok())
+        self.assertEqual(r["limites"], {
+            "cinco_horas": {"pct": 42.5, "volta_em": AGORA_CL + 3600, "renovado": False},
+            "semanal": {"pct": 10.0, "volta_em": AGORA_CL + 86400, "renovado": False},
+            "idade_s": 30, "velho": False})
+        self.assertEqual(r["tokens"], {"hoje": _tot(1), "sete_dias": _tot(7), "idade_s": 60, "velho": False})
+
+    def test_ausente(self):
+        r = self._col()
+        self.assertEqual(r, {"limites": {"erro": "n/d"}, "tokens": {"erro": "n/d"}})
+
+    def test_json_invalido(self):
+        r = self._col("{truncado", "[1, 2]")
+        self.assertEqual(r, {"limites": {"erro": "n/d"}, "tokens": {"erro": "n/d"}})
+
+    def test_pct_tipo_errado(self):
+        for ruim in ("42", True, None, [1]):
+            r = self._col(_lim(cinco_horas={"pct": ruim, "volta_em": AGORA_CL + 5}), _tok())
+            self.assertEqual(r["limites"], {"erro": "n/d"}, repr(ruim))
+
+    def test_pct_clampa(self):
+        r = self._col(_lim(cinco_horas={"pct": -5, "volta_em": AGORA_CL + 5},
+                           semanal={"pct": 130.0, "volta_em": AGORA_CL + 5}), _tok())
+        self.assertEqual(r["limites"]["cinco_horas"]["pct"], 0.0)
+        self.assertEqual(r["limites"]["semanal"]["pct"], 100.0)
+
+    def test_volta_em_invalido(self):
+        for ruim in ("x", True, None, -1):
+            r = self._col(_lim(cinco_horas={"pct": 5.0, "volta_em": ruim}), _tok())
+            self.assertEqual(r["limites"], {"erro": "n/d"}, repr(ruim))
+
+    def test_renovado(self):
+        r = self._col(_lim(cinco_horas={"pct": 99.0, "volta_em": AGORA_CL - 1}), _tok())
+        self.assertEqual(r["limites"]["cinco_horas"],
+                         {"pct": 0.0, "volta_em": AGORA_CL - 1, "renovado": True})
+        self.assertFalse(r["limites"]["semanal"]["renovado"])
+        r = self._col(_lim(cinco_horas={"pct": 99.0, "volta_em": AGORA_CL}), _tok())
+        self.assertTrue(r["limites"]["cinco_horas"]["renovado"])
+
+    def test_velho_limites_900(self):
+        self.assertFalse(self._col(_lim(atualizado_em=AGORA_CL - 900), _tok())["limites"]["velho"])
+        r = self._col(_lim(atualizado_em=AGORA_CL - 901), _tok())["limites"]
+        self.assertEqual((r["idade_s"], r["velho"]), (901, True))
+
+    def test_velho_tokens_1200(self):
+        self.assertFalse(self._col(_lim(), _tok(gerado_em=AGORA_CL - 1200))["tokens"]["velho"])
+        self.assertTrue(self._col(_lim(), _tok(gerado_em=AGORA_CL - 1201))["tokens"]["velho"])
+
+    def test_idade_nunca_negativa(self):
+        self.assertEqual(self._col(_lim(atualizado_em=AGORA_CL + 50), _tok())["limites"]["idade_s"], 0)
+
+    def test_uma_janela_so(self):
+        d = _lim()
+        del d["semanal"]
+        r = self._col(d, _tok())["limites"]
+        self.assertIsNone(r["semanal"])
+        self.assertEqual(r["cinco_horas"]["pct"], 42.5)
+
+    def test_sem_nenhuma_janela(self):
+        d = _lim()
+        del d["semanal"], d["cinco_horas"]
+        self.assertEqual(self._col(d, _tok())["limites"], {"erro": "n/d"})
+
+    def test_atualizado_em_invalido(self):
+        for ruim in ("x", True, None):
+            self.assertEqual(self._col(_lim(atualizado_em=ruim), _tok())["limites"], {"erro": "n/d"})
+
+    def test_tokens_totais_invalidos(self):
+        for ruim in ({**_tot(), "total": "9"}, {**_tot(), "custo_usd": True}, {**_tot(), "saida": -1}, 5):
+            self.assertEqual(self._col(_lim(), _tok(hoje=ruim))["tokens"], {"erro": "n/d"}, repr(ruim))
+        d = _tok()
+        del d["sete_dias"]
+        self.assertEqual(self._col(_lim(), d)["tokens"], {"erro": "n/d"})
+
+    def test_um_arquivo_ruim_nao_derruba_o_outro(self):
+        r = self._col("lixo", _tok())
+        self.assertEqual(r["limites"], {"erro": "n/d"})
+        self.assertIn("hoje", r["tokens"])
+
+
+class ColetarS10Test(unittest.TestCase):
+    def _res(self, **kw):
+        d = {"versao": 1, "gerado_em": AGORA_CL - 10,
+             "bateria": {"nivel": 80, "status": "carregando", "temperatura_c": 31.5, "saude": "boa"},
+             "caminhos": {"usb": True, "adb_sem_fio": False, "tailscale": True, "ssh_termux": True,
+                          "vnc": None},
+             "avisos": ["temperatura"]}
+        d.update(kw)
+        return d
+
+    def _s10(self, dados, agora=AGORA_CL):
+        return c.coletar_s10("/r.json", _ler_de({"/r.json": dados}), agora)
+
+    def test_valido(self):
+        r = self._s10(self._res())
+        self.assertEqual(r["bateria"]["nivel"], 80)
+        self.assertEqual(r["caminhos"]["vnc"], None)
+        self.assertEqual(r["avisos"], ["temperatura"])
+        self.assertEqual((r["idade_s"], r["velho"]), (10, False))
+
+    def test_bateria_nula(self):
+        self.assertIsNone(self._s10(self._res(bateria=None))["bateria"])
+
+    def test_velho_120(self):
+        self.assertFalse(self._s10(self._res(gerado_em=AGORA_CL - 120))["velho"])
+        r = self._s10(self._res(gerado_em=AGORA_CL - 121))
+        self.assertEqual((r["idade_s"], r["velho"]), (121, True))
+
+    def test_ausente_e_invalido(self):
+        def falha(p):
+            raise FileNotFoundError(p)
+        self.assertEqual(c.coletar_s10("/r.json", falha, AGORA_CL), {"erro": "n/d"})
+        for ruim in ("{x", "[]", self._res(gerado_em="x"), self._res(gerado_em=True),
+                     self._res(caminhos="x"), self._res(avisos="temperatura"),
+                     self._res(bateria="x")):
+            self.assertEqual(self._s10(ruim), {"erro": "n/d"}, repr(ruim))
+
+    def test_avisos_filtra_nao_texto(self):
+        self.assertEqual(self._s10(self._res(avisos=["a", 3, None, "b"]))["avisos"], ["a", "b"])
+
+
+class ColetorClaudeS10Test(unittest.TestCase):
+    def _co(self, extra):
+        arqs = {"/proc/meminfo": MEMINFO, "/l.json": json.dumps(_lim()), "/t.json": json.dumps(_tok()),
+                "/r.json": json.dumps({"gerado_em": AGORA_CL, "bateria": None, "caminhos": {}, "avisos": []})}
+
+        def leitor(p):
+            if p in arqs:
+                return arqs[p]
+            raise FileNotFoundError(p)
+        cfg = {"host": "t", "balanceador": None, "servicos": [], "pares": [], "discos": [], **extra}
+        return c.Coletor(cfg, leitor_arquivo=leitor, agora=lambda: AGORA_CL,
+                         executar=lambda a: (_ for _ in ()).throw(FileNotFoundError(a[0])),
+                         dormir=lambda s: None, raiz_sys="/nao/existe")
+
+    def test_sem_chaves_nao_cria(self):
+        m = self._co({}).coletar()
+        self.assertNotIn("claude", m)
+        self.assertNotIn("s10", m)
+
+    def test_com_chaves(self):
+        m = self._co({"claude": {"limites": "/l.json", "tokens": "/t.json"},
+                      "s10": {"resumo": "/r.json"}}).coletar()
+        self.assertEqual(m["claude"]["limites"]["idade_s"], 30)
+        self.assertEqual(m["s10"]["idade_s"], 0)
+
+    def test_config_malformada_isolada(self):
+        m = self._co({"claude": ["x"], "s10": {"resumo": 5}}).coletar()
+        self.assertEqual(m["claude"], {"limites": {"erro": "n/d"}, "tokens": {"erro": "n/d"}})
+        self.assertEqual(m["s10"], {"erro": "n/d"})
+
+
 class GpuEstadoTest(unittest.TestCase):
     def _g(self, saida):
         return c.coletar_gpu(lambda a: (0, saida))
