@@ -184,9 +184,9 @@ def _aviso_inventario(m):
 
 
 def _cabecalho(c, m, itens):
-    """Fino: host, resumo dos servicos e hora com segundos; uma linha clara embaixo."""
+    """Fino: host, resumo dos servicos e hora (HH:MM, sem segundos); uma linha clara embaixo."""
     base = 14 + _cap(NEG, 34)
-    hora = _hora(m, "%H:%M:%S")
+    hora = _hora(m, "%H:%M")
     c.texto(c.largura - MARGEM, base, hora, NEG, 34, PRETO, alinhar="dir")
     fim = c.largura - MARGEM - c.medir(hora, NEG, 34) - 28
     resumo = _aviso_inventario(m) or (servicos.texto_resumo(itens) if itens else "")
