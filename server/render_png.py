@@ -6,6 +6,7 @@ Visual e-ink: alto contraste, contornos finos, raios pequenos, sem sombras; so o
 (26 e 34; negrito tambem 48, 72 e 140). Estado de servico: forma antes da cor (cheia = ativo, vazia = parado,
 X = falha, ? = desconhecido).
 """
+import math
 import unicodedata
 from datetime import datetime
 
@@ -52,7 +53,7 @@ def _ok(bloco):
 
 
 def _num(v):
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
 
 
 def _pct(fn):

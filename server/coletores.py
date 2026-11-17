@@ -10,6 +10,7 @@ vira `{"erro": "n/d"}` naquela metrica; coletor "ausente" (sem GPU, sem sensor) 
 import glob
 import ipaddress
 import json
+import math
 import os
 import re
 import socket
@@ -381,7 +382,7 @@ IDADE_TIER_MAX_S = 3 * 3600
 
 
 def _num_nao_neg(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
 
 
 def coletar_tier_state(rotulo, caminho, ler, agora):
@@ -446,7 +447,7 @@ def _janela_limite(j, agora):
 
 
 def _num_finito(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
 def _totais_tokens(t):

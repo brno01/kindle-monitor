@@ -521,9 +521,6 @@ class HistoricoTest(unittest.TestCase):
         co.parar()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 GIB = 2 ** 30
 
@@ -802,3 +799,24 @@ class GpuEstadoTest(unittest.TestCase):
         self.assertEqual(self._g("0, 100, 2048, 50")["estado"], "ativa")
         self.assertEqual(self._g("5, 0, 2048, 50")["estado"], "ativa")
         self.assertEqual(self._g("[N/A], 0, 2048, 50")["estado"], "ativa")
+
+
+class NaoFinitosClaudeTest(unittest.TestCase):
+    CFG = {"limites": "/l.json", "tokens": "/t.json"}
+
+    def test_limites_e_tokens_com_infinity_nan_sao_invalidos(self):
+        for lit in ("Infinity", "-Infinity", "NaN"):
+            lim = json.dumps(_lim()).replace("42.5", lit)
+            self.assertIn(lit, lim)
+            r = c.coletar_claude(self.CFG, _ler_de({"/l.json": lim, "/t.json": json.dumps(_tok())}), AGORA_CL)
+            self.assertEqual(r["limites"], {"erro": "n/d"}, lit)
+            self.assertNotEqual(r["tokens"], {"erro": "n/d"})
+            tok = json.dumps(_tok()).replace("1.5", lit, 1)
+            self.assertIn(lit, tok)
+            r = c.coletar_claude(self.CFG, _ler_de({"/l.json": json.dumps(_lim()), "/t.json": tok}), AGORA_CL)
+            self.assertEqual(r["tokens"], {"erro": "n/d"}, lit)
+            self.assertNotEqual(r["limites"], {"erro": "n/d"})
+
+
+if __name__ == "__main__":
+    unittest.main()

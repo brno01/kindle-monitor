@@ -157,9 +157,6 @@ class ResumoTest(unittest.TestCase):
         self.assertNotEqual(a, b)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 # ------------------------------------------------------------------ pagina claude
 
@@ -320,3 +317,36 @@ class NavClaudeTest(unittest.TestCase):
     def test_rotulo_cabe_no_botao(self):
         nav = [b for b in botoes.layout("resumo") if b["id"] == "pagina:claude"][0]
         self.assertLessEqual(cv.Canvas.medir(nav["rotulo"], "sans-bold", 26), nav["w"] - 16)
+
+
+class NaoFinitosClaudeTest(unittest.TestCase):
+    RUINS = (float("inf"), float("-inf"), float("nan"))
+
+    def test_helpers(self):
+        for v in self.RUINS:
+            self.assertEqual(render_png._tokens_txt(v), "n/d")
+            self.assertEqual(render_png._custo_txt(v), "n/d")
+            self.assertEqual(render_png._idade_txt(v), "")
+            self.assertEqual(render_png._volta_txt(v, 0), "")
+
+    def test_png_sem_excecao_e_sem_inf_nan(self):
+        for v in self.RUINS:
+            m = dados_claude()
+            m["claude"]["limites"]["cinco_horas"] = {"pct": v, "volta_em": v, "renovado": False}
+            m["claude"]["limites"] |= {"velho": True, "idade_s": v}
+            m["claude"]["tokens"]["hoje"] = {"entrada": v, "saida": v, "cache_leitura": v, "cache_escrita": v,
+                                              "total": v, "custo_usd": v}
+            m["s10"]["bateria"] = {"nivel": v, "status": "charging", "temperatura_c": v, "saude": "good"}
+            m["s10"] |= {"velho": True, "idade_s": v}
+            t = " | ".join(textos(m)).lower()
+            self.assertNotIn("inf", t)
+            self.assertNotIn("nan", t)
+            self.assertIn("n/d", t)
+            import render
+            for l in render.render_texto(m, 60, pagina="claude"):
+                self.assertNotIn("inf", l.lower())
+                self.assertNotIn("nan", l.lower())
+
+
+if __name__ == "__main__":
+    unittest.main()
