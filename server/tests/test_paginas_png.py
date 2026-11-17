@@ -127,7 +127,7 @@ class BotoesDesenhadosTest(unittest.TestCase):
 class ResumoTest(unittest.TestCase):
     def test_cabecalho_compacto_sem_faixa_preta(self):
         larg, alt, linhas = pixels(render_png.render_png(completo(), historico()))
-        self.assertLessEqual(render_png.ALTURA_CABECALHO, 96)
+        self.assertLessEqual(render_png.ALTURA_CABECALHO - botoes.BARRA_KINDLE_H, 96)  # a barra do Kindle fica acima
         self.assertEqual(linhas[5][5], 255)
         self.assertEqual(linhas[50][larg // 2], 255)
 
