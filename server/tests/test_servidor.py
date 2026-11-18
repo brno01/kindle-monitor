@@ -274,10 +274,6 @@ class CliTest(unittest.TestCase):
             ms.parse_args(["--colunas", "5"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ConfigTierStateTest(unittest.TestCase):
     def _carregar(self, discos):
         with tempfile.TemporaryDirectory() as d:
@@ -305,3 +301,7 @@ class ConfigTierStateTest(unittest.TestCase):
         rotulos = [d["rotulo"] for d in cfg["discos"]]
         self.assertEqual(rotulos, ["/", "NAS HD", "NAS SSD", "SSD"])
         self.assertTrue(any("tier_state" in d for d in cfg["discos"]))
+
+
+if __name__ == "__main__":
+    unittest.main()

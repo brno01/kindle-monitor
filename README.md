@@ -1,6 +1,6 @@
 # kindle-monitor
 
-Um Kindle Paperwhite 5 com jailbreak como **monitor de recursos em e-ink** do homelab (atheron). A tela mostra CPU, RAM, GPU, temperaturas, discos, jogadores e portas do Ragnarok e os serviços importantes, e atualiza a cada minuto.
+Um Kindle Paperwhite 5 com jailbreak como **monitor de recursos em e-ink** do homelab (atheron). A tela mostra CPU, RAM, GPU, temperaturas, discos, jogadores e portas do Ragnarok e os serviços importantes, e atualiza a cada minuto. Uma página extra, "Claude", mostra os limites e o consumo de tokens do Claude Code e o estado do celular S10 (bateria e caminhos de acesso).
 
 ```
 atheron (servidor Python, só lê)  --PNG por HTTP, tailnet, porta 8765-->  Kindle (Tailscale userspace + FBInk)

@@ -14,6 +14,10 @@ STF=/var/tmp/kindle-monitor/state
 MODOF=/var/local/kindle-monitor/modo   # power profile written by tap.sh (ext3); only one of the three names
 # config.sh's INTERVAL/FULL_EVERY are the fallbacks when the stored profile is missing or invalid
 INTERVAL0=$INTERVAL
+# Kindle status sent to the server (k* query params); config.sh may leave these out
+KSTATUS_EVERY=${KSTATUS_EVERY:-30}
+TS_EVERY=${TS_EVERY:-60}
+WSYNC_FILE=${WSYNC_FILE:-}
 FULL_EVERY0=$FULL_EVERY
 
 if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then exit 0; fi
@@ -51,7 +55,7 @@ read_state() {
   [ -f "$STF" ] || return 0
   while IFS='=' read -r k v; do
     case "$k" in
-      PAGINA) case "$v" in resumo|servicos|detalhes|comandos) PAGINA=$v ;; esac ;;
+      PAGINA) case "$v" in resumo|servicos|detalhes|comandos|claude) PAGINA=$v ;; esac ;;
       P) case "$v" in ''|*[!0-9]*) ;; *) [ "$v" -ge 1 ] && [ "$v" -le 99 ] && P=$v ;; esac ;;
       ARMADO) case "$v" in ''|*[!a-z0-9:-]*) ;; *) ARMADO=$v ;; esac ;;
       ARMADO_ATE) case "$v" in ''|*[!0-9]*) ;; *) ARMADO_ATE=$v ;; esac ;;
@@ -79,6 +83,55 @@ read_modo() {
   return 0
 }
 
+# ---- the Kindle's own status: battery, Wi-Fi, Bluetooth, airplane mode, Tailscale path, Whispersync.
+# Read every KSTATUS_EVERY s (each lipc call costs ~50 ms; at 1 s per cycle it would add up) and kept in
+# variables, so the k* params stay identical between collections and the server's image cache keeps hitting.
+# Only digits and the d/r/x path letter go into the URL: never SSID, MAC or device names.
+KST_T=0; TS_T=0; LAT_RAW=
+KB=; KC=; KTEMP=; KW=; KWC=; KA=; KBT=; KBC=; KTS=x; KLAT=; KWS=
+digits() { printf '%s' "$1" | tr -dc '0-9-' | cut -c1-12; }
+lp() { digits "$(lipc-get-prop "$1" "$2" 2>/dev/null)"; }
+
+ts_path() {
+  KTS=x
+  l=$("$TS/tailscale" --socket=/tmp/tailscaled.sock status 2>/dev/null | awk -v ip="${SERVER%%:*}" '$1 == ip')
+  case "$l" in *direct*) KTS=d ;; *relay*) KTS=r ;; esac
+}
+
+kstatus() {
+  now=$(date +%s)
+  [ $((now - KST_T)) -lt "$KSTATUS_EVERY" ] && return 0
+  KST_T=$now
+  KB=$(lp com.lab126.powerd battLevel)
+  KC=$(lp com.lab126.powerd isCharging)
+  KTEMP=$(lp com.lab126.powerd battTemperature)
+  s=$(lipc-get-prop com.lab126.wifid signalStrength 2>/dev/null)
+  KW=$(digits "${s%%/*}")
+  case "$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)" in CONNECTED*) KWC=1 ;; *) KWC=0 ;; esac
+  case "$(lp com.lab126.cmd wirelessEnable)" in 0) KA=1 ;; 1) KA=0 ;; *) KA= ;; esac
+  case "$(lp com.lab126.btfd BTstate)" in 0) KBT=0 ;; '') KBT= ;; *) KBT=1 ;; esac
+  KBC=$(lipc-hash-prop com.lab126.btfd ListConnected 2>/dev/null | grep -c 'is_connected = (1)')
+  # time of the last PNG fetch, in ms (curl -w); sampled here so it changes only once per collection
+  KLAT=$(printf '%s' "$LAT_RAW" | awk '/^[0-9.]+$/ { printf "%d", $1 * 1000 }')
+  if [ $((now - TS_T)) -ge "$TS_EVERY" ]; then TS_T=$now; ts_path; fi
+  KWS=
+  if [ -n "$WSYNC_FILE" ] && [ -f "$WSYNC_FILE" ]; then KWS=$(digits "$(stat -c %Y "$WSYNC_FILE" 2>/dev/null)"); fi
+  return 0
+}
+
+# local notice drawn with FBInk when the server cannot be reached (airplane mode, Wi-Fi off, atheron down):
+# the server's image can never say "airplane mode on", so it is said here
+offline_notice() {
+  KST_T=0
+  kstatus
+  msg="sem dados desde $(date +%H:%M)"
+  if [ "$KA" = 1 ]; then msg="$msg - modo aviao ligado"
+  elif [ "$KWC" = 0 ]; then msg="$msg - wi-fi desconectado"
+  fi
+  [ -n "$KB" ] && msg="$msg - bateria $KB%"
+  "$F" -q -y -1 -x 0 "$msg" >/dev/null 2>&1
+}
+
 # signature of what taps change (page/armed state and profile): a tap that lands while the
 # loop is fetching or drawing sends USR1 when nothing is waiting, so it is detected here instead
 sig() { cat "$STF" "$MODOF" 2>/dev/null | cksum; }
@@ -91,12 +144,15 @@ state() {
   [ "$PAGINA" = servicos ] && Q="$Q&p=$P"
   [ -n "$ARMADO" ] && Q="$Q&armado=$ARMADO"
   Q="$Q&modo=$MODO"
+  Q="$Q&kb=$KB&kc=$KC&ktemp=$KTEMP&kw=$KW&kwc=$KWC&ka=$KA&kbt=$KBT&kbc=$KBC&kts=$KTS&klat=$KLAT&kf=$fails"
+  Q="$Q&kt=$(date +%s)&kws=$KWS"
 }
 
 fetch() {
   state
   rm -f "$IMG.new"
-  curl -s -f -m 25 --socks5-hostname localhost:1055 -o "$IMG.new" "http://$SERVER/tela.png?$Q" || return 1
+  LAT_RAW=$(curl -s -f -m 25 --socks5-hostname localhost:1055 -o "$IMG.new" -w '%{time_total}' \
+    "http://$SERVER/tela.png?$Q") || return 1
   [ "$(head -c 4 "$IMG.new" | od -An -tx1 | tr -d ' \n')" = "89504e47" ] || return 1
   # button layout for the same page, used by tap.sh; keep the old one if this fails
   curl -s -f -m 10 --socks5-hostname localhost:1055 -o "$BTN.new" "http://$SERVER/botoes.txt?$Q" && mv -f "$BTN.new" "$BTN"
@@ -110,7 +166,7 @@ read_modo
 log "loop started pid=$$ server=$SERVER interval=${INTERVAL}s mode=$MODO"
 MODO_LOG=
 n=0
-fails=0
+fails=0   # also sent as kf (consecutive failures before this fetch)
 # let the launcher app exit and the library repaint before the first draw (interruptible)
 sleep "$FIRST_DELAY" &
 wait $!
@@ -131,6 +187,7 @@ while :; do
     MODO_LOG=$MODO
   fi
   ensure_ts
+  kstatus
   if fetch; then
     mv -f "$IMG.new" "$IMG"
     fails=0
@@ -143,7 +200,7 @@ while :; do
   else
     fails=$((fails + 1))
     log "fetch failed ($fails)"
-    [ "$fails" -eq "$FAIL_NOTICE_AFTER" ] && "$F" -q -y -1 -x 0 "sem dados desde $(date +%H:%M)" >/dev/null 2>&1
+    [ "$fails" -eq "$FAIL_NOTICE_AFTER" ] && offline_notice
   fi
   # interruptible sleep: a signal is handled right away instead of after the sleep ends
   # sleep only what is left of the interval, so the period stays close to INTERVAL

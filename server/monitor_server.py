@@ -12,6 +12,7 @@ import os
 import socket
 import sys
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -23,6 +24,7 @@ import cache_render  # noqa: E402
 import perfis  # noqa: E402
 import coletores  # noqa: E402
 import comandos  # noqa: E402
+import kindle_status  # noqa: E402
 import render  # noqa: E402
 import render_png  # noqa: E402
 import servicos  # noqa: E402
@@ -141,6 +143,14 @@ def _modo(query):
     return perfis.modo_valido(q.get("modo", [""])[0])
 
 
+def _hora_snapshot(m):
+    """Epoch do snapshot (`gerado_em`); sem ele, a hora atual."""
+    try:
+        return datetime.fromisoformat(m["gerado_em"]).timestamp()
+    except Exception:
+        return time.time()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "kindle-monitor"
     protocol_version = "HTTP/1.0"
@@ -183,6 +193,8 @@ class Handler(BaseHTTPRequestHandler):
                 sid, m = self.server.metricas(True)
                 pagina, armado, p = _parametros(url.query, servicos.ordenar(servicos.itens_de(m)))
                 self._responder(200, self.server.png(sid, m, pagina, armado, p, _modo(url.query)), "image/png")
+                # depois de responder: este pedido sai do cache ja aquecido e o proximo snapshot ja usa o estado novo
+                self.server.kindle.atualizar(kindle_status.de_query(url.query))
             elif url.path == "/botoes.json":
                 itens = self._itens()
                 pagina, armado, p = _parametros(url.query, itens)
@@ -253,6 +265,7 @@ class Servidor(ThreadingHTTPServer):
         self.comandos = comandos_obj or comandos.Comandos(comandos.validar_config({}))
         self.cache = cache_render.CacheLru(CACHE_RENDER_MAX)
         self._vista = None  # (pagina, armado, p, modo, quando) do ultimo /tela.png pedido, para preaquecer
+        self.kindle = kindle_status.EstadoKindle()  # ultimo estado do proprio Kindle (parametros k* do /tela.png)
         self._relogio = time.monotonic
         super().__init__(endereco, Handler)
 
@@ -271,10 +284,13 @@ class Servidor(ThreadingHTTPServer):
             m = dict(m, comandos=ult)
             extra = json.dumps(ult, sort_keys=True, default=str)
         modo = perfis.modo_valido(modo)
-        chave = None if sid is None else (sid, pagina, str(p), armado, modo, self.largura, self.altura, extra)
+        # idades e "sem dados" do Kindle contam a partir da hora do snapshot: pre-render e pedido dao a mesma chave
+        kv = self.kindle.vista(_hora_snapshot(m))
+        chave = None if sid is None else (sid, pagina, str(p), armado, modo, self.largura, self.altura, extra,
+                                          kindle_status.chave(kv))
         self._vista = (pagina, armado, p, modo, self._relogio())
         return self.cache.obter(chave, lambda: render_png.render_png(
-            m, m.get("historico"), self.largura, self.altura, pagina, armado, p, modo=modo))
+            m, m.get("historico"), self.largura, self.altura, pagina, armado, p, modo=modo, kindle=kv))
 
     def preaquecer(self, snap):
         """Chamado pela thread de coleta a cada snapshot novo: ja renderiza a tela que o Kindle esta pedindo."""

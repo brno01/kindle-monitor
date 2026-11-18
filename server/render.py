@@ -5,6 +5,7 @@ from datetime import datetime
 import botoes
 import coletores
 import formato
+import render_png
 import servicos
 
 MAX_LINHAS = 26
@@ -302,6 +303,73 @@ def _linhas_comandos(m, cols):
     return linhas
 
 
+def _linhas_claude(m, cols):
+    """Pagina claude em texto: limites e tokens do Claude Code e o estado do S10 (so leitura)."""
+    tem_c, tem_s = "claude" in m, "s10" in m
+    if not (tem_c or tem_s):
+        return ["Claude/S10 desligado na config"]
+    agora, tz = render_png._agora(m)
+    num, ok = render_png._num, render_png._ok
+    linhas = []
+    if tem_c:
+        cl = m["claude"] if isinstance(m["claude"], dict) else {}
+        lim, tok = cl.get("limites"), cl.get("tokens")
+        linhas.append("CLAUDE")
+        if not ok(lim):
+            linhas.append("  limites n/d")
+        else:
+            for chave, nome in (("cinco_horas", "5h"), ("semanal", "Semanal")):
+                j = lim.get(chave)
+                j = j if isinstance(j, dict) else {}
+                pct = num(j.get("pct"))
+                if pct is None:
+                    linhas.append("  %-7s n/d" % nome)
+                    continue
+                ren = j.get("renovado") is True
+                pct = 0.0 if ren else min(100.0, max(0.0, float(pct)))
+                sub = "renovado" if ren else render_png._volta_txt(j.get("volta_em"), agora, tz)
+                linhas.append(("  %-7s %3d%% %s" % (nome, round(pct), sub)).rstrip())
+            if lim.get("velho") is True:
+                linhas.append("  limites %s" % render_png._idade_txt(lim.get("idade_s")))
+        if not ok(tok):
+            linhas.append("  tokens n/d")
+        else:
+            for chave, nome in (("hoje", "Hoje"), ("sete_dias", "7 dias")):
+                t = tok.get(chave)
+                t = t if isinstance(t, dict) else {}
+                linhas.append("  %-7s %s tok %s" % (nome, render_png._tokens_txt(t.get("total")),
+                                                    render_png._custo_txt(t.get("custo_usd"))))
+            if tok.get("velho") is True:
+                linhas.append("  tokens %s" % render_png._idade_txt(tok.get("idade_s")))
+    if tem_s:
+        s = m["s10"] if ok(m["s10"]) else {}
+        if linhas:
+            linhas.append("")
+        if not s:
+            linhas += ["S10", "  n/d"]
+            return linhas
+        velho = s.get("velho") is True
+        linhas.append(("S10 sem dados %s" % render_png._idade_txt(s.get("idade_s"))) if velho else "S10")
+        bat = s.get("bateria") if isinstance(s.get("bateria"), dict) else None
+        if not velho:
+            if bat is None:
+                linhas.append("  bateria n/d")
+            else:
+                nivel, temp = num(bat.get("nivel")), num(bat.get("temperatura_c"))
+                st = render_png.STATUS_BATERIA.get(bat.get("status")) if isinstance(bat.get("status"), str) else None
+                linhas.append("  bateria " + " ".join(
+                    [("n/d" if nivel is None else "%d%%" % round(nivel))] + ([st] if st else [])
+                    + ["n/d" if temp is None else "%.0fC" % temp]))
+        cam = s.get("caminhos") if isinstance(s.get("caminhos"), dict) else {}
+        for chave, rotulo in render_png.CAMINHOS_S10:
+            v = cam.get(chave)
+            forma = "[?]" if velho or not isinstance(v, bool) else "[#]" if v else "[X]"
+            linhas.append("  %s %s" % (forma, rotulo))
+        for a in render_png._avisos(s):
+            linhas.append("  ! %s" % a)
+    return [l.rstrip() for l in linhas]
+
+
 def render_texto(metricas, colunas, pagina="resumo", p=1):
     """Monta a tela: lista de linhas ASCII, cada uma com no maximo `colunas` caracteres.
 
@@ -312,6 +380,9 @@ def render_texto(metricas, colunas, pagina="resumo", p=1):
     linhas = [_cabecalho(m, cols), "-" * cols]
     if pagina == "servicos":
         linhas += _linhas_servicos(m, cols, p)
+        return [ascii_seguro(l)[:cols] for l in linhas][:MAX_LINHAS]
+    if pagina == "claude":
+        linhas += _linhas_claude(m, cols)
         return [ascii_seguro(l)[:cols] for l in linhas][:MAX_LINHAS]
     if pagina == "comandos":
         linhas += _linhas_comandos(m, cols)

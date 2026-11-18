@@ -51,6 +51,17 @@ class UnidadesTest(unittest.TestCase):
     def test_executor_demora_o_bastante_para_10_pedidos_de_90s(self):
         self.assertIn("TimeoutStartSec=600", ler("kindle-monitor-executor.service"))
 
+    def test_diretorio_do_claude_uso(self):
+        self.assertEqual(linhas(ler("kindle-monitor-claude.tmpfiles")),
+                         {"d /var/lib/claude-uso 0755 claude claude -"})
+        s = ler("instalar-atheron.sh")
+        bloco = s[s.index("if getent passwd claude"):]
+        bloco = bloco[:bloco.index("\nfi\n")]
+        self.assertIn('install -m 0644 "$S/kindle-monitor-claude.tmpfiles" /etc/tmpfiles.d/kindle-monitor-claude.conf', bloco)
+        self.assertIn("systemd-tmpfiles --create /etc/tmpfiles.d/kindle-monitor-claude.conf", bloco)
+        self.assertEqual(s.count("kindle-monitor-claude.tmpfiles"), 1)
+        self.assertLess(s.index("if getent passwd claude"), s.index("systemctl daemon-reload"))
+
 
 if __name__ == "__main__":
     unittest.main()

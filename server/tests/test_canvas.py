@@ -3,6 +3,7 @@ import unittest
 import _caminho  # noqa: F401
 import canvas as cv
 import fonte_dados
+import icones_dados
 
 
 def px(c, x, y):
@@ -151,6 +152,29 @@ class CanvasTest(unittest.TestCase):
     def test_png(self):
         dados = cv.Canvas(30, 20).para_png()
         self.assertEqual(dados[:8], b"\x89PNG\r\n\x1a\n")
+
+
+class IconeTest(unittest.TestCase):
+    def test_icones_dados_tamanhos(self):
+        for tam in (40, 30):
+            d = icones_dados.ICONES["claude"][tam]
+            blob = cv.carregar_icone("claude", tam)
+            self.assertEqual(len(blob["bitmap"]), d["w"] * d["h"])
+            self.assertEqual((d["w"], d["h"]), (tam, tam))
+
+    def test_icone_desenha_dentro_da_caixa(self):
+        c = cv.Canvas(80, 80)
+        self.assertEqual(c.icone(10, 12, "claude", 40, 0), 40)
+        escuros = [(i % 80, i // 80) for i, v in enumerate(c.pixels) if v < 128]
+        self.assertTrue(escuros)
+        for x, y in escuros:
+            self.assertTrue(10 <= x < 50 and 12 <= y < 52, (x, y))
+
+    def test_icone_inexistente_nao_desenha(self):
+        c = cv.Canvas(60, 60)
+        self.assertEqual(c.icone(5, 5, "nao-existe", 40, 0), 0)
+        self.assertEqual(c.icone(5, 5, "claude", 41, 0), 0)
+        self.assertEqual(set(c.pixels), {255})
 
 
 if __name__ == "__main__":

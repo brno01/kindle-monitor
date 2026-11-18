@@ -67,6 +67,12 @@
   ],
 
   "_comentario_balanceador": "Arquivo JSON do balanceador do Ragnarok (campo players_by.ragnarok; chave ausente = 0 jogadores; 'updated' com mais de 120 s = dado PARADO). Use null para desligar (ex.: no nomad).",
+  "_comentario_claude": "Arquivos do claude-uso (limites de 5 h/semanal e tokens). Sem a chave 'claude' a secao some. Arquivo ausente, invalido ou velho (limites > 15 min, tokens > 20 min) mostra n/d ou aviso.",
+  "claude": {"limites": "/var/lib/claude-uso/limites.json", "tokens": "/var/lib/claude-uso/tokens.json"},
+
+  "_comentario_s10": "Resumo publico do S10 gerado pelo Cerberus (bateria, caminhos de acesso, avisos). Sem a chave 's10' a secao some; resumo com mais de 2 min fica marcado como velho.",
+  "s10": {"resumo": "/run/cerberus-s10-publico/resumo.json"},
+
   "balanceador": "/var/lib/cerberus/memory-balancer.json",
 
   "_comentario_pares": "Outros servidores kindle-monitor a mostrar na mesma tela. url e a base (sem /metricas.json); o servidor busca <url>/metricas.json?pares=0 com timeout de 2 s. Se falhar, a tela mostra 'nome: sem resposta'. Use [] se nao houver.",
