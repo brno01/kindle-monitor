@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from urllib.parse import urlsplit
 
+import alertas
 import servicos
 
 Snapshot = namedtuple("Snapshot", "id t metricas")
@@ -961,6 +962,7 @@ class Coletor:
             m["claude"] = _isolado(lambda: coletar_claude(cfg["claude"], self._ler, self._agora()))
         if cfg.get("s10"):
             m["s10"] = _isolado(lambda: coletar_s10(cfg["s10"]["resumo"], self._ler, self._agora()))
+        m["limiares"] = alertas.limiares(cfg.get("limiares"))
         m["historico"] = self.historico()
         if com_pares and cfg.get("pares"):
             try:

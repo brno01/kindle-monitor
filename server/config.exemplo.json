@@ -70,6 +70,9 @@
   "_comentario_claude": "Arquivos do claude-uso (limites de 5 h/semanal e tokens). Sem a chave 'claude' a secao some. Arquivo ausente, invalido ou velho (limites > 15 min, tokens > 20 min) mostra n/d ou aviso.",
   "claude": {"limites": "/var/lib/claude-uso/limites.json", "tokens": "/var/lib/claude-uso/tokens.json"},
 
+  "_comentario_limiares": "Limiares dos alertas do cartao ATENCAO (todos opcionais; valor invalido volta ao padrao): disco_aviso/disco_critico (% usado), ram, swap (%), temp_cpu_c (40 a 120), kindle_bateria, s10_bateria (%), claude_limite (% do limite de 5 h/semanal), sessao_esperando_min (1 a 1440).",
+  "limiares": {"disco_aviso": 85, "disco_critico": 93, "ram": 90, "swap": 50, "temp_cpu_c": 85, "kindle_bateria": 15, "s10_bateria": 20, "claude_limite": 90, "sessao_esperando_min": 10},
+
   "_comentario_s10": "Resumo publico do S10 gerado pelo Cerberus (bateria, caminhos de acesso, avisos). Sem a chave 's10' a secao some; resumo com mais de 2 min fica marcado como velho.",
   "s10": {"resumo": "/run/cerberus-s10-publico/resumo.json"},
 

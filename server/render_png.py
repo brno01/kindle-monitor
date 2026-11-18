@@ -10,6 +10,7 @@ import math
 import unicodedata
 from datetime import datetime
 
+import alertas
 import botoes
 import coletores
 import formato
@@ -158,7 +159,7 @@ def _sparkline(c, x, y_base, w, h, serie):
 
 
 def _forma(c, x, y, lado, estado):
-    """Forma do estado dentro do quadrado (x, y, lado, lado): cheia, vazia, X ou ?."""
+    """Forma do estado dentro do quadrado (x, y, lado, lado): cheia, vazia, X, triangulo com ! (aviso) ou ?."""
     cx, cy, r = x + lado // 2, y + lado // 2, lado // 2 - 1
     if estado == "ativo":
         c.circulo(cx, cy, r, PRETO)
@@ -168,6 +169,11 @@ def _forma(c, x, y, lado, estado):
     elif estado == "falha":
         c.contorno(x + 1, y + 1, lado - 2, lado - 2, PRETO, 3)
         c.cruz_x(x + 7, y + 7, lado - 14, PRETO, 3)
+    elif estado == "aviso":  # triangulo com "!"
+        base, topo = y + lado - 2, y + 1
+        c.polilinha([(cx, topo), (x + lado - 1, base), (x + 1, base), (cx, topo)], PRETO, 3)
+        c.retangulo(cx - 1, y + lado // 3 + 2, 3, max(3, lado // 4), PRETO)
+        c.retangulo(cx - 1, base - max(5, lado // 6) - 1, 3, 3, PRETO)
     else:
         c.contorno(x + 1, y + 1, lado - 2, lado - 2, MEDIO, 2)
         c.texto(cx, cy + _cap(NEG, 26) // 2, "?", NEG, 26, ESCURO, alinhar="centro")
@@ -338,13 +344,12 @@ def _barra_kindle(c, kv):
     _texto_c(c, x, yc, _ajustar(c, _texto_elo(kv), REG, 26, max(0, xd - 30 - x)), REG, 26, ESCURO)
 
 
-def _atencao(itens, kv):
-    """Itens de ATENCAO: os servicos com problema e, se for o caso, a bateria baixa do Kindle (primeiro)."""
-    at = list(servicos.resumo(itens)["atencao"]) if itens else []
-    if kindle_status.bateria_baixa(kv):
-        at.insert(0, {"id": "kindle:bateria", "rotulo": "Bateria do Kindle", "estado": "falha",
-                      "texto": "%d%% · carregue" % kv["bateria"]})
-    return at
+_FORMA_NIVEL = {"critico": "falha", "aviso": "aviso", "leve": "parado"}
+
+
+def _atencao(m, kv):
+    """Alertas do painel (motor `alertas`): criticos, avisos e leves, nessa ordem. `m["limiares"]` vale se existir."""
+    return alertas.avaliar(m, None, kv)
 
 
 # --------------------------------------------------------------------- botoes
@@ -540,35 +545,43 @@ def _estado_txt(it):
     return base
 
 
+ATENCAO_MAX = 6
+
+
+def _linhas_atencao(n):
+    """Linhas do card para `n` alertas: ate ATENCAO_MAX itens, mais a linha '+N' quando sobram."""
+    return n if n <= ATENCAO_MAX else ATENCAO_MAX + 1
+
+
 def _h_atencao(n, linhas=None):
     """Altura do card: titulo + (linhas de itens | 'Tudo em ordem')."""
-    corpo = 64 if n == 0 else (linhas if linhas is not None else n) * ATENCAO_LINHA
+    corpo = 64 if n == 0 else (linhas if linhas is not None else _linhas_atencao(n)) * ATENCAO_LINHA
     return ATENCAO_TITULO + corpo + 14
 
 
 def _card_atencao(c, atencao, x, y, w, h):
     _card(c, x, y, w, h)
-    c.texto(x + PAD, y + 14 + _cap(NEG, 26), "ATENCAO", NEG, 26, ESCURO)
+    n = len(atencao)
+    critico = any(a.get("nivel") == "critico" for a in atencao)
+    ytit = y + 14 + _cap(NEG, 26)
+    if critico:  # cabecalho invertido: branco no preto, dentro do contorno do card
+        c.retangulo_arredondado(x + 2, y + 2, w - 4, ATENCAO_TITULO - 2, RAIO - 2, PRETO)
+        c.retangulo(x + 2, y + ATENCAO_TITULO // 2, w - 4, ATENCAO_TITULO // 2, PRETO)
+    c.texto(x + PAD, ytit, "ATENCAO (%d)" % n if n else "ATENCAO", NEG, 26, BRANCO if critico else ESCURO)
     if not atencao:
         yc = y + ATENCAO_TITULO + 32
         _forma_ok(c, x + PAD, yc - 16, 32, True)
         _texto_c(c, x + PAD + 48, yc, "Tudo em ordem", NEG, 34, PRETO)
         return
-    c.texto(x + w - PAD, y + 14 + _cap(NEG, 26), "%d itens" % len(atencao) if len(atencao) != 1 else "1 item",
-            NEG, 26, PRETO, alinhar="dir")
     cabem = max(1, (h - ATENCAO_TITULO - 14) // ATENCAO_LINHA)
-    mostrar = atencao if len(atencao) <= cabem else atencao[:cabem - 1]
+    mostrar = atencao[:ATENCAO_MAX] if n <= min(ATENCAO_MAX, cabem) else atencao[:min(ATENCAO_MAX, cabem - 1)]
     for i, it in enumerate(mostrar):
         yc = y + ATENCAO_TITULO + i * ATENCAO_LINHA + ATENCAO_LINHA // 2
-        _forma(c, x + PAD, yc - 14, 28, it.get("estado"))
-        est = _estado_txt(it)
-        ew = c.medir(est, NEG, 26)
-        c.texto(x + w - PAD, yc + _cap(NEG, 26) // 2, est, NEG, 26, PRETO, alinhar="dir")
-        _texto_c(c, x + PAD + 44, yc, _ajustar(c, it.get("rotulo", "?"), NEG, 34, w - 2 * PAD - 44 - ew - 24),
-                 NEG, 34, PRETO)
-    if len(atencao) > len(mostrar):
+        _forma(c, x + PAD, yc - 14, 28, _FORMA_NIVEL.get(it.get("nivel"), "desconhecido"))
+        _texto_c(c, x + PAD + 44, yc, _ajustar(c, it.get("texto", "?"), NEG, 34, w - 2 * PAD - 44), NEG, 34, PRETO)
+    if n > len(mostrar):
         yc = y + ATENCAO_TITULO + len(mostrar) * ATENCAO_LINHA + ATENCAO_LINHA // 2
-        _texto_c(c, x + PAD + 44, yc, "+%d itens" % (len(atencao) - len(mostrar)), NEG, 26, ESCURO)
+        _texto_c(c, x + PAD + 44, yc, "+%d" % (n - len(mostrar)), NEG, 26, ESCURO)
 
 
 # ----------------------------------------------------------------- chips (resumo)
@@ -792,7 +805,7 @@ def _desenhar_resumo(c, m, hist, itens, kv=None):
     tiles = _tiles(m, hist, discos)
     do_tile = tiles[-1].get("_disco") if tiles and "_disco" in tiles[-1] else None
     outros = [d for d in discos if d is not do_tile][:5]
-    atencao = _atencao(itens, kv)
+    atencao = _atencao(m, kv)
     rag = m.get("ragnarok") is not None or bool(m.get("portas"))
 
     # (nome, altura) de cima para baixo; o Ragnarok fica ancorado embaixo, fora da lista
@@ -812,7 +825,7 @@ def _desenhar_resumo(c, m, hist, itens, kv=None):
     ate = _h_atencao(len(atencao))
     if total(blocos) + GAP + ate > util:  # muitas falhas: Atencao encolhe e mostra "+N itens"
         k = max(1, (util - total(blocos) - GAP - ATENCAO_TITULO - 14) // ATENCAO_LINHA)
-        ate = _h_atencao(len(atencao), min(k, len(atencao))) if atencao else _h_atencao(0)
+        ate = _h_atencao(len(atencao), min(k, _linhas_atencao(len(atencao)))) if atencao else _h_atencao(0)
     blocos.append(("atencao", ate))
     extra = None
     if itens:
@@ -1170,9 +1183,9 @@ def _desenhar_comandos(c, m, itens, modo=None, kv=None):
     y = _ultimos(c, m, MARGEM, y, w, rh, limite - reserva) + GAP
     if not itens or limite - y < _h_atencao(1):
         return
-    atencao = _atencao(itens, kv)
+    atencao = _atencao(m, kv)
     kmax = max(1, (limite - y - ATENCAO_TITULO - 14) // ATENCAO_LINHA)
-    ah = _h_atencao(len(atencao), min(len(atencao), kmax)) if atencao else _h_atencao(0)
+    ah = _h_atencao(len(atencao), min(_linhas_atencao(len(atencao)), kmax)) if atencao else _h_atencao(0)
     _card_atencao(c, atencao, MARGEM, y, w, ah)
     y += ah + GAP
     for cols in (3, 4):  # todos os servicos, se sobrar espaco; senao so o resumo por grupo

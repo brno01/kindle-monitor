@@ -58,6 +58,7 @@
     {"id": "rathena-web", "rotulo": "rAthena web", "grupo": "ragnarok", "tipo": "rathena", "alvo": "rathena-web.service", "verbos": ["reiniciar"], "protegido": true}
   ],
   "claude": {"limites": "/var/lib/claude-uso/limites.json", "tokens": "/var/lib/claude-uso/tokens.json"},
+  "limiares": {"disco_aviso": 85, "disco_critico": 93, "ram": 90, "swap": 50, "temp_cpu_c": 85, "kindle_bateria": 15, "s10_bateria": 20, "claude_limite": 90, "sessao_esperando_min": 10},
   "s10": {"resumo": "/run/cerberus-s10-publico/resumo.json"},
   "balanceador": "/var/lib/cerberus/memory-balancer.json",
   "pares": [],

@@ -780,6 +780,13 @@ class ColetorClaudeS10Test(unittest.TestCase):
         self.assertEqual(m["claude"]["limites"]["idade_s"], 30)
         self.assertEqual(m["s10"]["idade_s"], 0)
 
+    def test_limiares_publicados_com_padrao_e_validacao(self):
+        import alertas
+        self.assertEqual(self._co({}).coletar()["limiares"], alertas.PADRAO)
+        m = self._co({"limiares": {"disco_aviso": 70, "ram": "x", "zzz": 1}}).coletar()
+        self.assertEqual(m["limiares"], {**alertas.PADRAO, "disco_aviso": 70})
+        self.assertEqual(self._co({"limiares": 5}).coletar()["limiares"], alertas.PADRAO)
+
     def test_config_malformada_isolada(self):
         m = self._co({"claude": ["x"], "s10": {"resumo": 5}}).coletar()
         self.assertEqual(m["claude"], {"limites": {"erro": "n/d"}, "tokens": {"erro": "n/d"}})

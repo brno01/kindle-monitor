@@ -4,6 +4,7 @@ import time
 import unittest
 
 import _caminho  # noqa: F401
+import alertas
 import botoes
 import canvas as cv
 import coletores
@@ -177,28 +178,29 @@ class ConteudoTest(unittest.TestCase):
         tx = self.textos(m, "resumo")
         itens = servicos.itens_de(m)
         self.assertIn(servicos.texto_resumo(itens), tx)
-        rag = [t for t in tx if t.startswith("RAGNAROK")]
+        rag = [t for t in tx if t.startswith("RAGNAROK") and "jogadores" in t]  # o titulo do grupo tambem comeca assim
         self.assertEqual(len(rag), 1)
         self.assertIn("jogadores", rag[0])
         for rot in ("CPU", "RAM", "GPU"):
             self.assertIn(rot, tx)
         self.assertTrue(any(t.startswith("DISCO") for t in tx))
-        self.assertIn("ATENCAO", tx)
+        self.assertTrue(any(t.startswith("ATENCAO (") for t in tx))
 
     def test_tudo_em_ordem(self):
         todos_ok = servicos_kindle(12, 1)
         for i in todos_ok["itens"]:
             i["estado"] = "ativo"
-        m = caso52(servicos_kindle=todos_ok)
+        portas = [dict(p, aberto=True) for p in caso_cheio()["portas"]]
+        m = caso52(servicos_kindle=todos_ok, portas=portas)
         self.assertIn("Tudo em ordem", self.textos(m, "resumo"))
 
     def test_atencao_lista_falhas_e_nao_opcionais_parados(self):
         m = caso52()
-        r = servicos.resumo(servicos.itens_de(m))
-        self.assertTrue(r["atencao"])
+        lista = alertas.avaliar(m)
+        self.assertTrue(lista)
         tx = self.textos(m, "resumo")
-        self.assertIn("ATENCAO", tx)
-        self.assertTrue(any(t.startswith(r["atencao"][0]["rotulo"][:8]) for t in tx))
+        self.assertIn("ATENCAO (%d)" % len(lista), tx)
+        self.assertIn(lista[0]["texto"], tx)
 
     def test_aviso_de_inventario_velho(self):
         m = caso52(servicos_kindle=servicos_kindle(gerado=AGORA - 500))
@@ -250,7 +252,7 @@ class PixelsTest(unittest.TestCase):
         for pagina in botoes.PAGINAS:
             c = desenha(caso52(), pagina)
             for b in botoes.layout(pagina):
-                if b["id"].startswith("pagina:"):
+                if b["id"].startswith("pagina:") and b.get("visivel", True):
                     miolo = c.pixels[(b["y"] + 12) * c.largura + b["x"] + 12]
                     self.assertEqual(miolo < 50, b["id"] == "pagina:" + pagina, (pagina, b["id"]))
 
@@ -262,7 +264,7 @@ class PixelsTest(unittest.TestCase):
                 self.assertEqual(min(linhas[y][larg - 40:]), 255, (pagina, y))
 
     def test_sem_grandes_vazios_no_resumo(self):
-        # nenhuma faixa em branco com mais de 60 px entre o cabecalho e a navegacao
+        # nenhuma faixa em branco com mais de 130 px entre o cabecalho e a navegacao
         larg, alt, linhas = pixels(render_png.render_png(caso52(), historico(), pagina="resumo"))
         corrida = maior = 0
         for y in range(botoes.CAB_PX, botoes.nav_topo(alt)):
@@ -271,7 +273,7 @@ class PixelsTest(unittest.TestCase):
                 maior = max(maior, corrida)
             else:
                 corrida = 0
-        self.assertLessEqual(maior, 60)
+        self.assertLessEqual(maior, 130)  # o cartao ATENCAO tem teto de 6 itens + "+N": sobra um vao acima do rodape
 
     def test_formas_de_estado_distintas(self):
         # ativo (cheia), parado (vazia), falha (X) e desconhecido (?) nunca desenham a mesma forma

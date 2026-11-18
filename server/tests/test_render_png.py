@@ -468,5 +468,96 @@ class IoPngTest(unittest.TestCase):
         self.assertLess(melhor, 2.0)
 
 
+class CartaoAtencaoAlertasTest(unittest.TestCase):
+    """O cartao ATENCAO usa a lista do motor `alertas` (nao so os servicos)."""
+
+    @staticmethod
+    def _sem_problemas(**extra):
+        m = completo(servicos=[{"nome": "ragnarok.service", "ativo": True}],
+                     portas=[{"rotulo": "MAP", "aberto": True}], pares=[])
+        m.update(extra)
+        return m
+
+    @staticmethod
+    def _desenhar(m, pagina="resumo"):
+        textos, cartoes = [], []
+        orig_t, orig_c = cv.Canvas.texto, render_png._card_atencao
+
+        def espia_t(self, x, y, t, *a, **k):
+            textos.append(t)
+            return orig_t(self, x, y, t, *a, **k)
+
+        def espia_c(c, atencao, x, y, w, h):
+            cartoes.append((x, y, w, h))
+            return orig_c(c, atencao, x, y, w, h)
+        cv.Canvas.texto, render_png._card_atencao = espia_t, espia_c
+        try:
+            c = cv.Canvas(1236, 1648, estrito=True)
+            render_png.desenhar(c, m, historico())
+        finally:
+            cv.Canvas.texto, render_png._card_atencao = orig_t, orig_c
+        return c, textos, cartoes
+
+    def test_disco_a_91_aparece_e_nao_diz_tudo_em_ordem(self):
+        disco = {"rotulo": "/", "caminho": "/", "total_b": 500 * 10**9, "usado_b": 455 * 10**9, "pct": 91.0}
+        _, textos, _ = self._desenhar(self._sem_problemas(discos=[disco]))
+        self.assertIn("ATENCAO (1)", textos)
+        self.assertTrue(any(t.startswith("Disco / 91%") for t in textos), textos)
+        self.assertNotIn("Tudo em ordem", textos)
+
+    def test_sem_alertas_mantem_tudo_em_ordem(self):
+        _, textos, _ = self._desenhar(self._sem_problemas())
+        self.assertIn("Tudo em ordem", textos)
+        self.assertIn("ATENCAO", textos)
+
+    def test_12_alertas_mostram_6_e_mais_6(self):
+        discos = [{"rotulo": "d%d" % i, "caminho": "/mnt/d%d" % i, "total_b": 10**12, "usado_b": 95 * 10**10,
+                   "pct": 95.0} for i in range(12)]
+        m = self._sem_problemas(discos=discos)
+        self.assertEqual(len(render_png._atencao(m, None)), 12)
+        _, textos, cartoes = self._desenhar(m)
+        self.assertIn("ATENCAO (12)", textos)
+        self.assertEqual(len([t for t in textos if t.startswith("Disco d")]), 6)
+        self.assertIn("+6", textos)
+        self.assertEqual(cartoes[0][3], render_png._h_atencao(12))
+        self.assertEqual(render_png._h_atencao(12), render_png.ATENCAO_TITULO + 7 * render_png.ATENCAO_LINHA + 14)
+
+    def test_cabecalho_invertido_so_com_item_critico(self):
+        def canto(disco_pct):
+            disco = {"rotulo": "/", "caminho": "/", "total_b": 10**12, "usado_b": 10**11, "pct": disco_pct}
+            c, _, cartoes = self._desenhar(self._sem_problemas(discos=[disco]))
+            x, y, _, _ = cartoes[0]
+            return c.pixels[(y + 20) * c.largura + x + 400]
+        self.assertEqual(canto(95.0), 0)   # critico: faixa preta
+        self.assertEqual(canto(91.0), 255)  # aviso: cabecalho normal
+
+    def test_formas_por_nivel_sao_distintas(self):
+        hashes = []
+        for estado in ("falha", "aviso", "parado"):
+            c = cv.Canvas(60, 60)
+            render_png._forma(c, 10, 10, 28, estado)
+            hashes.append(bytes(c.pixels))
+        self.assertEqual(len(set(hashes)), 3)
+        self.assertEqual(render_png._FORMA_NIVEL, {"critico": "falha", "aviso": "aviso", "leve": "parado"})
+
+    def test_comandos_tambem_usa_o_motor(self):
+        itens = [{"id": "a", "rotulo": "A", "grupo": "host", "estado": "ativo"}]
+        m = self._sem_problemas(discos=[{"rotulo": "/", "caminho": "/", "total_b": 10**12, "usado_b": 9 * 10**11,
+                                         "pct": 90.0}])
+        textos = []
+        orig = cv.Canvas.texto
+
+        def espia(self, x, y, t, *a, **k):
+            textos.append(t)
+            return orig(self, x, y, t, *a, **k)
+        cv.Canvas.texto = espia
+        try:
+            render_png._desenhar_comandos(cv.Canvas(1236, 1648, estrito=True), m, itens)
+        finally:
+            cv.Canvas.texto = orig
+        self.assertIn("ATENCAO (1)", textos)
+        self.assertNotIn("Tudo em ordem", textos)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -136,10 +136,10 @@ class RenderTest(unittest.TestCase):
 
     def test_bateria_baixa_entra_em_atencao(self):
         kv = estado(Q.replace("kb=33", "kb=9")).vista(T0)
-        at = render_png._atencao([], kv)
-        self.assertEqual(at[0]["id"], "kindle:bateria")
-        self.assertIn("9%", render_png._estado_txt(at[0]))
-        self.assertEqual(render_png._atencao([], estado().vista(T0)), [])
+        at = render_png._atencao({}, kv)
+        self.assertEqual((at[0]["sistema"], at[0]["nivel"]), ("kindle", "aviso"))
+        self.assertIn("9%", at[0]["texto"])
+        self.assertEqual(render_png._atencao({}, estado().vista(T0)), [])
 
 
 class ServidorKindleTest(unittest.TestCase):

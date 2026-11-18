@@ -2,6 +2,7 @@
 import unicodedata
 from datetime import datetime
 
+import alertas
 import botoes
 import coletores
 import formato
@@ -221,6 +222,7 @@ def _secao(m, cols, compacto, nome=None):
         elif svcs is not None:
             linhas.append("Servicos n/d")
         linhas += _linhas_catalogo(m, cols)
+        linhas += _linhas_atencao(m, cols)
     return linhas
 
 
@@ -234,9 +236,23 @@ def _linhas_catalogo(m, cols):
     aviso = {"velho": "estados desatualizados", "ausente": "sem inventario"}.get(sk.get("inventario"))
     if aviso:
         linhas.append("! " + aviso)
-    for i in servicos.resumo(itens)["atencao"][:6]:
-        linhas.append("%s %s" % (str(i.get("rotulo", "?"))[:max(1, cols - 8)].ljust(max(1, cols - 8)),
-                                 "FALHA" if i.get("estado") == "falha" else "parado"))
+    return linhas
+
+
+ATENCAO_MAX = 6
+PREFIXO_NIVEL = {"critico": "[X]", "aviso": "[!]", "leve": "[ ]"}
+
+
+def _linhas_atencao(m, cols):
+    """Alertas do motor (os mesmos do cartao ATENCAO da imagem): ate 6 e '+N' com o resto; vazio sem alertas."""
+    lista = alertas.avaliar(m, None, None)
+    if not lista:
+        return []
+    linhas = ["ATENCAO (%d)" % len(lista)]
+    for a in lista[:ATENCAO_MAX]:
+        linhas.append("%s %s" % (PREFIXO_NIVEL.get(a.get("nivel"), "[?]"), a.get("texto", "?")))
+    if len(lista) > ATENCAO_MAX:
+        linhas.append("+%d" % (len(lista) - ATENCAO_MAX))
     return linhas
 
 

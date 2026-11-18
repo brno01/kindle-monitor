@@ -184,6 +184,31 @@ class RenderNovoTest(unittest.TestCase):
         self.assertIn("parado", [l for l in linhas if l.startswith("NAS SSD")][0])
 
 
+class AtencaoTextoTest(unittest.TestCase):
+    @staticmethod
+    def _m(**extra):
+        return local(servicos=[], pares=[], **extra)
+
+    def test_disco_a_91_entra_na_lista_do_motor(self):
+        disco = {"rotulo": "/", "caminho": "/", "total_b": 10**12, "usado_b": 91 * 10**10, "pct": 91.0}
+        linhas = render.render_texto(self._m(discos=[disco]), 38)
+        self.assertIn("ATENCAO (1)", linhas)
+        self.assertTrue(any(l.startswith("[!] Disco /") for l in linhas), linhas)
+
+    def test_12_alertas_mostram_6_e_mais_6(self):
+        itens = [{"id": "s%d" % i, "rotulo": "S%d" % i, "grupo": "host", "estado": "falha"} for i in range(12)]
+        m = self._m(servicos_kindle={"inventario": "ok", "itens": itens})
+        linhas = render.render_texto(m, 60)
+        self.assertIn("ATENCAO (12)", linhas)
+        self.assertEqual(len([l for l in linhas if l.startswith("[X] S")]), 6)
+        self.assertIn("+6", linhas)
+
+    def test_usa_limiares_de_m(self):
+        disco = {"rotulo": "/", "caminho": "/", "total_b": 10**12, "usado_b": 91 * 10**10, "pct": 91.0}
+        m = self._m(discos=[disco], limiares={"disco_aviso": 95})
+        self.assertFalse(any(l.startswith("ATENCAO") for l in render.render_texto(m, 38)))
+
+
 class PaginaClaudeTextoTest(unittest.TestCase):
     def test_pagina_claude_so_ascii_e_cabe(self):
         m = local() | {
