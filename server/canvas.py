@@ -10,6 +10,7 @@ import math
 import zlib
 
 import fonte_dados
+import icones_dados
 import png
 
 PRETO, ESCURO, MEDIO, CLARO, TRILHO, BRANCO = 0, 70, 140, 200, 235, 255
@@ -37,6 +38,23 @@ def carregar_fonte(nome, tam):
         f = {"ascent": bruto["ascent"], "descent": bruto["descent"], "glifos": glifos}
         _cache_fontes[chave] = f
     return f
+
+
+_cache_icones = {}
+
+
+def carregar_icone(nome, tam):
+    """Decodifica (uma vez) `icones_dados.ICONES[nome][tam]`; None se nao existir."""
+    chave = (nome, tam)
+    ic = _cache_icones.get(chave)
+    if ic is None:
+        bruto = icones_dados.ICONES.get(nome, {}).get(tam)
+        if bruto is None:
+            return None
+        blob = zlib.decompress(base64.b64decode("".join(bruto["dados"])))
+        ic = {"w": bruto["w"], "h": bruto["h"], "bitmap": blob}
+        _cache_icones[chave] = ic
+    return ic
 
 
 def _glifo(fonte, ch):
@@ -240,6 +258,15 @@ class Canvas:
                 self._glifo_bitmap(gx, gy, g, cor)
             pen += g["avanco"]
         return larg
+
+    def icone(self, x, y, nome, tam, cor):
+        """Desenha o icone `nome` na caixa tam x tam com canto superior esquerdo (x, y).
+        Devolve a largura desenhada (tam), ou 0 se o icone/tamanho nao existe."""
+        ic = carregar_icone(nome, tam)
+        if ic is None:
+            return 0
+        self._glifo_bitmap(x, y, ic, cor)
+        return tam
 
     def _glifo_bitmap(self, gx, gy, g, cor):
         w, h, bmp = g["w"], g["h"], g["bitmap"]

@@ -165,8 +165,207 @@ class RenderPngTest(unittest.TestCase):
         render_png.render_png(completo(host="café 中文 ☃"), None)
 
 
-if __name__ == "__main__":
-    unittest.main()
+CL = {"limites": {"cinco_horas": {"pct": 42.0, "volta_em": 1_794_000_000, "renovado": False},
+                  "semanal": {"pct": 18.0, "volta_em": 1_794_500_000, "renovado": False},
+                  "idade_s": 30, "velho": False},
+      "tokens": {"erro": "n/d"}}
+S10 = {"versao": 1, "gerado_em": "2026-11-15T14:32:10-03:00",
+       "bateria": {"nivel": 87, "status": "charging", "temperatura_c": 31.0, "saude": "good"},
+       "caminhos": {"usb": True, "adb_sem_fio": False, "tailscale": True, "ssh_termux": True, "vnc": None},
+       "avisos": [], "idade_s": 20, "velho": False}
+
+
+def _caixas(m):
+    """(nome, y, h) dos blocos do resumo, na ordem em que sao desenhados."""
+    reg = []
+
+    def espia(nome, pos_y, pos_h):
+        orig = getattr(render_png, nome)
+
+        def f(*a, **k):
+            reg.append((nome, a[pos_y], a[pos_h]))
+            return orig(*a, **k)
+        return f
+
+    c = cv.Canvas(1236, 1648, estrito=True)
+    trocas = {"_tile": espia("_tile", 2, 4), "_card_io": espia("_card_io", 3, 5),
+              "_card_atencao": espia("_card_atencao", 3, 5), "_card_grupos": espia("_card_grupos", 3, 5),
+              "_card_chips": espia("_card_chips", 3, 5), "_linha_ragnarok": espia("_linha_ragnarok", 3, 5),
+              "_linha_claude_s10": espia("_linha_claude_s10", 3, 5)}
+    antigos = {k: getattr(render_png, k) for k in trocas}
+    try:
+        for k, v in trocas.items():
+            setattr(render_png, k, v)
+        render_png.desenhar(c, m, historico())
+    finally:
+        for k, v in antigos.items():
+            setattr(render_png, k, v)
+    tiles = [r for r in reg if r[0] == "_tile"][:1]  # os tiles dividem a mesma linha
+    return tiles + [r for r in reg if r[0] != "_tile"]
+
+
+class LinhaClaudeS10Test(unittest.TestCase):
+    def _linha(self, m):
+        return [r for r in _caixas(m) if r[0] == "_linha_claude_s10"]
+
+    def test_fica_acima_do_ragnarok_sem_sobrepor_nem_sair(self):
+        import botoes
+        for m in (completo(claude=CL, s10=S10), cheio() | {"claude": CL, "s10": S10}):
+            caixas = _caixas(m)
+            (_, yl, hl), (_, yr, hr) = [r for r in caixas if r[0] == "_linha_claude_s10"][0], \
+                [r for r in caixas if r[0] == "_linha_ragnarok"][0]
+            self.assertEqual(hl, 60)
+            self.assertLess(yl + hl, yr)
+            self.assertEqual(yr + hr, botoes.limite(1648))
+            ordenadas = sorted(caixas, key=lambda r: r[1])
+            for (_, ya, ha), (_, yb, _) in zip(ordenadas, ordenadas[1:]):
+                self.assertLessEqual(ya + ha, yb)
+            self.assertGreaterEqual(min(r[1] for r in caixas), botoes.TOPO)
+
+    def test_sem_ragnarok_ancora_no_rodape(self):
+        import botoes
+        m = completo(claude=CL, s10=S10, ragnarok=None, portas=None)
+        (_, y, h), = self._linha(m)
+        self.assertEqual(y + h, botoes.limite(1648))
+
+    def test_muitos_itens_em_atencao_continua_cabendo(self):
+        import botoes
+        m = completo(claude=CL, s10=S10, servicos=[{"nome": "s%d.service" % i, "ativo": False} for i in range(40)])
+        caixas = _caixas(m)
+        ordenadas = sorted(caixas, key=lambda r: r[1])
+        for (_, ya, ha), (_, yb, _) in zip(ordenadas, ordenadas[1:]):
+            self.assertLessEqual(ya + ha, yb)
+        self.assertLessEqual(max(y + h for _, y, h in caixas), botoes.limite(1648))
+        self.assertEqual(len(self._linha(m)), 1)
+
+    def test_sem_as_chaves_nao_ha_linha_e_layout_e_o_antigo(self):
+        orig = render_png._linha_claude_s10
+
+        def nunca(*a, **k):
+            raise AssertionError("linha nao deveria ser desenhada")
+        m = completo()
+        ref = render_png.render_png(m, historico())
+        render_png._linha_claude_s10 = nunca
+        try:
+            self.assertEqual(render_png.render_png(m, historico()), ref)
+        finally:
+            render_png._linha_claude_s10 = orig
+        self.assertNotEqual(render_png.render_png(completo(claude=CL), historico()), ref)
+        self.assertNotEqual(render_png.render_png(completo(s10=S10), historico()), ref)
+
+    def test_so_uma_parte_so_desenha_ela(self):
+        so_c = render_png.render_png(completo(claude=CL), historico())
+        so_s = render_png.render_png(completo(s10=S10), historico())
+        ambos = render_png.render_png(completo(claude=CL, s10=S10), historico())
+        self.assertEqual(len({so_c, so_s, ambos}), 3)
+
+    def test_estados_degradados_nao_quebram(self):
+        estados = [{"claude": {"limites": {"erro": "n/d"}, "tokens": {"erro": "n/d"}}},
+                   {"claude": {"limites": {"cinco_horas": None, "semanal": None, "idade_s": 1, "velho": False}}},
+                   {"claude": {"limites": {"cinco_horas": {"pct": 77.0, "renovado": True},
+                                           "semanal": {"pct": float("nan")}}}},
+                   {"claude": "x"}, {"s10": {"erro": "n/d"}}, {"s10": "x"},
+                   {"s10": dict(S10, velho=True)}, {"s10": dict(S10, bateria=None)},
+                   {"s10": dict(S10, bateria={"nivel": None, "status": 5}, caminhos={"usb": 1, "vnc": "x"})},
+                   {"s10": dict(S10, bateria={"nivel": 250, "status": "full"})}]
+        base = render_png.render_png(completo(), historico())
+        for e in estados:
+            dados = render_png.render_png(completo(**e), historico())
+            self.assertEqual(ihdr(dados), (1236, 1648))
+            self.assertNotEqual(dados, base)
+
+    def _espiar_linha(self, m):
+        textos, formas = [], []
+        orig_t, orig_f = cv.Canvas.texto, render_png._forma
+
+        def espia_t(self, x, y, t, *a, **k):
+            textos.append((t, a[2] if len(a) > 2 else None))
+            return orig_t(self, x, y, t, *a, **k)
+
+        def espia_f(c, x, y, lado, estado):
+            formas.append(estado)
+            return orig_f(c, x, y, lado, estado)
+        cv.Canvas.texto, render_png._forma = espia_t, espia_f
+        try:
+            c = cv.Canvas(1236, 1648, estrito=True)
+            render_png._linha_claude_s10(c, m, 24, 1400, 1188, 60)
+        finally:
+            cv.Canvas.texto, render_png._forma = orig_t, orig_f
+        return textos, formas
+
+    def test_limites_velhos_em_cinza_medio_com_a_idade(self):
+        velho = dict(CL, limites=dict(CL["limites"], idade_s=3 * 3600 + 5, velho=True))
+        textos, _ = self._espiar_linha({"claude": velho, "s10": S10})
+        parte = [(t, cor) for t, cor in textos if "5h 42%" in t]
+        self.assertEqual(len(parte), 1)
+        self.assertEqual(parte[0][1], render_png.MEDIO)
+        self.assertIn("ha 3 h", parte[0][0])
+        textos, _ = self._espiar_linha({"claude": CL, "s10": S10})
+        parte = [(t, cor) for t, cor in textos if "5h 42%" in t]
+        self.assertEqual(parte[0][1], render_png.PRETO)
+        self.assertNotIn("ha ", parte[0][0])
+
+    def test_marcas_com_bateria_nula_usb_falso_mostram_falha(self):
+        textos, formas = self._espiar_linha({"claude": CL, "s10": dict(
+            S10, bateria=None, caminhos={"usb": False, "adb_sem_fio": None, "vnc": "x"})})
+        self.assertEqual(formas, [None, None, "falha"])  # VNC, sem fio, USB (ordem de desenho)
+        self.assertIn("S10 n/d", "".join(t for t, _ in textos))
+
+    def test_marcas_velho_ou_erro_sao_interrogacao(self):
+        for s in (dict(S10, velho=True), {"erro": "n/d"}):
+            _, formas = self._espiar_linha({"claude": CL, "s10": s})
+            self.assertEqual(formas, [None, None, None], s)
+
+    def test_inteiro_gigante_vira_nd_sem_estourar(self):
+        self.assertEqual(render_png._tokens_txt(10 ** 400), "n/d")
+        dados = render_png.render_png(completo(claude=CL, s10=dict(S10, bateria={"nivel": 10 ** 400})), historico())
+        self.assertEqual(ihdr(dados), (1236, 1648))
+
+    def test_card_com_limites_e_tokens_velhos_mostra_as_duas_idades(self):
+        textos = []
+        orig = cv.Canvas.texto
+
+        def espia(self, x, y, t, *a, **k):
+            textos.append(t)
+            return orig(self, x, y, t, *a, **k)
+        tok = {"hoje": {"entrada": 1, "saida": 2, "cache_leitura": 3, "cache_escrita": 4, "total": 10, "custo_usd": 1.0},
+               "sete_dias": {"entrada": 1, "saida": 2, "cache_leitura": 3, "cache_escrita": 4, "total": 70,
+                             "custo_usd": 7.0}, "idade_s": 2 * 86400, "velho": True}
+        cl = {"limites": dict(CL["limites"], idade_s=3 * 3600, velho=True), "tokens": tok}
+        cv.Canvas.texto = espia
+        try:
+            c = cv.Canvas(1236, 1648, estrito=True)
+            render_png._card_claude(c, cl, 24, 100, 1188, render_png.CLAUDE_H)
+        finally:
+            cv.Canvas.texto = orig
+        self.assertIn("ha 3 h", textos)
+        self.assertIn("tokens ha 48 h", textos)
+
+    def test_texto_so_ascii_grau_e_ponto_medio(self):
+        textos = []
+        orig = cv.Canvas.texto
+
+        def espia(self, x, y, t, *a, **k):
+            textos.append(t)
+            return orig(self, x, y, t, *a, **k)
+        cv.Canvas.texto = espia
+        try:
+            c = cv.Canvas(1236, 1648, estrito=True)
+            render_png._linha_claude_s10(c, {"claude": CL, "s10": S10}, 24, 1400, 1188, 60)
+        finally:
+            cv.Canvas.texto = orig
+        txt = "".join(textos)
+        self.assertIn("5h 42%", txt)
+        self.assertIn("sem 18%", txt)
+        self.assertIn("S10 87% carreg.", txt)
+        self.assertTrue(all(ord(ch) < 128 or ch in "\u00b0\u00b7" for ch in txt))
+
+    def test_renovado_mostra_zero_e_carga_curta(self):
+        self.assertEqual(render_png._pct_txt({"pct": 0.0, "renovado": True}), "0%")
+        self.assertEqual(render_png._pct_txt({"pct": 77.0, "renovado": True}), "0%")
+        self.assertEqual(render_png._pct_txt(None), "n/d")
+        self.assertEqual(render_png.CARGA_CURTA, {"charging": "carreg.", "full": "cheia",
+                                                  "discharging": "bat.", "not_charging": "bat."})
 
 
 def _tinta_gpu(dados):
@@ -267,3 +466,7 @@ class IoPngTest(unittest.TestCase):
             render_png.render_png(cheio() | {"io": IO}, historico())
             melhor = min(melhor, time.monotonic() - t0)
         self.assertLess(melhor, 2.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

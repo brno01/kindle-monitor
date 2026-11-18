@@ -4,14 +4,15 @@
 (`/botoes.json`, `/botoes.txt`). Coordenadas em pixels do PNG, origem no canto superior esquerdo.
 
 Pagina comandos tambem tem o bloco AJUSTES (botoes locais `modo:<perfil>`, ver perfis.py).
-Paginas: resumo, servicos (paginada, parametro `p`), detalhes e comandos (rotulo "Acoes").
+Paginas: resumo, servicos (paginada, parametro `p`), detalhes, comandos (rotulo "Acoes") e claude (limites e tokens
+do Claude Code + estado do S10; so leitura, sem botoes proprios).
 Os botoes da pagina servicos dependem do estado dos itens (ativo: Reiniciar e Parar; parado: Ligar...);
 a divisao em paginas so depende do catalogo.
 """
 import perfis
 import servicos
 
-PAGINAS = ("resumo", "servicos", "detalhes", "comandos")
+PAGINAS = ("resumo", "servicos", "detalhes", "comandos", "claude")
 PAGINA_PADRAO = "resumo"
 
 # (id, rotulo); sem acento (a fonte embutida e ASCII mais o grau e o ponto medio).
@@ -32,14 +33,16 @@ NAV = (
     ("pagina:servicos", "Servicos"),
     ("pagina:detalhes", "Detalhes"),
     ("pagina:comandos", "Acoes"),
+    ("pagina:claude", "Claude"),
 )
 
 MARGEM = 48
 GAP = 16
 NAV_H = 96
 NAV_BASE = 24          # distancia da barra de navegacao ate a borda de baixo
-CAB_PX = 70            # cabecalho fino
-TOPO = 84              # onde o conteudo comeca (abaixo do cabecalho)
+BARRA_KINDLE_H = 44    # barra de status do proprio Kindle, no alto de todas as paginas
+CAB_PX = BARRA_KINDLE_H + 70  # barra do Kindle + cabecalho fino do host
+TOPO = CAB_PX + 14     # onde o conteudo comeca (abaixo do cabecalho)
 BOTAO_H = 84           # altura dos botoes de linha e de paginacao
 PAG_W = 220            # largura dos botoes de paginacao
 ULTIMOS_MAX = 8

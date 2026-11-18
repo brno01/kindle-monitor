@@ -1,0 +1,3 @@
+# Directory where the `claude` user's statusline and timer publish limites.json/tokens.json (0644)
+# for the Claude card. Read-only for the web service (nobody); only `claude` writes here.
+d /var/lib/claude-uso 0755 claude claude -

@@ -57,6 +57,8 @@
     {"id": "rathena-map", "rotulo": "rAthena map", "grupo": "ragnarok", "tipo": "rathena", "alvo": "rathena-map.service", "verbos": ["reiniciar"], "protegido": true},
     {"id": "rathena-web", "rotulo": "rAthena web", "grupo": "ragnarok", "tipo": "rathena", "alvo": "rathena-web.service", "verbos": ["reiniciar"], "protegido": true}
   ],
+  "claude": {"limites": "/var/lib/claude-uso/limites.json", "tokens": "/var/lib/claude-uso/tokens.json"},
+  "s10": {"resumo": "/run/cerberus-s10-publico/resumo.json"},
   "balanceador": "/var/lib/cerberus/memory-balancer.json",
   "pares": [],
   "portas": [

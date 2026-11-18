@@ -127,7 +127,7 @@ class BotoesDesenhadosTest(unittest.TestCase):
 class ResumoTest(unittest.TestCase):
     def test_cabecalho_compacto_sem_faixa_preta(self):
         larg, alt, linhas = pixels(render_png.render_png(completo(), historico()))
-        self.assertLessEqual(render_png.ALTURA_CABECALHO, 96)
+        self.assertLessEqual(render_png.ALTURA_CABECALHO - botoes.BARRA_KINDLE_H, 96)  # a barra do Kindle fica acima
         self.assertEqual(linhas[5][5], 255)
         self.assertEqual(linhas[50][larg // 2], 255)
 
@@ -155,6 +155,197 @@ class ResumoTest(unittest.TestCase):
         a = render_png.render_png(completo(servicos=[{"nome": "a.service", "ativo": True}]), None)
         b = render_png.render_png(completo(servicos=[{"nome": "a.service", "ativo": False}]), None)
         self.assertNotEqual(a, b)
+
+
+
+# ------------------------------------------------------------------ pagina claude
+
+from datetime import datetime  # noqa: E402
+
+
+def _janela(pct, volta_em=1_794_010_000, renovado=False):
+    return {"pct": pct, "volta_em": volta_em, "renovado": renovado}
+
+
+def _tok(total, custo=1.5):
+    return {"entrada": total // 4, "saida": total // 8, "cache_leitura": total // 2, "cache_escrita": total // 8,
+            "total": total, "custo_usd": custo}
+
+
+def dados_claude(**extra):
+    m = {"host": "atheron", "gerado_em": "2026-11-16T14:32:10-03:00",
+         "claude": {"limites": {"cinco_horas": _janela(34.0), "semanal": _janela(91.0), "idade_s": 30, "velho": False},
+                    "tokens": {"hoje": _tok(3_100_000), "sete_dias": _tok(21_000_000, 12.3), "idade_s": 30,
+                               "velho": False}},
+         "s10": {"bateria": {"nivel": 87, "status": "charging", "temperatura_c": 36.5, "saude": "good"},
+                 "caminhos": {"usb": True, "adb_sem_fio": False, "tailscale": True, "ssh_termux": True, "vnc": None},
+                 "avisos": [], "idade_s": 20, "velho": False}}
+    return m | extra
+
+
+def textos(m, w=1236, h=1648):
+    """Textos desenhados na pagina claude (canvas estrito: nada fora da imagem)."""
+    caps = []
+    original = cv.Canvas.texto
+
+    def espia(self, x, y, texto, *a, **k):
+        caps.append(texto)
+        return original(self, x, y, texto, *a, **k)
+
+    cv.Canvas.texto = espia
+    try:
+        tela(m, "claude", w=w, h=h)
+    finally:
+        cv.Canvas.texto = original
+    return caps
+
+
+class PaginaClaudeTest(unittest.TestCase):
+    def test_dados_completos(self):
+        t = " | ".join(textos(dados_claude()))
+        for esperado in ("5h", "34%", "volta", "S10", "91%"):
+            self.assertIn(esperado, t)
+
+    def test_tamanho_pequeno_e_alternativo(self):
+        for w, h in ((800, 1300), (1072, 1448)):
+            textos(dados_claude(), w, h)
+
+    def test_renovado(self):
+        m = dados_claude()
+        m["claude"]["limites"]["cinco_horas"] = _janela(80.0, renovado=True)
+        t = " | ".join(textos(m))
+        self.assertIn("0%", t)
+        self.assertIn("renovado", t)
+        self.assertNotIn("80%", t)
+
+    def test_noventa_por_cento_em_negrito_preto(self):
+        c = tela(dados_claude(), "claude")
+        self.assertTrue(any(v < 40 for v in c.pixels))  # smoke; o texto 91% existe (ver test_dados_completos)
+
+    def test_velho_mostra_idade(self):
+        m = dados_claude()
+        m["claude"]["limites"] |= {"velho": True, "idade_s": 7200}
+        m["s10"] |= {"velho": True, "idade_s": 600}
+        t = " | ".join(textos(m))
+        self.assertIn("ha 2 h", t)
+        self.assertIn("S10 sem dados ha 10 min", t)
+
+    def test_caminho_none_ou_estranho_desenha_interrogacao(self):
+        t = textos(dados_claude())
+        self.assertIn("?", t)  # vnc None
+        m = dados_claude()
+        m["s10"]["caminhos"] = {"usb": "sim", "vnc": 3}
+        self.assertIn("?", textos(m))
+
+    def test_sem_chaves_desligado(self):
+        t = " | ".join(textos({"host": "h", "gerado_em": "2026-11-16T14:32:10-03:00"}))
+        self.assertIn("desligado na config", t)
+
+    def test_so_um_cartao(self):
+        m = dados_claude()
+        del m["s10"]
+        t = " | ".join(textos(m))
+        self.assertIn("5h", t)
+        self.assertNotIn("desligado", t)
+        m = dados_claude()
+        del m["claude"]
+        self.assertIn("S10", " | ".join(textos(m)))
+
+    def test_nd_nos_dois_nao_levanta(self):
+        for v in ({"erro": "n/d"}, None, "x", 5, {}, {"limites": 3, "tokens": []}):
+            textos({"claude": v, "s10": v})
+
+    def test_valores_estranhos_nao_levantam(self):
+        m = dados_claude()
+        m["s10"]["bateria"] = {"nivel": "x", "status": 5, "temperatura_c": True, "saude": None}
+        m["s10"]["avisos"] = ["temperatura", "carga_cheia", "outro_codigo", 7, None]
+        m["s10"]["caminhos"] = {"usb": [], "adb_sem_fio": {}}
+        t = " | ".join(textos(m))
+        self.assertIn("temperatura alta", t)
+        self.assertIn("100% ha horas: proteger bateria", t)
+        self.assertIn("outro_codigo", t)
+        m["claude"]["limites"]["cinco_horas"] = {"pct": "x", "volta_em": None, "renovado": 1}
+        m["claude"]["tokens"]["hoje"] = {"total": "x", "custo_usd": None}
+        textos(m)
+
+    def test_status_da_bateria(self):
+        for st, txt in (("charging", "carregando"), ("full", "cheia"), ("discharging", "descarregando"),
+                        ("not_charging", "descarregando")):
+            m = dados_claude()
+            m["s10"]["bateria"]["status"] = st
+            self.assertIn(txt, " | ".join(textos(m)))
+        m = dados_claude()
+        m["s10"]["bateria"]["status"] = "unknown"
+        t = " | ".join(textos(m))
+        for txt in ("carregando", "cheia", "descarregando"):
+            self.assertNotIn(txt, t)
+
+    def test_texto_so_ascii(self):
+        for t in textos(dados_claude()):
+            self.assertTrue(all(ord(ch) < 128 or ch in "°·" for ch in t), t)
+
+
+class HelpersClaudeTest(unittest.TestCase):
+    def test_tokens_txt(self):
+        self.assertEqual(render_png._tokens_txt(950), "950")
+        self.assertEqual(render_png._tokens_txt(12_000), "12 k")
+        self.assertEqual(render_png._tokens_txt(3_100_000), "3,1 M")
+        self.assertEqual(render_png._tokens_txt(0), "0")
+        self.assertEqual(render_png._tokens_txt(999_999), "1,0 M")
+        self.assertEqual(render_png._tokens_txt(None), "n/d")
+
+    def test_volta_txt(self):
+        agora = datetime(2026, 11, 16, 12, 0).timestamp()  # segunda
+        hoje = datetime(2026, 11, 16, 14, 30).timestamp()
+        self.assertEqual(render_png._volta_txt(hoje, agora), "volta 14:30")
+        qui = datetime(2026, 11, 19, 2, 0).timestamp()
+        self.assertEqual(render_png._volta_txt(qui, agora), "volta qui 02:00")
+        dom = datetime(2026, 11, 22, 23, 5).timestamp()
+        self.assertEqual(render_png._volta_txt(dom, agora), "volta dom 23:05")
+        self.assertEqual(render_png._volta_txt(None, agora), "")
+
+
+class NavClaudeTest(unittest.TestCase):
+    def test_seis_botoes_dentro_da_barra_sem_sobreposicao(self):
+        nav = [b for b in botoes.layout("resumo") if b["y"] == botoes.nav_topo()]
+        self.assertEqual(len(nav), 6)
+        self.assertEqual(nav[-1]["id"], "pagina:claude")
+        for a, b in zip(nav, nav[1:]):
+            self.assertLessEqual(a["x"] + a["w"], b["x"])
+        self.assertLessEqual(nav[-1]["x"] + nav[-1]["w"], 1236 - botoes.MARGEM)
+
+    def test_rotulo_cabe_no_botao(self):
+        nav = [b for b in botoes.layout("resumo") if b["id"] == "pagina:claude"][0]
+        self.assertLessEqual(cv.Canvas.medir(nav["rotulo"], "sans-bold", 26), nav["w"] - 16)
+
+
+class NaoFinitosClaudeTest(unittest.TestCase):
+    RUINS = (float("inf"), float("-inf"), float("nan"))
+
+    def test_helpers(self):
+        for v in self.RUINS:
+            self.assertEqual(render_png._tokens_txt(v), "n/d")
+            self.assertEqual(render_png._custo_txt(v), "n/d")
+            self.assertEqual(render_png._idade_txt(v), "")
+            self.assertEqual(render_png._volta_txt(v, 0), "")
+
+    def test_png_sem_excecao_e_sem_inf_nan(self):
+        for v in self.RUINS:
+            m = dados_claude()
+            m["claude"]["limites"]["cinco_horas"] = {"pct": v, "volta_em": v, "renovado": False}
+            m["claude"]["limites"] |= {"velho": True, "idade_s": v}
+            m["claude"]["tokens"]["hoje"] = {"entrada": v, "saida": v, "cache_leitura": v, "cache_escrita": v,
+                                              "total": v, "custo_usd": v}
+            m["s10"]["bateria"] = {"nivel": v, "status": "charging", "temperatura_c": v, "saude": "good"}
+            m["s10"] |= {"velho": True, "idade_s": v}
+            t = " | ".join(textos(m)).lower()
+            self.assertNotIn("inf", t)
+            self.assertNotIn("nan", t)
+            self.assertIn("n/d", t)
+            import render
+            for l in render.render_texto(m, 60, pagina="claude"):
+                self.assertNotIn("inf", l.lower())
+                self.assertNotIn("nan", l.lower())
 
 
 if __name__ == "__main__":

@@ -46,7 +46,7 @@ read_state() {
   [ -f "$STF" ] || return 0
   while IFS='=' read -r k v; do
     case "$k" in
-      PAGINA) case "$v" in resumo|servicos|detalhes|comandos) PAGINA=$v ;; esac ;;
+      PAGINA) case "$v" in resumo|servicos|detalhes|comandos|claude) PAGINA=$v ;; esac ;;
       P) case "$v" in ''|*[!0-9]*) ;; *) [ "$v" -ge 1 ] && [ "$v" -le 99 ] && P=$v ;; esac ;;
       ARMADO) case "$v" in ''|*[!a-z0-9:-]*) ;; *) ARMADO=$v ;; esac ;;
       ARMADO_ATE) case "$v" in ''|*[!0-9]*) ;; *) ARMADO_ATE=$v ;; esac ;;
@@ -69,7 +69,7 @@ send() {
 
 case "$id" in
   atualizar) log "refresh" ;;
-  pagina:resumo | pagina:servicos | pagina:detalhes | pagina:comandos)
+  pagina:resumo | pagina:servicos | pagina:detalhes | pagina:comandos | pagina:claude)
     PAGINA=${id#pagina:}; P=1; ARMADO=; ARMADO_ATE=0; log "page $PAGINA" ;;
   modo:desempenho | modo:balanceado | modo:economia)
     # single tap, local: store the profile atomically; the loop re-reads it on the wake-up below
