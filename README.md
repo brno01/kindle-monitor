@@ -14,8 +14,8 @@ O Kindle só busca e desenha. Quem calcula é o servidor.
 
 ## Estrutura
 - `server/`: servidor, coletores, render do PNG e testes (142).
-- `kindle/`: o que vai para o Kindle (`kindle-monitor/loop.sh`, `config.sh`, scriptlets em `documents/`).
-- `deploy/`: unit systemd, config e instalador do atheron.
+- `kindle/`: o que vai para o Kindle (`kindle-monitor/loop.sh`, `config.sh`, scriptlets em `documents/`; `emergency.sh` + `kindle-monitor/autostart.sh`: Tailscale e SSH no boot; testes em `kindle/tests/`).
+- `deploy/`: unit systemd, config e instalador do atheron; `instalar-autostart-kindle.sh` (roda no nomad: `--check`, instalar, `--desfazer`).
 - `tools/`: `gerar_fonte.py` (fonte embutida) e `preview.py`.
 
 Detalhes de arquitetura, acessos, cuidados e pendências: `CLAUDE.md`. No Obsidian: `projects/nomad/notes/Kindle monitor - *.md`.
