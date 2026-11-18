@@ -6,6 +6,9 @@ Uso (so biblioteca padrao):
     python3 -I tools/preview.py --saida /tmp/s2.png --pagina servicos --p 2
     python3 -I tools/preview.py --saida /tmp/a.png --pagina servicos --armado svc:ai-agent:reiniciar
     python3 -I tools/preview.py --saida /tmp/cheia.png --cheia                 # 52 servicos, varios em falha, 8 comandos
+    python3 -I tools/preview.py --saida /tmp/a.png --estado alertas            # disco 91 %, 2 servicos em falha, bateria 12 %
+    python3 -I tools/preview.py --saida /tmp/v.png --estado velho              # inventario e limites do Claude velhos
+    python3 -I tools/preview.py --todas /tmp/prev                               # <pagina>-<estado>.png, 6 paginas x 3 estados
     python3 -I tools/preview.py --saida /tmp/x.png --porta 8765 --pagina servicos --p 2   # baixa de um servidor
 """
 import argparse
@@ -17,12 +20,15 @@ import urllib.request
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RAIZ, "server"))
 
+import alertas  # noqa: E402
 import botoes  # noqa: E402
 import coletores  # noqa: E402
 import render_png  # noqa: E402
 import servicos  # noqa: E402
 
 AGORA = 1_794_000_000.0  # fixo: a previa nao depende do relogio
+
+ESTADOS = ("ok", "alertas", "velho")
 
 PARADOS = ("ai-coder", "cloudflare-gateway", "microservices-old", "onion-gw", "ro-client-build")
 
@@ -38,23 +44,35 @@ def catalogo(cheia=False):
     return cat
 
 
-def inventario(cat, cheia=False):
+def inventario(cat, cheia=False, estado="ok"):
     est = {}
     for c in cat:
         e, d = ("parado", "stopped") if c["id"] in PARADOS else ("ativo", "running")
         est[c["id"]] = {"estado": e, "detalhe": d}
     est["dokploy"] = {"estado": "ativo", "detalhe": "2/2"}
-    est["wud"] = {"estado": "falha", "detalhe": "restarting"}
-    est["vaultwarden"] = {"estado": "desconhecido", "detalhe": "nao encontrado"}
+    if estado == "alertas":
+        est["wud"] = {"estado": "falha", "detalhe": "restarting"}
+        est["vaultwarden"] = {"estado": "falha", "detalhe": "failed"}
+    else:
+        est["wud"] = {"estado": "ativo", "detalhe": "running"}
+        est["vaultwarden"] = {"estado": "desconhecido", "detalhe": "nao encontrado"}
     if cheia:
         for k in ("cerberus-ro-brain", "smbd", "ai-webui", "n8n-redis", "rathena-char", "extra-1"):
             est[k] = {"estado": "falha", "detalhe": "failed"}
         for k in ("pihole-link", "cerberus-syncthing"):
             est[k] = {"estado": "parado", "detalhe": "dead"}
-    return json.dumps({"gerado": AGORA - 3, "servicos": est})
+    return json.dumps({"gerado": AGORA - (120 if estado == "velho" else 3), "servicos": est})
 
 
-def exemplo(cheia=False):
+def kindle_exemplo(estado="ok"):
+    """Vista de kindle_status (o que o render recebe em `kindle`); bateria baixa so em `alertas`."""
+    bateria, carregando = (12, False) if estado == "alertas" else (86, False)
+    return {"bateria": bateria, "carregando": carregando, "temp_c": 29, "autonomia": "2 d 4 h", "wifi": 3,
+            "wifi_ok": True, "aviao": False, "bt": False, "bt_conectados": 0, "tailscale": "direto",
+            "latencia": "38 ms", "falhas": 0, "relogio": None, "whispersync": None}
+
+
+def exemplo(cheia=False, estado="ok"):
     cat = catalogo(cheia)
     gib = 1024 ** 3
     m = {
@@ -68,7 +86,7 @@ def exemplo(cheia=False):
         "temp_cpu": {"c": 52.0},
         "gpu": {"util_pct": 0, "mem_usada_mb": 0, "mem_total_mb": 8192, "temp_c": 39},
         "discos": [
-            {"rotulo": "/", "total_b": 42 * 10 ** 9, "usado_b": 33 * 10 ** 9, "pct": 78.6},
+            {"rotulo": "/", "caminho": "/", "total_b": 42 * 10 ** 9, "usado_b": 33 * 10 ** 9, "pct": 78.6},
             {"rotulo": "NAS HD", "total_b": 932 * 10 ** 9, "usado_b": 373 * 10 ** 9, "pct": 40.0},
             {"rotulo": "NAS SSD", "total_b": 256 * 10 ** 9, "usado_b": 200 * 10 ** 9, "pct": 78.1},
             {"rotulo": "SSD", "total_b": 914 * 10 ** 9, "usado_b": 507 * 10 ** 9, "pct": 55.5},
@@ -80,11 +98,11 @@ def exemplo(cheia=False):
                           {"rotulo": "HD", "leitura_bps": 0, "escrita_bps": 12 * 1024}],
                "redes": [{"rotulo": "LAN", "rx_bps": 22 * 1024, "tx_bps": 8 * 1024},
                          {"rotulo": "Tailnet", "rx_bps": 3 * 1024, "tx_bps": 1024}]},
-        "servicos_kindle": coletores.montar_servicos_kindle(cat, inventario(cat, cheia), AGORA),
+        "servicos_kindle": coletores.montar_servicos_kindle(cat, inventario(cat, cheia, estado), AGORA),
         "pares": [],
-        # janela semanal a 91 % (negrito) e a de 5 h recem-renovada; o S10 com um caminho fora e um desconhecido
+        # janela semanal a 62 % e a de 5 h recem-renovada; o S10 com um caminho fora e um desconhecido
         "claude": {"limites": {"cinco_horas": {"pct": 34.0, "volta_em": int(AGORA) + 3 * 3600, "renovado": True},
-                               "semanal": {"pct": 91.0, "volta_em": int(AGORA) + 3 * 86400, "renovado": False},
+                               "semanal": {"pct": 62.0, "volta_em": int(AGORA) + 3 * 86400, "renovado": False},
                                "idade_s": 45, "velho": False},
                    "tokens": {"hoje": {"entrada": 410_000, "saida": 160_000, "cache_leitura": 2_300_000,
                                        "cache_escrita": 230_000, "total": 3_100_000, "custo_usd": 4.87},
@@ -115,12 +133,26 @@ def exemplo(cheia=False):
         m["gpu"] = {"util_pct": 61, "mem_usada_mb": 5300, "mem_total_mb": 8192, "temp_c": 71}
         hist["gpu"] = [(i * 13) % 80 for i in range(n)]
     m["comandos"] = cmds
+    if estado == "alertas":
+        total = 63 * 1024 ** 3
+        m["discos"][0].update({"total_b": total, "usado_b": total - int(5.7 * 1024 ** 3), "pct": 91.0})  # 5,7 GB livres
+    elif estado == "velho":
+        for k in ("limites", "tokens"):
+            m["claude"][k]["idade_s"] = 900
+            m["claude"][k]["velho"] = True
     return m, hist
+
+
+def gerar(m, hist, args, pagina, armado, p, kindle):
+    return render_png.render_png(m, hist, args.largura, args.altura, pagina, armado, p, args.modo, kindle)
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--saida", required=True, help="arquivo PNG de saida")
+    p.add_argument("--saida", default=None, help="arquivo PNG de saida")
+    p.add_argument("--estado", default="ok", choices=ESTADOS, help="metricas de exemplo: ok, alertas ou velho")
+    p.add_argument("--todas", default=None, metavar="DIR",
+                   help="grava <pagina>-<estado>.png de todas as paginas nos tres estados em DIR")
     p.add_argument("--porta", type=int, default=None, help="busca /tela.png do servidor local nessa porta")
     p.add_argument("--cheia", action="store_true", help="52 servicos, varios em falha, 8 comandos recentes")
     p.add_argument("--pagina", default="resumo", choices=botoes.PAGINAS)
@@ -130,6 +162,19 @@ def main(argv=None):
     p.add_argument("--largura", type=int, default=1236)
     p.add_argument("--altura", type=int, default=1648)
     args = p.parse_args(argv)
+    if args.todas:
+        os.makedirs(args.todas, exist_ok=True)
+        for estado in ESTADOS:
+            m, hist = exemplo(args.cheia, estado)
+            for pagina in botoes.PAGINAS:
+                dados = gerar(m, hist, args, pagina, None, 1, kindle_exemplo(estado))
+                caminho = os.path.join(args.todas, "%s-%s.png" % (pagina, estado))
+                with open(caminho, "wb") as f:
+                    f.write(dados)
+                print("%s: %d bytes" % (caminho, len(dados)))
+        return 0
+    if not args.saida:
+        p.error("--saida ou --todas e obrigatorio")
     if args.porta:
         url = "http://127.0.0.1:%d/tela.png?pagina=%s&p=%d%s" % (
             args.porta, args.pagina, args.p, "&armado=" + args.armado if args.armado else "")
@@ -138,8 +183,8 @@ def main(argv=None):
         with urllib.request.urlopen(url, timeout=10) as r:
             dados = r.read()
     else:
-        m, hist = exemplo(args.cheia)
-        dados = render_png.render_png(m, hist, args.largura, args.altura, args.pagina, args.armado, args.p, args.modo)
+        m, hist = exemplo(args.cheia, args.estado)
+        dados = gerar(m, hist, args, args.pagina, args.armado, args.p, kindle_exemplo(args.estado))
     with open(args.saida, "wb") as f:
         f.write(dados)
     print("%s: %d bytes" % (args.saida, len(dados)))
