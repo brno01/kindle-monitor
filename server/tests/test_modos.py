@@ -86,8 +86,9 @@ class LayoutModosTest(unittest.TestCase):
 
     def test_demais_botoes_inalterados(self):
         ids = [b["id"] for b in botoes.layout("comandos") if not b["id"].startswith("modo:")]
-        self.assertEqual(ids, ["gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar", "atualizar",
-                               "pagina:resumo", "pagina:servicos", "pagina:detalhes", "pagina:comandos", "pagina:claude"])
+        self.assertEqual(ids, ["gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar",
+                               "pagina:resumo", "pagina:servicos", "pagina:aparelhos", "pagina:detalhes",
+                               "pagina:claude", "pagina:comandos", "atualizar"])
 
 
 class RenderModosTest(unittest.TestCase):

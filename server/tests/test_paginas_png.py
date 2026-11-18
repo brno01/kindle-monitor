@@ -72,6 +72,8 @@ class BotoesDesenhadosTest(unittest.TestCase):
         for pagina in botoes.PAGINAS:
             c = tela(caso_cheio(), pagina, "gpu-descarregar")
             for b in botoes.layout(pagina, "gpu-descarregar"):
+                if not b["visivel"]:
+                    continue
                 cx = b["x"] + b["w"] // 2
                 self.assertLess(px(c, cx, b["y"] + 1), 100, (pagina, b["id"], "borda de cima"))
                 self.assertLess(px(c, cx, b["y"] + b["h"] - 2), 100, (pagina, b["id"], "borda de baixo"))
@@ -85,11 +87,23 @@ class BotoesDesenhadosTest(unittest.TestCase):
         for pagina in botoes.PAGINAS:
             c = tela(completo(), pagina)
             for b in botoes.layout(pagina):
-                if b["tipo"] != "local" or b["id"].startswith("modo:"):
+                if not b["visivel"] or b["tipo"] != "local" or b["id"].startswith("modo:"):
                     continue
                 miolo = px(c, b["x"] + 12, b["y"] + 12)  # canto interno, longe do texto
                 esperado_escuro = b["id"] == "pagina:" + pagina
                 self.assertEqual(miolo < 50, esperado_escuro, (pagina, b["id"]))
+
+    def test_barra_com_seis_abas_sem_atualizar(self):
+        for pagina in botoes.PAGINAS:
+            abas = [b for b in botoes.layout(pagina) if b["visivel"] and b["id"].startswith("pagina:")]
+            self.assertEqual(len(abas), 6, pagina)
+            self.assertNotIn("atualizar", [b["id"] for b in botoes.layout(pagina) if b["visivel"]])
+
+    def test_invisiveis_nao_sao_desenhados(self):
+        c = tela(completo(), "aparelhos")
+        for b in botoes.layout("aparelhos"):
+            if not b["visivel"]:
+                self.assertEqual(px(c, b["x"] + 1, b["y"] + 1), 255, b["id"])
 
     def test_botao_armado_invertido_e_demais_claros(self):
         c = tela(completo(), "comandos", "gpu-descarregar")
@@ -307,16 +321,17 @@ class HelpersClaudeTest(unittest.TestCase):
 
 class NavClaudeTest(unittest.TestCase):
     def test_seis_botoes_dentro_da_barra_sem_sobreposicao(self):
-        nav = [b for b in botoes.layout("resumo") if b["y"] == botoes.nav_topo()]
+        nav = [b for b in botoes.layout("resumo") if b["visivel"] and b["y"] == botoes.nav_topo()]
         self.assertEqual(len(nav), 6)
-        self.assertEqual(nav[-1]["id"], "pagina:claude")
+        self.assertEqual(nav[-1]["id"], "pagina:comandos")
+        self.assertIn("pagina:claude", [b["id"] for b in nav])
         for a, b in zip(nav, nav[1:]):
             self.assertLessEqual(a["x"] + a["w"], b["x"])
         self.assertLessEqual(nav[-1]["x"] + nav[-1]["w"], 1236 - botoes.MARGEM)
 
     def test_rotulo_cabe_no_botao(self):
-        nav = [b for b in botoes.layout("resumo") if b["id"] == "pagina:claude"][0]
-        self.assertLessEqual(cv.Canvas.medir(nav["rotulo"], "sans-bold", 26), nav["w"] - 16)
+        for nav in (b for b in botoes.layout("resumo") if b["visivel"] and b["y"] == botoes.nav_topo()):
+            self.assertLessEqual(cv.Canvas.medir(nav["rotulo"], "sans-bold", 26), nav["w"] - 16, nav["id"])
 
 
 class NaoFinitosClaudeTest(unittest.TestCase):

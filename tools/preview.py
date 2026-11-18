@@ -17,6 +17,7 @@ import urllib.request
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RAIZ, "server"))
 
+import botoes  # noqa: E402
 import coletores  # noqa: E402
 import render_png  # noqa: E402
 import servicos  # noqa: E402
@@ -122,7 +123,7 @@ def main(argv=None):
     p.add_argument("--saida", required=True, help="arquivo PNG de saida")
     p.add_argument("--porta", type=int, default=None, help="busca /tela.png do servidor local nessa porta")
     p.add_argument("--cheia", action="store_true", help="52 servicos, varios em falha, 8 comandos recentes")
-    p.add_argument("--pagina", default="resumo", choices=("resumo", "servicos", "detalhes", "comandos", "claude"))
+    p.add_argument("--pagina", default="resumo", choices=botoes.PAGINAS)
     p.add_argument("--p", type=int, default=1, help="pagina da lista (so em servicos)")
     p.add_argument("--modo", default=None, help="perfil de energia ativo (desempenho|balanceado|economia; pagina comandos)")
     p.add_argument("--armado", default=None, help="id do botao armado (acao rapida ou svc:<id>:<verbo>)")

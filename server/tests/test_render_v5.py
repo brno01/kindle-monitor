@@ -122,6 +122,8 @@ class NadaForaNemSobrepostoTest(unittest.TestCase):
             bs = botoes.layout(pagina, None, w, h, p, servicos.ordenar(servicos.itens_de(m)))
             for x0, x1, y0, y1, t, tam in c.textos:
                 for b in bs:
+                    if not b["visivel"]:  # so toque, nada desenhado
+                        continue
                     caixa_b = (b["x"], b["x"] + b["w"], b["y"], b["y"] + b["h"])
                     dentro = x0 >= caixa_b[0] and x1 <= caixa_b[1] and y0 >= caixa_b[2] and y1 <= caixa_b[3]
                     self.assertTrue(dentro or not inter((x0, x1, y0, y1), caixa_b), (nome, pagina, p, w, t, b["id"]))
@@ -226,6 +228,8 @@ class PixelsTest(unittest.TestCase):
         for p in (1, 2):
             c = desenha(m, "servicos", None, p)
             for b in botoes.layout("servicos", None, 1236, 1648, p, itens):
+                if not b["visivel"]:
+                    continue
                 px = lambda x, y: c.pixels[y * c.largura + x]
                 self.assertLess(px(b["x"] + b["w"] // 2, b["y"] + 1), 100, b["id"])
                 self.assertLess(px(b["x"] + 1, b["y"] + b["h"] // 2), 100, b["id"])

@@ -402,6 +402,8 @@ def _botao(c, b, invertido, espessura=2):
 def _desenhar_botoes(c, pagina, armado, p, itens, modo=None):
     modo = perfis.modo_valido(modo)
     for b in botoes.layout(pagina, armado, c.largura, c.altura, p, itens, modo):
+        if not b.get("visivel", True):  # so existe para o toque (/botoes.txt)
+            continue
         if b["tipo"] == "local" and b["id"].startswith("pagina:"):
             _botao(c, b, b["id"] == "pagina:" + pagina)
         elif b["id"].startswith("modo:"):
@@ -1396,6 +1398,12 @@ def _desenhar_claude(c, m):
             _card_s10(c, m["s10"], MARGEM, y, w, h)
 
 
+def _desenhar_aparelhos(c, m):
+    """Provisorio (Tarefa 9 desenha a pagina de verdade)."""
+    y = (botoes.TOPO + botoes.limite(c.altura)) // 2 + _cap(NEG, 34) // 2
+    c.texto(c.largura // 2, y, "Aparelhos", NEG, 34, ESCURO, "centro")
+
+
 # --------------------------------------------------------------------- entrada
 
 def desenhar(c, metricas, historico=None, pagina="resumo", armado=None, p=1, modo=None, kindle=None):
@@ -1417,6 +1425,8 @@ def desenhar(c, metricas, historico=None, pagina="resumo", armado=None, p=1, mod
         _desenhar_detalhes(c, m, itens, hist, kv)
     elif pagina == "claude":
         _desenhar_claude(c, m)
+    elif pagina == "aparelhos":
+        _desenhar_aparelhos(c, m)
     else:
         _desenhar_comandos(c, m, itens, modo, kv)
     _desenhar_botoes(c, pagina, armado, p, itens, modo)

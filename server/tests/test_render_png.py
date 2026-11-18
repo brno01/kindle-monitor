@@ -95,7 +95,7 @@ class RenderPngTest(unittest.TestCase):
         self.assertEqual(linhas[3][5], 255)
         self.assertEqual(linhas[60][larg // 2], 255)
         self.assertEqual(linhas[alt - 2][larg // 2], 255)
-        self.assertEqual(linhas[alt - 90][350], 0)  # botao Resumo (selecionado) da barra de navegacao
+        self.assertEqual(linhas[alt - 90][100], 0)  # botao Inicio (selecionado) da barra de navegacao
 
     def test_cabecalho_tem_texto_escuro(self):
         _, _, linhas = pixels(render_png.render_png(completo(), historico()))
