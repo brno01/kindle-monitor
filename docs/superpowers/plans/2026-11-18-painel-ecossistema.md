@@ -7,7 +7,7 @@
 - **Objetivo:** o Kindle vira painel do ecossistema. A tela inicial mostra só exceções: cartão ATENÇÃO alimentado por um motor de alertas único (hoje o disco `/` a 91% sai como "Tudo em ordem") e uma linha por sistema.
 - **Fonte da verdade:** plano aprovado `~/.claude/plans/floofy-cuddling-nova.md`, Parte B (a Parte A já foi feita). Desenho: `docs/superpowers/specs/2026-11-18-painel-ecossistema-design.md`. Não reabrir decisões.
 - **Worktrees:** kindle-monitor em `~/development/worktrees/kindle-monitor-ecossistema` (`feat/painel-ecossistema`); dotfiles em `~/development/worktrees/dotfiles-bypass-sessoes` (`feat/bypass-e-painel-dev`).
-- **Testes:** kindle-monitor, um módulo: `cd server && (umask 022; python3 -I -m unittest tests.<modulo> -v)`. Suíte inteira (643+ testes, ~4 min): mesmo comando com `discover -s tests`, em segundo plano, log em `<scratchpad>/km-*.log`. dotfiles: `uv run --no-project --with pytest pytest tests`. Scripts do Kindle: `busybox sh -n` e `shellcheck`.
+- **Testes:** kindle-monitor, um módulo: `cd server && (umask 022; python3 -I -m unittest discover -s tests -p <modulo>.py -v)` (a forma `tests.<modulo>` citada nas tarefas não funciona com `-I`: `tests` não é pacote). Suíte inteira (648 testes, ~45 s): `discover -s tests`, em segundo plano, log em `<scratchpad>/km-*.log`. dotfiles: `uv run --no-project --with pytest pytest tests`. Scripts do Kindle: `busybox sh -n` e `shellcheck`.
 - **Restrições:** servidor só com stdlib, roda como `nobody` e só lê; fonte ASCII (sem acento na tela); texto de fora vira ASCII com tamanho máximo em quem grava e em quem lê; nada da empresa-x (a tailnet tem um peer `empresa-x-*`); o root só roda comandos de leitura com argv fixo, `shell=False` e timeout.
 - **Gargalo:** `server/render_png.py`. As tarefas 4–9 e 22–23 mexem nele e são estritamente sequenciais.
 
@@ -383,4 +383,4 @@ Antes de cada instalação, a suíte passa e o dono aprovou as prévias. O coman
 - kindle-monitor: `cd server && (umask 022; python3 -I -m unittest discover -s tests)` em segundo plano com log. O total é maior que a linha de base, sem falhas.
 - dotfiles: `uv run --no-project --with pytest pytest tests` sem falhas. Kindle: `busybox sh -n` e `shellcheck` nos dois scripts.
 - No ar: as 6 páginas por `curl`; toque em cada aba e em cada linha; alerta de disco visível; S22 offline; contagem de sessões; GitHub contra `gh`.
-- Linha de base (tarefa 0): kindle-monitor ___ testes / ___ falhas; dotfiles ___ / ___.
+- Linha de base (tarefa 0, 18/11/2026, atheron): kindle-monitor 648 testes / 1 falha (`test_executor.FilaTest.test_limpeza_20_mais_novos`, 21 != 20, determinística e anterior a esta branch); dotfiles 783 testes / 56 falhas (as mesmas no `origin/master` limpo; ambiente do atheron).
