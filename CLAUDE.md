@@ -22,9 +22,10 @@ Kindle: Tailscale userspace (SOCKS5 localhost:1055) + /mnt/us/kindle-monitor/loo
 | O quê | Detalhe |
 |---|---|
 | atheron | `100.64.0.1` (tailnet), `192.0.2.10` (LAN). Serviço em `/opt/kindle-monitor`, config `/etc/kindle-monitor/config.json`. Firewall (`/etc/nftables.conf`) libera a 8765 só para o Kindle `100.64.0.2` e o nomad `100.64.0.3`. |
-| Kindle SSH | `ssh root@kindle-monitor` (Tailscale SSH) ou, na LAN, `ssh -i ~/.ssh/kindle-monitor_ed25519 root@192.0.2.46` (Jobman/dropbear, **só chave**; senha desligada). |
+| Kindle SSH | `ssh kindle-lan` (do nomad, sem login do navegador): dropbear do Jobman na LAN 192.0.2.46, **só chave**, saltando por `root@atheron`; apelido em `dotfiles/ssh/tailnet.conf`. A 22 do `wlan0` só aceita o atheron (192.0.2.10). Reserva: `ssh root@kindle-monitor` (Tailscale SSH, pede o check do navegador). |
 | Kindle jailbreak | KPM, Jobman (bloqueio de OTA ligado), Scriptlets. FBInk em `/mnt/us/libkh/bin/fbink`. KUAL/MRPI/USBNetwork são legado e **não valem**. |
-| Tailscale no Kindle | `/mnt/us/tailscale/` (`tailscaled --tun=userspace-networking --socks5-server=localhost:1055`). Não sobe sozinho após reiniciar o Kindle. |
+| Tailscale no Kindle | `/mnt/us/tailscale/` (`tailscaled --tun=userspace-networking --socks5-server=localhost:1055`, SSH do Tailscale ligado). |
+| Autostart (boot) | `/etc/upstart/kmc.conf` (do jailbreak) roda `/mnt/us/emergency.sh` em todo boot; ele copia `kindle-monitor/autostart.sh` para `/var/tmp` e sai. O laço espera o Wi-Fi e mantém o `tailscaled`, o dropbear do Jobman (de `/var/tmp`, `-s -g -j -k`) e a regra `iptables` da 22 para o atheron, conferindo a cada 60 s. Log: `/var/tmp/kindle-autostart.log`. Instalar/desfazer do nomad: `deploy/instalar-autostart-kindle.sh [--check\|--desfazer]`. Trava: `/mnt/us/kindle-monitor/SEM_AUTOSTART`. O monitor (laço da tela) continua manual. |
 
 ## Comandos
 | Ação | Comando |
@@ -47,6 +48,8 @@ Kindle: Tailscale userspace (SOCKS5 localhost:1055) + /mnt/us/kindle-monitor/loo
 - Confirme pelo lado do servidor (`journalctl -u kindle-monitor` no atheron) e pelo `/tmp/kindle-monitor.log` do Kindle: o e-ink mantém a última imagem e engana.
 - O lançador de scriptlets roda `sh -l script | fbink` e volta à biblioteca; o laço usa duplo fork + `setsid`, ignora SIGHUP e espera `FIRST_DELAY` (12 s) antes do 1º desenho.
 - **Parar a interface do Kindle (`stop lab126_gui`) às vezes apaga a tela para branco** depois do 1º desenho (2 de 6 partidas em 17/11/2026). No modo economia (5 min) isso deixava uma tela branca com o toque preso; o `supervisor.sh` redesenha a última imagem logo depois de parar a interface ("redrew after UI stop" no log). Para conferir a tela sem olhar o aparelho: `ssh root@kindle-monitor 'cat /dev/fb0'` (8 bpp, stride 1248, 1236x1648 visíveis).
+- **Rootfs do Kindle é só leitura e está 96% cheio:** nada de mexer em `/etc/upstart` nem `/usr/local`. O `/etc/upstart/sshd.conf` aponta para um `/usr/local/sbin/dropbear` que não existe (falha calado; deixe assim). Boot só pelo gancho `emergency.sh` do `kmc.conf`.
+- **Firewall do Kindle é `INPUT DROP`:** porta nova no `wlan0` precisa de regra `iptables` (o Jobman faz o mesmo quando sobe o SSH dele). Não rode o binário `/mnt/us/jobman/jobman` para "ver a ajuda": ele é o menu/recovery.
 - **USB num computador mata o que roda de `/mnt/us`** (modo disco). Nada crítico (botão, toque) pode depender de arquivo em `/mnt/us` enquanto roda: fica no supervisor em RAM.
 - Com `preventScreenSaver=1` o `powerd` ignora o botão virtual (`powerButton 1`); para testar a saída, injete `KEY_POWER` (116) em `/dev/input/event0`. Isso pode deixar o Kindle em repouso (sem Wi-Fi até alguém apertar o botão).
 - O instalador do atheron faz `restart` (o `enable --now` não reinicia) e só deve rodar depois dos testes passarem; não use `| tail` no meio, ele mascara o código de saída.
@@ -56,5 +59,5 @@ Kindle: Tailscale userspace (SOCKS5 localhost:1055) + /mnt/us/kindle-monitor/loo
 ## Pendências
 - Página Claude no ar desde 17/11/2026 (atheron e Kindle), mas com "n/d" até os produtores rodarem no atheron: `claude-uso-painel` (branch `feat/claude-uso-painel` do dotfiles; grava `/var/lib/claude-uso/*.json`) e `cerberus-s10` (projeto `galaxy-s10`; grava `/run/cerberus-s10-publico/resumo.json`).
 - Cartão do nomad na tela (rodar o servidor no nomad e listar como par em `config.atheron.json`).
-- Início automático após reiniciar o Kindle (hoje: tocar em "Monitor Ligar").
+- Início automático do monitor (laço da tela) após reiniciar o Kindle (hoje: tocar em "Monitor Ligar"). Tailscale e SSH já sobem sozinhos (autostart, 18/11/2026).
 - Confirmar com o botão físico que a saída funciona (testado só por injeção de evento no `event0`).
