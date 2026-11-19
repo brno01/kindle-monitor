@@ -169,9 +169,9 @@ class ServidorKindleTest(unittest.TestCase):
         finally:
             con.close()
 
-    def _q(self):
+    def _q(self, agora=None):
         import time
-        agora = int(time.time())
+        agora = int(time.time()) if agora is None else agora
         return Q.replace("kt=%d" % T0, "kt=%d" % agora).replace("kws=%d" % (T0 - 260), "kws=%d" % (agora - 60))
 
     def test_estado_guardado_vale_para_pedidos_sem_k(self):
@@ -191,12 +191,16 @@ class ServidorKindleTest(unittest.TestCase):
         self.assertEqual(len(self.vistas), 2)
 
     def test_preaquecer_usa_o_estado_do_kindle(self):
+        import time
+        # `kt` e `kws` entram na chave do cache (a idade do Whispersync e um degrau de 1 min): um `now` unico para os
+        # dois pedidos, senao um virar de segundo entre eles muda a chave e o teste oscila
+        agora = int(time.time())
         self.coletor.atualizar_snapshot()
-        self.get("/tela.png?" + self._q())
+        self.get("/tela.png?" + self._q(agora))
         self.srv.preaquecer(self.coletor.snapshot())
         n = len(self.vistas)
         self.assertEqual(self.vistas[-1]["bateria"], 33)
-        self.get("/tela.png?" + self._q())
+        self.get("/tela.png?" + self._q(agora))
         self.assertEqual(len(self.vistas), n)  # o pedido seguinte sai do pre-render
 
     def test_botoes_e_texto_ignoram_k(self):
