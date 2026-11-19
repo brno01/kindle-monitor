@@ -193,7 +193,7 @@ Quatro fontes do painel do ecossistema (Entrega 2). Quem grava e o executor root
 - Statusline (batimento): cria como `aberta` se faltar; senao so renova `atualizado_em`, no maximo a cada 30 s. `desde` so muda quando o estado muda.
 - Poda: arquivo com `atualizado_em` de mais de 24 h e apagado na proxima gravacao.
 - Gravacao atomica, 0644, sem seguir symlink; cria `sessoes/` (0755) se faltar. So grava na conta pessoal (`CLAUDE_CONFIG_DIR` vazio ou `~/.claude`) e nunca com `cwd` contendo `/empresa-x`.
-- Leitor (`dev_fontes.py`): le ate 50 arquivos regulares de ate 4 KB com nome `<id>.json`. **Regra das sessoes: so conta como aberta a sessao com batimento nos ultimos 10 min** (`atualizado_em` com menos de 600 s). Sessao mais velha sai da lista, do total e dos alertas. `atualizado_em` mais de 5 min no futuro, estado fora dos tres valores ou `desde` invalido: sessao descartada. `esperando` ha `sessao_esperando_min` ou mais = alerta leve.
+- Leitor (`dev_fontes.py`): varre ate 500 entradas e le os 50 arquivos regulares de ate 4 KB com nome `<id>.json` de `mtime` mais recente (nao os 50 primeiros por nome: sessoes velhas sem `SessionEnd` nao escondem a viva). **Regra das sessoes: so conta como aberta a sessao com batimento nos ultimos 10 min** (`atualizado_em` com menos de 600 s). Sessao mais velha sai da lista, do total e dos alertas. `atualizado_em` mais de 60 s no futuro, estado fora dos tres valores ou `desde` invalido: sessao descartada. `esperando` ha `sessao_esperando_min` ou mais = alerta leve.
 
 ### github.json (claude-github)
 

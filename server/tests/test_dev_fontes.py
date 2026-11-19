@@ -13,17 +13,19 @@ GH = "/var/lib/claude-uso/github.json"
 
 
 class _St:
-    def __init__(self, n):
+    def __init__(self, n, mtime=0):
         self.st_size = n
+        self.st_mtime = mtime
 
 
 class Entrada:
     """Imita os.DirEntry."""
 
-    def __init__(self, nome, tamanho=100, regular=True):
+    def __init__(self, nome, tamanho=100, regular=True, mtime=0):
         self.name = nome
         self._n = tamanho
         self._reg = regular
+        self._mtime = mtime
 
     def is_file(self, follow_symlinks=True):
         assert follow_symlinks is False
@@ -31,7 +33,7 @@ class Entrada:
 
     def stat(self, follow_symlinks=True):
         assert follow_symlinks is False
-        return _St(self._n)
+        return _St(self._n, self._mtime)
 
 
 def sid(n):
@@ -137,6 +139,44 @@ class SessoesTest(unittest.TestCase):
     def test_desde_no_futuro_vira_zero(self):
         r = coletar(com(sessao(1, desde=AGORA + 5000)))
         self.assertEqual(r["itens"][0]["desde_s"], 0)
+
+    def test_sessoes_velhas_nao_escondem_a_viva_de_nome_maior(self):
+        # 60 sessoes que nunca ganharam SessionEnd (crash) e uma viva cujo nome (uuid) ordena depois de todas
+        velhas = [sessao(n, atualizado_em=AGORA - 3600) for n in range(1, 61)]
+        viva = sessao(0xfffffff0)
+        arquivos = {s["id"] + ".json": json.dumps(s) for s in velhas + [viva]}
+        mtimes = {s["id"] + ".json": AGORA - 3600 for s in velhas}
+        mtimes[viva["id"] + ".json"] = AGORA - 10
+        d = Dir(arquivos)
+        d.listar = lambda x: iter([Entrada(n, len(t), mtime=mtimes[n]) for n, t in arquivos.items()])
+        r = coletar(d)
+        self.assertEqual((r["total"], [i["projeto"] for i in r["itens"]]), (1, ["kindle-monitor"]))
+        self.assertEqual(r["idade_s"], 10)
+
+    def test_le_as_50_mais_recentes_e_nao_as_50_primeiras_por_nome(self):
+        ss = [sessao(n) for n in range(1, 71)]  # todas vivas; so as 50 de mtime mais novo entram
+        arquivos = {s["id"] + ".json": json.dumps(s) for s in ss}
+        d = Dir(arquivos)
+        d.listar = lambda x: iter([Entrada(n, len(t), mtime=AGORA - 100 + int(n[:8], 16))
+                                   for n, t in arquivos.items()])  # nome maior = mais recente
+        lidos = []
+        ler = d.ler
+        d.ler = lambda c: (lidos.append(c.rsplit("/", 1)[1]), ler(c))[1]
+        r = coletar(d)
+        self.assertEqual(r["total"], 50)
+        self.assertEqual(sorted(lidos), sorted(s["id"] + ".json" for s in ss[20:]))
+
+    def test_limite_de_500_entradas_varridas_continua(self):
+        arquivos = {sid(n) + ".json": json.dumps(sessao(n)) for n in range(1, 601)}
+        d = Dir(arquivos)
+        vistas = []
+        d.listar = lambda x: (vistas.append(n) or Entrada(n, 10, mtime=AGORA - 5) for n in arquivos)
+        self.assertEqual(coletar(d)["total"], 50)
+        self.assertEqual(len(vistas), 500)
+
+    def test_atualizado_em_adiantado_mais_de_60_s_ignorado(self):
+        self.assertEqual(coletar(com(sessao(1, atualizado_em=AGORA + 61)))["total"], 0)
+        self.assertEqual(coletar(com(sessao(1, atualizado_em=AGORA + 60)))["total"], 1)
 
     def test_atualizado_em_muito_no_futuro_ignorado(self):
         self.assertEqual(coletar(com(sessao(1, atualizado_em=AGORA + 3600)))["total"], 0)

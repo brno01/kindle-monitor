@@ -18,7 +18,7 @@ SESSOES_LER_MAX = 50              # arquivos validos lidos
 SESSOES_ITENS_MAX = 12            # itens devolvidos (as mais recentes)
 SESSAO_BYTES_MAX = 4096
 SESSAO_IDADE_MAX_S = 600          # E10 (ajuste do dono): a statusline bate a cada 30 s; mais velha que 10 min = fantasma
-SESSAO_FUTURO_TOLERADO_S = 300    # atualizado_em adiantado alem disso e relogio ou arquivo ruim
+SESSAO_FUTURO_TOLERADO_S = 60     # atualizado_em adiantado alem disso e relogio ou arquivo ruim
 SESSAO_PROJETO_TAM = 40
 RE_SESSAO_ARQ = re.compile(r"^([0-9a-f-]{8,64})\.json\Z")
 ESTADOS_SESSAO = ("aberta", "trabalhando", "esperando")
@@ -103,13 +103,17 @@ def coletar_sessoes(diretorio, listar, ler, agora):
     candidatas = []
     for e in entradas:
         try:
-            if RE_SESSAO_ARQ.match(e.name) and e.is_file(follow_symlinks=False) \
-                    and e.stat(follow_symlinks=False).st_size <= SESSAO_BYTES_MAX:
-                candidatas.append(e.name)
+            if not (RE_SESSAO_ARQ.match(e.name) and e.is_file(follow_symlinks=False)):
+                continue
+            st = e.stat(follow_symlinks=False)
+            if st.st_size <= SESSAO_BYTES_MAX:
+                candidatas.append((st.st_mtime, e.name))
         except Exception:
             continue
+    # as mais recentes primeiro: sessoes velhas (crash sem SessionEnd) nao podem esconder uma viva de nome maior
+    candidatas.sort(key=lambda c: (-c[0], c[1]))
     sessoes = []
-    for nome in sorted(candidatas)[:SESSOES_LER_MAX]:
+    for _, nome in candidatas[:SESSOES_LER_MAX]:
         try:
             s = _sessao(nome, ler(diretorio.rstrip("/") + "/" + nome), agora)
         except Exception:
