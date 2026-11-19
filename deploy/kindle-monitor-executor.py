@@ -100,7 +100,12 @@ RE_AMP_URL = re.compile(r"^http://([0-9]{1,3}(?:\.[0-9]{1,3}){3}):([1-9][0-9]{0,
 RE_AMP_CREDENCIAIS = re.compile(r"^/etc/kindle-monitor/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 CHAVES_AMP = {"url", "credenciais"}
 REDES_AMP = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "192.168.0.0/16", "100.64.0.0/10"))
-AMP_TIMEOUT_S = 8         # por chamada (login, GetInstances, logout)
+AMP_TIMEOUT_S = 8         # por chamada (login, GetInstanceStatuses, GetInstance, logout)
+# Prazo total da parte do AMP (login, lista e os GetInstance), contado desde o inicio do login: um GetInstance so comeca
+# antes dele e leva no maximo o que resta (ate AMP_TIMEOUT_S); passou do prazo, as instancias que faltam saem como se o
+# GetInstance tivesse falhado. Pior caso do coletor: AMP_PRAZO_S + AMP_TIMEOUT_S ate o logout, mais 2 * AMP_TIMEOUT_S
+# dele (cada chamada dura no maximo dois recebimentos); a conta inteira esta na unit do inventario e em UnidadeTest.
+AMP_PRAZO_S = 40
 AMP_MAX_BYTES = 1 << 20   # resposta maior que isso e erro
 # O inventario roda a cada ~15 s, mas o AMP so e consultado de novo quando o jogos.json tem AMP_REUSO_S s ou mais (evita
 # um login a cada 15 s). Tem de ficar abaixo de ecossistema.INVENTARIO_VALIDADE_S (60) menos o intervalo do timer e a
@@ -109,12 +114,14 @@ AMP_REUSO_S = 30
 AMP_CREDENCIAL_MAX = 1024
 AMP_USUARIO_MAX = 128
 AMP_SENHA_MAX = 256
-AMP_ID_MAX = 200
 AMP_VALOR_MAX = 99999     # jogadores e vagas: acima disso o dado e lixo
 RE_AMP_SESSAO = re.compile(r"^[A-Za-z0-9_-]{8,128}\Z")
-# AppState do AMP -> estado do painel. 20 = pronto; 0 = parado; 250 = suspenso (conta como parado); 200 = falha; os
+RE_AMP_UUID = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\Z")
+# `Running` = a instancia (o daemon) esta ligada; `AppState` = estado da aplicacao do jogo dentro dela. Running diferente
+# de true ganha de tudo (parado: a instancia inteira desligada, o AppState -1 que o AMP da nela e ignorado). Com Running
+# true: AppState 20 = rodando; 0 = parado (aplicacao parada); 250 = suspenso (conta como parado); 200 = falha; os
 # transitorios (pre-inicio, configurando, iniciando, reiniciando, parando, dormindo, esperando, instalando,
-# atualizando, aguardando o usuario, 100 e 300) = iniciando; o resto = outro. Running falso ganha de tudo (parado).
+# atualizando, aguardando o usuario, 100 e 300) = iniciando; o resto (inclusive -1, que e o do controlador ADS) = outro.
 APPSTATE_ESTADO = dict([(20, "rodando"), (0, "parado"), (250, "parado"), (200, "falha")]
                        + [(n, "iniciando") for n in (5, 7, 10, 30, 40, 50, 60, 70, 80, 100, 300)])
 AMP_MODULOS_ADS = ("ads", "adsmodule")  # a propria instancia do controlador (ADS) nao e um servidor de jogo
@@ -1498,6 +1505,7 @@ def _inteiro_amp(v):
 
 
 def _estado_amp(running, appstate):
+    """(Running, AppState) -> estado do painel; a tabela e o motivo estao em APPSTATE_ESTADO."""
     if running is not True:
         return "parado"
     if type(appstate) is not int:
@@ -1505,65 +1513,83 @@ def _estado_amp(running, appstate):
     return APPSTATE_ESTADO.get(appstate, "outro")
 
 
-def _instancia_amp(it):
-    """Uma instancia da API -> item de jogos.json, ou None se nao serve (sem id) ou for o controlador ADS."""
-    iid = it.get("InstanceID")
-    if not isinstance(iid, str) or not 0 < len(iid) <= AMP_ID_MAX:
-        return None
-    modulo, exibicao = it.get("Module"), it.get("ModuleDisplayName")
+def _id_amp(iid):
+    return hashlib.sha256(iid.encode("utf-8")).hexdigest()[:8]
+
+
+def _instancia_amp(iid, detalhe, running, numero):
+    """Uma instancia -> item de jogos.json, ou None se for o controlador ADS.
+
+    `detalhe` = resposta de ADSModule/GetInstance (dict) ou None se a chamada falhou ou nao rodou (prazo): sai como
+    "instancia <numero>", sem modulo nem jogadores, com o estado so de `running` (o `Running` de GetInstanceStatuses):
+    parado se nao for true, senao "outro". Com `detalhe`, o `Running` dele manda quando e booleano."""
+    if not isinstance(detalhe, dict):
+        return {"id": _id_amp(iid), "nome": "instancia %d" % numero, "modulo": "",
+                "estado": _estado_amp(running, None), "jogadores": None, "max": None}
+    modulo, exibicao = detalhe.get("Module"), detalhe.get("ModuleDisplayName")
     if isinstance(modulo, str) and modulo.strip().lower() in AMP_MODULOS_ADS:
         return None
     mod = _ascii_amp(modulo, 16)
     if not mod or mod.lower() == "genericmodule":
         mod = _ascii_amp(exibicao, 16) or mod
-    estado = _estado_amp(it.get("Running"), it.get("AppState"))
-    if it.get("Suspended") is True:
+    ligada = detalhe["Running"] if isinstance(detalhe.get("Running"), bool) else running
+    estado = _estado_amp(ligada, detalhe.get("AppState"))
+    if detalhe.get("Suspended") is True:
         estado = "parado"
     jogadores = maximo = None
-    if estado == "rodando":
-        m = it.get("Metrics")
-        usuarios = m.get("Active Users") if isinstance(m, dict) else None
-        if isinstance(usuarios, dict):
-            jogadores = _inteiro_amp(usuarios.get("RawValue"))
-            maximo = _inteiro_amp(usuarios.get("MaxValue")) if jogadores is not None else None
-    return {"id": hashlib.sha256(iid.encode("utf-8")).hexdigest()[:8],
-            "nome": _ascii_amp(it.get("FriendlyName"), 24) or "sem nome", "modulo": mod, "estado": estado,
-            "jogadores": jogadores, "max": maximo}
+    m = detalhe.get("Metrics")
+    usuarios = m.get("Active Users") if isinstance(m, dict) else None
+    if isinstance(usuarios, dict):
+        jogadores = _inteiro_amp(usuarios.get("RawValue"))
+        maximo = _inteiro_amp(usuarios.get("MaxValue")) if jogadores is not None else None
+    return {"id": _id_amp(iid), "nome": _ascii_amp(detalhe.get("FriendlyName"), 24) or "sem nome", "modulo": mod,
+            "estado": estado, "jogadores": jogadores, "max": maximo}
 
 
-def parse_instancias(dados):
-    """Resposta de ADSModule/GetInstances -> ate 16 itens de jogos.json (ligadas primeiro, depois por nome).
+def parse_statuses(dados):
+    """Resposta de ADSModule/GetInstanceStatuses -> [(InstanceID, Running)] de ate JOGOS_MAX instancias.
 
-    A resposta e dado nao confiavel: so id (hash de 8 hex), nome, modulo, estado e contagens saem, tudo saneado. Formato
-    que nao e lista de alvos com AvailableInstances = AmpErro("amp formato inesperado")."""
-    erro = AmpErro("amp formato inesperado")
+    A resposta e dado nao confiavel: so entram entradas com InstanceID no formato de uuid (e so ele vai para a URL/corpo
+    das chamadas seguintes), sem repeticao (sem diferenciar caixa); o resto e descartado. `Running` e True so se for
+    exatamente true. Formato que nao e lista (nem {"result": lista}) = AmpErro("amp formato inesperado")."""
     if isinstance(dados, dict):
         dados = dados.get("result")
     if not isinstance(dados, list):
-        raise erro
-    achadas = {}
-    for alvo in dados:
-        if not isinstance(alvo, dict):
-            raise erro
-        lista = alvo.get("AvailableInstances")
-        if lista is None:
+        raise AmpErro("amp formato inesperado")
+    vistos = {}
+    for it in dados:
+        iid = it.get("InstanceID") if isinstance(it, dict) else None
+        if not isinstance(iid, str) or not RE_AMP_UUID.match(iid) or iid.lower() in vistos:
             continue
-        if not isinstance(lista, list):
-            raise erro
-        for it in lista:
-            i = _instancia_amp(it) if isinstance(it, dict) else None
-            if i is not None and i["id"] not in achadas:
-                achadas[i["id"]] = i
+        vistos[iid.lower()] = (iid, it.get("Running") is True)
+        if len(vistos) >= JOGOS_MAX:
+            break
+    return list(vistos.values())
+
+
+def _ordenar_instancias(itens):
+    """Sem repeticao de id; ligadas primeiro, depois por nome; ate JOGOS_MAX."""
+    achadas = {}
+    for i in itens:
+        if i is not None and i["id"] not in achadas:
+            achadas[i["id"]] = i
     ordem = sorted(achadas.values(), key=lambda i: (i["estado"] != "rodando", i["nome"].lower(), i["id"]))
     return ordem[:JOGOS_MAX]
 
 
-def coletar_amp(url, usuario, senha, post):
-    """Login, lista de instancias e logout no AMP; devolve `parse_instancias`. `post(url, corpo, timeout)` e injetavel.
+def coletar_amp(url, usuario, senha, post, relogio=time.monotonic):
+    """Login, lista de instancias, um GetInstance por instancia e logout no AMP; devolve as instancias do jogos.json.
 
-    Toda falha vira AmpErro com texto FIXO ("amp sem resposta", "amp login falhou", "amp formato inesperado"...): nada
-    do servidor, da senha ou da excecao original entra na mensagem. O logout e so de cortesia (a API pode nem ter o
-    metodo): falha dele e ignorada. A senha so vai no corpo do login."""
+    `post(url, corpo, timeout)` e `relogio` sao injetaveis. O `GetInstances` do AMP so devolve o controlador (ADS), entao
+    a lista vem de GetInstanceStatuses (InstanceID e Running) e os dados de cada uma de GetInstance. So metodos de
+    leitura (e o logout): nunca Start/Stop/Create/Delete.
+
+    Falha no login ou em GetInstanceStatuses = AmpErro com texto FIXO ("amp sem resposta", "amp login falhou", "amp
+    formato inesperado"...): nada do servidor, da senha ou da excecao original entra na mensagem. Falha em UM GetInstance
+    nao derruba o resto (aquela instancia sai como `_instancia_amp(..., None)`); passou de AMP_PRAZO_S desde o login, as
+    que faltam saem assim sem chamada. O logout e so de cortesia (a API pode nem ter o metodo): falha dele e ignorada.
+    A senha so vai no corpo do login."""
+    inicio = relogio()
     try:
         r = post(url + "/API/Core/Login",
                  {"username": usuario, "password": senha, "token": "", "rememberMe": False}, AMP_TIMEOUT_S)
@@ -1578,12 +1604,24 @@ def coletar_amp(url, usuario, senha, post):
         raise AmpErro("amp login falhou")
     try:
         try:
-            dados = post(url + "/API/ADSModule/GetInstances", {"SESSIONID": sessao}, AMP_TIMEOUT_S)
+            lista = parse_statuses(post(url + "/API/ADSModule/GetInstanceStatuses", {"SESSIONID": sessao},
+                                        AMP_TIMEOUT_S))
         except AmpErro:
             raise
         except Exception:
             raise AmpErro("amp sem resposta") from None
-        return parse_instancias(dados)
+        itens = []
+        for numero, (iid, running) in enumerate(lista, 1):
+            detalhe = None
+            restante = AMP_PRAZO_S - (relogio() - inicio)
+            if restante > 0:
+                try:
+                    detalhe = post(url + "/API/ADSModule/GetInstance", {"SESSIONID": sessao, "InstanceId": iid},
+                                   max(1, min(AMP_TIMEOUT_S, restante)))
+                except Exception:  # so esta instancia: o resto segue (Interrompido e BaseException e passa)
+                    detalhe = None
+            itens.append(_instancia_amp(iid, detalhe, running, numero))
+        return _ordenar_instancias(itens)
     finally:
         try:
             post(url + "/API/Core/Logout", {"SESSIONID": sessao}, AMP_TIMEOUT_S)

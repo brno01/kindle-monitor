@@ -86,6 +86,18 @@ class LinhaJogosTest(unittest.TestCase):
         # nem o alerta do AMP (sistema "amp") nem a instancia mudam a forma
         self.assertEqual(linha(m_jogos(blocos=amp(parados)), [{"nivel": "leve", "sistema": "amp"}])["estado"], "ok")
 
+    def test_instancia_desligada_ou_com_aplicacao_parada_aparece_como_parada_sem_alerta(self):
+        # os dois casos reais do jogos.json: a instancia ligada com a aplicacao parada (o AMP ainda da 0/32 no
+        # Metrics, que o painel ignora fora de "rodando") e a instancia inteira desligada
+        itens = [inst("00000001", "macaxeira", "parado", 0, 32, "GenericModule"),
+                 inst("00000002", "nomitest01", "parado", None, None, "Minecraft")]
+        l = linha(m_jogos(blocos=amp(itens)))
+        self.assertEqual((l["valor"], l["estado"]), ("Ragnarok 0", "ok"))
+        self.assertIn("parado: macaxeira, nomitest01", l["detalhe"])
+        self.assertNotIn("0/32", l["valor"] + l["detalhe"])
+        self.assertEqual(linha(m_jogos(rag=False, portas=None, blocos=amp(itens)))["valor"], "nenhum ligado")
+        self.assertEqual(linha(m_jogos(blocos=amp(itens)), [])["estado"], "ok")
+
     def test_amp_nao_configurado_ou_desligado_e_so_o_ragnarok_sem_erro(self):
         sem = linha(m_jogos())
         self.assertEqual((sem["valor"], sem["detalhe"], sem["estado"]), ("Ragnarok 0", "login ok char ok map ok", "ok"))
