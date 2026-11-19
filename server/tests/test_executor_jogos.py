@@ -35,9 +35,26 @@ def inst(iid=IID_A, nome="Minecraft", modulo="Minecraft", running=True, estado=2
     return d
 
 
-def ads(*instancias):
-    """Resposta de ADSModule/GetInstances: lista de alvos ADS, cada um com AvailableInstances."""
-    return [{"InstanceID": "ads", "FriendlyName": "Local", "AvailableInstances": list(instancias)}]
+def uuid_n(n):
+    return "%08x-0000-4000-8000-%012x" % (n, n)
+
+
+# Respostas REAIS do AMP (anonimizadas so no id): GetInstance do controlador, de um GenericModule com a aplicacao
+# parada (instancia ligada, 0 de 32 jogadores) e de uma instancia Minecraft desligada.
+IID_ADS = "0f0f0f0f-0000-4000-8000-000000000001"
+IID_MAC = "0f0f0f0f-0000-4000-8000-000000000002"
+IID_NOMI = "0f0f0f0f-0000-4000-8000-000000000003"
+REAL_A = {"InstanceID": IID_ADS, "FriendlyName": "ADS01", "Module": "ADS", "AppState": -1, "Running": True,
+          "Metrics": {"CPU Usage": {"RawValue": 1, "MaxValue": 100}}}
+REAL_B = {"InstanceID": IID_MAC, "FriendlyName": "macaxeira", "Module": "GenericModule", "AppState": 0,
+          "Running": True, "Metrics": {"Active Users": {"RawValue": 0, "MaxValue": 32}}}
+REAL_C = {"InstanceID": IID_NOMI, "FriendlyName": "nomitest01", "Module": "Minecraft", "AppState": -1,
+          "Running": False, "Metrics": {}}
+
+
+def statuses_de(*detalhes):
+    """Resposta de ADSModule/GetInstanceStatuses para esses GetInstance."""
+    return [{"InstanceID": d["InstanceID"], "Running": d.get("Running")} for d in detalhes]
 
 
 def contem_senha(valor):
@@ -45,24 +62,41 @@ def contem_senha(valor):
 
 
 class PostFalso:
-    """`post(url, corpo, timeout)` injetavel: grava as chamadas e devolve/levanta o que for combinado por metodo."""
+    """`post(url, corpo, timeout)` injetavel: grava as chamadas e devolve/levanta o que for combinado por metodo.
 
-    def __init__(self, login=None, instancias=None, logout=None):
+    `instancias`: respostas de GetInstance (dicts; a lista de GetInstanceStatuses sai delas, a menos que `statuses`
+    seja dado). `detalhes`: {InstanceID: resposta ou excecao} que sobrepoe o GetInstance de uma instancia.
+    `ao_chamar(metodo)`: gancho chamado a cada chamada (os testes de prazo avancam um relogio falso por ele)."""
+
+    def __init__(self, login=None, instancias=None, logout=None, statuses=None, detalhes=None, ao_chamar=None):
         self.login = {"success": True, "sessionID": SID} if login is None else login
-        self.instancias = ads(inst()) if instancias is None else instancias
+        itens = [inst()] if instancias is None else list(instancias)
+        self.statuses = statuses_de(*itens) if statuses is None else statuses
+        self.detalhes = {d["InstanceID"]: d for d in itens}
+        self.detalhes.update(detalhes or {})
         self.logout = {} if logout is None else logout
+        self.ao_chamar = ao_chamar
         self.chamadas = []
 
     def __call__(self, url, corpo, timeout):
         self.chamadas.append((url, json.loads(json.dumps(corpo)), timeout))
-        r = {"/API/Core/Login": self.login, "/API/ADSModule/GetInstances": self.instancias,
-             "/API/Core/Logout": self.logout}[url[len(URL):]]
+        metodo = url[len(URL):]
+        if self.ao_chamar:
+            self.ao_chamar(metodo)
+        if metodo == "/API/ADSModule/GetInstance":
+            r = self.detalhes[corpo["InstanceId"]]
+        else:
+            r = {"/API/Core/Login": self.login, "/API/ADSModule/GetInstanceStatuses": self.statuses,
+                 "/API/Core/Logout": self.logout}[metodo]
         if isinstance(r, BaseException):
             raise r
         return r
 
     def metodos(self):
         return [c[0][len(URL):] for c in self.chamadas]
+
+    def get_instances(self):
+        return [c for c in self.chamadas if c[0].endswith("/API/ADSModule/GetInstance")]
 
 
 # ------------------------------------------------------------------ credencial
@@ -158,9 +192,50 @@ class CredencialTest(unittest.TestCase):
 
 # ---------------------------------------------------------------------- parse
 
-class ParseInstanciasTest(unittest.TestCase):
+class EstadoAmpTest(unittest.TestCase):
+    """`_estado_amp(running, appstate)`: Running = o daemon da instancia esta ligado; AppState = a aplicacao do jogo."""
+
+    def test_os_tres_casos_reais(self):
+        # A) ADS01: Running True, AppState -1 (nao e jogo; sai da lista, mas o estado em si e "outro")
+        self.assertEqual(ex._estado_amp(REAL_A["Running"], REAL_A["AppState"]), "outro")
+        # B) macaxeira: instancia ligada, aplicacao parada
+        self.assertEqual(ex._estado_amp(REAL_B["Running"], REAL_B["AppState"]), "parado")
+        # C) nomitest01: instancia desligada (o AppState -1 e ignorado)
+        self.assertEqual(ex._estado_amp(REAL_C["Running"], REAL_C["AppState"]), "parado")
+
+    def test_running_falso_ganha_de_qualquer_appstate(self):
+        for appstate in (20, 0, -1, 10, 200, 250, 999, "20", None, True, 20.0):
+            self.assertEqual(ex._estado_amp(False, appstate), "parado", repr(appstate))
+
+    def test_running_so_vale_se_for_exatamente_true(self):
+        for running in (None, 1, "true", "True", 0, [], {}):
+            self.assertEqual(ex._estado_amp(running, 20), "parado", repr(running))
+
+    def test_running_true_por_appstate(self):
+        esperado = {20: "rodando", 0: "parado", 250: "parado", 200: "falha", -1: "outro", 999: "outro", 3: "outro"}
+        for n in (5, 7, 10, 30, 40, 50, 60, 70, 80, 100, 300):
+            esperado[n] = "iniciando"
+        for appstate, quer in esperado.items():
+            self.assertEqual(ex._estado_amp(True, appstate), quer, appstate)
+
+    def test_appstate_que_nao_e_inteiro_e_outro(self):
+        for appstate in ("20", "0", None, True, False, 20.0, 20.5, [], {}, float("nan")):
+            self.assertEqual(ex._estado_amp(True, appstate), "outro", repr(appstate))
+
+
+class MontaInstanciasTest(unittest.TestCase):
+    """A lista de instancias do jogos.json a partir de GetInstanceStatuses + GetInstance (um por instancia)."""
+
     def p(self, *itens):
-        return ex.parse_instancias(ads(*itens))
+        return ex.coletar_amp(URL, USUARIO, SENHA, PostFalso(instancias=list(itens)))
+
+    def test_as_tres_respostas_reais(self):
+        p = PostFalso(instancias=[REAL_A, REAL_B, REAL_C])
+        r = ex.coletar_amp(URL, USUARIO, SENHA, p)
+        self.assertEqual([(i["nome"], i["modulo"], i["estado"], i["jogadores"], i["max"]) for i in r],
+                         [("macaxeira", "GenericModule", "parado", 0, 32), ("nomitest01", "Minecraft", "parado",
+                                                                           None, None)])
+        self.assertEqual(len(p.get_instances()), 3)  # o ADS01 tambem e consultado (so depois se sabe que e o ADS)
 
     def test_instancia_rodando(self):
         r = self.p(inst())
@@ -186,10 +261,9 @@ class ParseInstanciasTest(unittest.TestCase):
                 self.assertEqual(self.p(inst(estado=estado))[0]["estado"], quer)
 
     def test_running_falso_e_sempre_parado(self):
-        for estado in (20, 10, 200, 999, None):
+        for estado in (20, 10, 200, 999, 0, -1, None):
             with self.subTest(appstate=estado):
-                i = self.p(inst(running=False, estado=estado))[0]
-                self.assertEqual((i["estado"], i["jogadores"], i["max"]), ("parado", None, None))
+                self.assertEqual(self.p(inst(running=False, estado=estado))[0]["estado"], "parado")
 
     def test_running_so_vale_se_for_true(self):
         for v in (None, 1, "true", "yes", 0):
@@ -202,10 +276,12 @@ class ParseInstanciasTest(unittest.TestCase):
         for v in ("20", 20.5, True, None, [], {}):
             self.assertEqual(self.p(inst(estado=v))[0]["estado"], "outro", repr(v))
 
-    def test_jogadores_so_para_rodando(self):
-        for estado in (10, 200, 999):
+    def test_jogadores_vem_do_metrics_seja_qual_for_o_estado(self):
+        # o Metrics do AMP e do daemon: a aplicacao parada de uma instancia ligada tambem mostra 0/32 (o web so exibe
+        # a contagem das rodando; o jogos.json guarda o que o AMP disse)
+        for estado in (20, 10, 200, 999, 0):
             i = self.p(inst(estado=estado))[0]
-            self.assertEqual((i["jogadores"], i["max"]), (None, None))
+            self.assertEqual((i["jogadores"], i["max"]), (2, 20), estado)
 
     def test_metrica_ausente_ou_ruim(self):
         for metricas in (None, {}, {"Active Users": None}, {"Active Users": {}}, {"Active Users": {"RawValue": "x"}},
@@ -257,50 +333,75 @@ class ParseInstanciasTest(unittest.TestCase):
         r = self.p(inst(IID_A, nome="ADS01", modulo="ADS"), inst(IID_B, nome="Minecraft"))
         self.assertEqual([i["nome"] for i in r], ["Minecraft"])
         self.assertEqual(self.p(inst(modulo="ADSModule")), [])
+        self.assertEqual(self.p(REAL_A), [])
 
     def test_id_repetido_fica_so_um(self):
         self.assertEqual(len(self.p(inst(IID_A), inst(IID_A, nome="copia"))), 1)
 
-    def test_varios_alvos_ads(self):
-        dados = [{"AvailableInstances": [inst(IID_A)]}, {"AvailableInstances": [inst(IID_B, nome="Valheim")]}]
-        self.assertEqual(len(ex.parse_instancias(dados)), 2)
-
-    def test_resposta_embrulhada_em_result(self):
-        self.assertEqual(len(ex.parse_instancias({"result": ads(inst())})), 1)
+    def test_resposta_de_statuses_embrulhada_em_result(self):
+        p = PostFalso(statuses={"result": statuses_de(inst())})
+        self.assertEqual(len(ex.coletar_amp(URL, USUARIO, SENHA, p)), 1)
 
     def test_ordem_ligadas_primeiro_depois_nome_e_maximo_16(self):
-        itens = [inst("%032x" % n, nome="Srv %02d" % n, running=n % 2 == 0, estado=20 if n % 2 == 0 else 0)
+        itens = [inst(uuid_n(n), nome="Srv %02d" % n, running=n % 2 == 0, estado=20 if n % 2 == 0 else 0)
                  for n in range(20)]
-        r = ex.parse_instancias(ads(*itens))
+        p = PostFalso(instancias=itens)
+        r = ex.coletar_amp(URL, USUARIO, SENHA, p)
         self.assertEqual(len(r), 16)
-        self.assertEqual([i["estado"] for i in r[:10]], ["rodando"] * 10)
+        self.assertEqual(len(p.get_instances()), 16)  # so as 16 primeiras valem uma chamada
+        self.assertEqual([i["estado"] for i in r[:8]], ["rodando"] * 8)
         self.assertEqual(r[0]["nome"], "Srv 00")
-        self.assertEqual([i["nome"] for i in r[:10]], sorted(i["nome"] for i in r[:10]))
+        self.assertEqual([i["nome"] for i in r[:8]], sorted(i["nome"] for i in r[:8]))
+        self.assertEqual({i["nome"] for i in r}, {"Srv %02d" % n for n in range(16)})
 
-    def test_formato_inesperado_levanta_erro_fixo(self):
-        for dados in (None, "x", 3, {}, {"a": 1}, [1, 2], [{"AvailableInstances": 3}], [{}], {"result": "x"}):
+    def test_statuses_em_formato_inesperado_levanta_erro_fixo(self):
+        for dados in (None, "x", 3, {}, {"a": 1}, {"result": "x"}, True):
             with self.subTest(dados=repr(dados)):
-                if dados in ([{}],):
-                    self.assertEqual(ex.parse_instancias(dados), [])
-                    continue
+                p = PostFalso()
+                p.statuses = dados  # o construtor trata None como "padrao"
                 with self.assertRaises(ex.AmpErro) as c:
-                    ex.parse_instancias(dados)
+                    ex.coletar_amp(URL, USUARIO, SENHA, p)
                 self.assertEqual(str(c.exception), "amp formato inesperado")
+                self.assertEqual(p.metodos()[-1], "/API/Core/Logout")
 
-    def test_itens_ruins_sao_ignorados(self):
-        dados = ads(inst(), "lixo", 3, None, {"InstanceID": 5}, {"InstanceID": ""}, {"FriendlyName": "sem id"})
-        r = ex.parse_instancias(dados)
+    def test_lista_de_statuses_vazia_e_nenhuma_instancia(self):
+        self.assertEqual(ex.coletar_amp(URL, USUARIO, SENHA, PostFalso(statuses=[])), [])
+
+    def test_entradas_ruins_de_statuses_sao_descartadas(self):
+        ruins = ["lixo", 3, None, [], {"InstanceID": 5}, {"InstanceID": ""}, {"FriendlyName": "sem id"},
+                 {"InstanceID": "nao-e-uuid"}, {"InstanceID": IID_A + "x"}, {"InstanceID": "../../etc/passwd"},
+                 {"InstanceID": IID_A[:-1] + "g"}, {"InstanceID": IID_A + "\n"}, {"InstanceID": [IID_A]}]
+        p = PostFalso(statuses=ruins + [{"InstanceID": IID_A, "Running": True}])
+        r = ex.coletar_amp(URL, USUARIO, SENHA, p)
         self.assertEqual(len(r), 1)
+        self.assertEqual([c[1]["InstanceId"] for c in p.get_instances()], [IID_A])  # so uuid valido vira chamada
 
-    def test_aninhamento_profundo_nao_levanta_fora_do_erro_fixo(self):
+    def test_aninhamento_profundo_de_statuses_nao_levanta_fora_do_erro_fixo(self):
         fundo = []
         for _ in range(5000):
             fundo = [fundo]
         try:
-            r = ex.parse_instancias(fundo)
+            r = ex.coletar_amp(URL, USUARIO, SENHA, PostFalso(statuses=fundo))
         except ex.AmpErro:
             return
         self.assertEqual(r, [])
+
+    def test_running_da_lista_so_vale_quando_o_detalhe_nao_diz(self):
+        d = inst()
+        del d["Running"]
+        p = PostFalso(statuses=[{"InstanceID": IID_A, "Running": True}], detalhes={IID_A: d})
+        self.assertEqual(ex.coletar_amp(URL, USUARIO, SENHA, p)[0]["estado"], "rodando")
+        p = PostFalso(statuses=[{"InstanceID": IID_A, "Running": False}], detalhes={IID_A: d})
+        self.assertEqual(ex.coletar_amp(URL, USUARIO, SENHA, p)[0]["estado"], "parado")
+        # o detalhe manda quando existe
+        p = PostFalso(statuses=[{"InstanceID": IID_A, "Running": True}], detalhes={IID_A: inst(running=False)})
+        self.assertEqual(ex.coletar_amp(URL, USUARIO, SENHA, p)[0]["estado"], "parado")
+
+    def test_ids_repetidos_por_caixa_ficam_um_so(self):
+        p = PostFalso(statuses=[{"InstanceID": IID_A, "Running": True}, {"InstanceID": IID_A.upper(), "Running": True}],
+                      instancias=[inst(IID_A)], detalhes={IID_A.upper(): inst(IID_A)})
+        self.assertEqual(len(ex.coletar_amp(URL, USUARIO, SENHA, p)), 1)
+        self.assertEqual(len(p.get_instances()), 1)
 
 
 # -------------------------------------------------------------------- cliente
@@ -312,19 +413,36 @@ class ColetarAmpTest(unittest.TestCase):
     def test_sequencia_de_chamadas_e_corpos(self):
         p = PostFalso()
         r = self.col(p)
-        self.assertEqual(p.metodos(), ["/API/Core/Login", "/API/ADSModule/GetInstances", "/API/Core/Logout"])
+        self.assertEqual(p.metodos(), ["/API/Core/Login", "/API/ADSModule/GetInstanceStatuses",
+                                       "/API/ADSModule/GetInstance", "/API/Core/Logout"])
         self.assertEqual(p.chamadas[0][1], {"username": USUARIO, "password": SENHA, "token": "", "rememberMe": False})
         self.assertEqual(p.chamadas[1][1], {"SESSIONID": SID})
-        self.assertEqual(p.chamadas[2][1], {"SESSIONID": SID})
-        self.assertEqual([c[2] for c in p.chamadas], [ex.AMP_TIMEOUT_S] * 3)
+        self.assertEqual(p.chamadas[2][1], {"SESSIONID": SID, "InstanceId": IID_A})
+        self.assertEqual(p.chamadas[3][1], {"SESSIONID": SID})
+        self.assertEqual([c[2] for c in p.chamadas], [ex.AMP_TIMEOUT_S] * 4)
         self.assertEqual(ex.AMP_TIMEOUT_S, 8)
         self.assertEqual(r[0]["nome"], "Minecraft")
+
+    def test_um_get_instance_por_instancia_na_ordem_da_lista(self):
+        p = PostFalso(instancias=[REAL_A, REAL_B, REAL_C])
+        self.col(p)
+        self.assertEqual(p.metodos(), ["/API/Core/Login", "/API/ADSModule/GetInstanceStatuses"]
+                         + ["/API/ADSModule/GetInstance"] * 3 + ["/API/Core/Logout"])
+        self.assertEqual([c[1]["InstanceId"] for c in p.get_instances()], [IID_ADS, IID_MAC, IID_NOMI])
+
+    def test_so_metodos_de_leitura(self):
+        # o painel nunca chama nada alem de login, GetInstanceStatuses, GetInstance e logout (sem Start/Stop/Create...)
+        p = PostFalso(instancias=[REAL_A, REAL_B, REAL_C])
+        self.col(p)
+        self.assertLessEqual(set(p.metodos()), {"/API/Core/Login", "/API/ADSModule/GetInstanceStatuses",
+                                                "/API/ADSModule/GetInstance", "/API/Core/Logout"})
 
     def test_a_senha_so_vai_no_corpo_do_login(self):
         p = PostFalso()
         self.col(p)
         for url, corpo, _ in p.chamadas[1:]:
             self.assertFalse(contem_senha(corpo))
+            self.assertLessEqual(set(corpo), {"SESSIONID", "InstanceId"})
         for url, _, _ in p.chamadas:
             self.assertNotIn(SENHA, url)
 
@@ -338,7 +456,7 @@ class ColetarAmpTest(unittest.TestCase):
                 with self.assertRaises(ex.AmpErro) as c:
                     self.col(p)
                 self.assertEqual(str(c.exception), "amp login falhou")
-                self.assertEqual(p.metodos(), ["/API/Core/Login"])  # sem sessao: nada de GetInstances nem logout
+                self.assertEqual(p.metodos(), ["/API/Core/Login"])  # sem sessao: nada de consulta nem logout
 
     def test_login_com_erro_http_4xx_e_login_falhou(self):
         e = urllib.error.HTTPError(URL, 401, "Unauthorized " + SENHA, {}, None)
@@ -356,18 +474,66 @@ class ColetarAmpTest(unittest.TestCase):
                 self.assertNotIn(SENHA, str(c.exception))
                 self.assertIsNone(c.exception.__cause__)  # a excecao original (que pode citar a senha) nao fica ligada
 
-    def test_get_instances_falha_mas_faz_logout(self):
-        p = PostFalso(instancias=OSError("x"))
-        with self.assertRaises(ex.AmpErro) as c:
-            self.col(p)
-        self.assertEqual(str(c.exception), "amp sem resposta")
-        self.assertEqual(p.metodos(), ["/API/Core/Login", "/API/ADSModule/GetInstances", "/API/Core/Logout"])
+    def test_get_instance_statuses_falha_mas_faz_logout(self):
+        for erro in (OSError("x"), urllib.error.HTTPError(URL, 500, "x " + SENHA, {}, None), RuntimeError(SENHA)):
+            p = PostFalso(statuses=erro)
+            with self.assertRaises(ex.AmpErro) as c:
+                self.col(p)
+            self.assertEqual(str(c.exception), "amp sem resposta")
+            self.assertIsNone(c.exception.__cause__)
+            self.assertEqual(p.metodos(), ["/API/Core/Login", "/API/ADSModule/GetInstanceStatuses",
+                                           "/API/Core/Logout"])
 
     def test_formato_inesperado_tambem_faz_logout(self):
-        p = PostFalso(instancias="lixo")
+        p = PostFalso(statuses="lixo")
         with self.assertRaises(ex.AmpErro) as c:
             self.col(p)
         self.assertEqual(str(c.exception), "amp formato inesperado")
+        self.assertEqual(p.metodos()[-1], "/API/Core/Logout")
+
+    def test_falha_de_um_get_instance_nao_derruba_o_resto(self):
+        erros = (OSError("x " + SENHA), urllib.error.HTTPError(URL, 500, "x", {}, None), ValueError(SENHA),
+                 ex.AmpErro("amp resposta grande"), RuntimeError(), json.JSONDecodeError("x", "y", 0))
+        for erro in erros:
+            with self.subTest(erro=type(erro).__name__):
+                p = PostFalso(instancias=[inst(IID_A, nome="Um"), inst(IID_B, nome="Dois"), inst(uuid_n(3), nome="Tres")],
+                              detalhes={IID_B: erro})
+                r = self.col(p)
+                self.assertEqual(p.metodos().count("/API/ADSModule/GetInstance"), 3)
+                self.assertEqual(p.metodos()[-1], "/API/Core/Logout")
+                por_nome = {i["nome"]: i for i in r}
+                self.assertEqual(set(por_nome), {"Um", "instancia 2", "Tres"})
+                self.assertEqual(por_nome["Um"]["estado"], "rodando")
+                self.assertEqual(por_nome["Tres"]["estado"], "rodando")
+                falho = por_nome["instancia 2"]
+                self.assertEqual((falho["modulo"], falho["estado"], falho["jogadores"], falho["max"]),
+                                 ("", "outro", None, None))
+                self.assertRegex(falho["id"], r"^[0-9a-f]{8}\Z")
+                self.assertNotIn(SENHA, json.dumps(r))
+
+    def test_falha_de_um_get_instance_de_instancia_desligada_e_parado(self):
+        p = PostFalso(instancias=[inst(IID_A, nome="Um", running=False)], detalhes={IID_A: OSError()})
+        r = self.col(p)
+        self.assertEqual([(i["nome"], i["modulo"], i["estado"], i["jogadores"]) for i in r],
+                         [("instancia 1", "", "parado", None)])
+
+    def test_detalhe_que_nao_e_um_objeto_conta_como_falha(self):
+        for lixo in (None, "x", 3, [], [{"FriendlyName": "x"}], True):
+            with self.subTest(lixo=repr(lixo)):
+                p = PostFalso(instancias=[inst(IID_A)], detalhes={IID_A: lixo})
+                self.assertEqual([(i["nome"], i["estado"]) for i in self.col(p)], [("instancia 1", "outro")])
+
+    def test_a_numeracao_da_falha_segue_a_lista(self):
+        # "instancia <n>": n e a posicao na lista de statuses (1-based), com as entradas ruins ja descartadas
+        p = PostFalso(statuses=[{"InstanceID": "ruim"}, {"InstanceID": IID_A, "Running": True},
+                                {"InstanceID": IID_B, "Running": True}],
+                      detalhes={IID_A: OSError(), IID_B: OSError()}, instancias=[])
+        self.assertEqual(sorted(i["nome"] for i in self.col(p)), ["instancia 1", "instancia 2"])
+
+    def test_interrupcao_num_get_instance_nao_e_engolida_e_faz_logout(self):
+        p = PostFalso(instancias=[inst(IID_A), inst(IID_B)], detalhes={IID_B: ex.Interrompido()})
+        with self.assertRaises(ex.Interrompido):
+            self.col(p)
         self.assertEqual(p.metodos()[-1], "/API/Core/Logout")
 
     def test_logout_que_falha_ou_nao_existe_nao_e_erro(self):
@@ -385,10 +551,68 @@ class ColetarAmpTest(unittest.TestCase):
     def test_interrupcao_nao_e_engolida(self):
         with self.assertRaises(ex.Interrompido):
             self.col(PostFalso(login=ex.Interrompido()))
-        p = PostFalso(instancias=ex.Interrompido())
+        p = PostFalso(statuses=ex.Interrompido())
         with self.assertRaises(ex.Interrompido):
             self.col(p)
         self.assertEqual(p.metodos()[-1], "/API/Core/Logout")  # tenta sair mesmo assim
+
+    # ---- prazo total da parte do AMP (alem do timeout por chamada)
+
+    def col_com_relogio(self, post_args, custo_get_instance, n):
+        """n instancias; cada GetInstance gasta `custo_get_instance` s no relogio falso. Devolve (post, itens)."""
+        t = [1000.0]
+
+        def ao_chamar(metodo):
+            if metodo == "/API/ADSModule/GetInstance":
+                t[0] += custo_get_instance
+        itens = [inst(uuid_n(k), nome="Srv %02d" % k) for k in range(1, n + 1)]
+        p = PostFalso(instancias=itens, ao_chamar=ao_chamar, **post_args)
+        return p, ex.coletar_amp(URL, USUARIO, SENHA, p, relogio=lambda: t[0])
+
+    def test_prazo_estourado_as_restantes_saem_como_falha(self):
+        self.assertEqual(ex.AMP_PRAZO_S, 40)
+        p, r = self.col_com_relogio({}, 15, 6)  # 15 s por chamada: so 3 comecam antes de 40 s
+        self.assertEqual(len(p.get_instances()), 3)
+        por_nome = {i["nome"]: i for i in r}
+        self.assertEqual(len(r), 6)
+        self.assertEqual({n for n in por_nome if n.startswith("Srv")}, {"Srv 01", "Srv 02", "Srv 03"})
+        for n in (4, 5, 6):
+            i = por_nome["instancia %d" % n]
+            self.assertEqual((i["modulo"], i["estado"], i["jogadores"], i["max"]), ("", "outro", None, None))
+        self.assertEqual(p.metodos()[-1], "/API/Core/Logout")  # o logout continua
+
+    def test_prazo_estourado_de_instancia_desligada_e_parado(self):
+        t = [0.0]
+        itens = [inst(uuid_n(1), running=True), inst(uuid_n(2), running=False)]
+        p = PostFalso(instancias=itens, ao_chamar=lambda m: t.__setitem__(0, t[0] + 50)
+                      if m == "/API/ADSModule/GetInstance" else None)
+        r = ex.coletar_amp(URL, USUARIO, SENHA, p, relogio=lambda: t[0])
+        self.assertEqual(sorted((i["nome"], i["estado"]) for i in r), [("Minecraft", "rodando"), ("instancia 2", "parado")])
+
+    def test_o_prazo_conta_desde_o_login(self):
+        t = [0.0]
+        p = PostFalso(instancias=[inst(uuid_n(1)), inst(uuid_n(2))],
+                      ao_chamar=lambda m: t.__setitem__(0, t[0] + (41 if m == "/API/ADSModule/GetInstanceStatuses" else 0)))
+        r = ex.coletar_amp(URL, USUARIO, SENHA, p, relogio=lambda: t[0])
+        self.assertEqual(p.get_instances(), [])  # ja passou do prazo: nenhuma consulta
+        self.assertEqual(sorted(i["nome"] for i in r), ["instancia 1", "instancia 2"])
+        self.assertEqual(p.metodos()[-1], "/API/Core/Logout")
+
+    def test_timeout_de_cada_get_instance_nao_passa_do_que_resta_do_prazo(self):
+        t = [0.0]
+        p = PostFalso(instancias=[inst(uuid_n(k)) for k in range(1, 6)],
+                      ao_chamar=lambda m: t.__setitem__(0, t[0] + (9 if m == "/API/ADSModule/GetInstance" else 0)))
+        ex.coletar_amp(URL, USUARIO, SENHA, p, relogio=lambda: t[0])
+        # inicio em 0, 9, 18, 27, 36: restam 40, 31, 22, 13, 4 s
+        self.assertEqual([c[2] for c in p.get_instances()], [8, 8, 8, 8, 4])
+        for c in p.get_instances():
+            self.assertGreaterEqual(c[2], 1)
+        self.assertEqual([c[2] for c in p.chamadas if not c[0].endswith("GetInstance")], [8, 8, 8])  # login, lista, logout
+
+    def test_sem_estouro_nenhuma_instancia_e_cortada(self):
+        p, r = self.col_com_relogio({}, 0.1, 16)
+        self.assertEqual(len(p.get_instances()), 16)
+        self.assertTrue(all(i["nome"].startswith("Srv") for i in r))
 
 
 # ----------------------------------------------------------- HTTP (servidor falso)
@@ -444,6 +668,22 @@ def json_ok(obj):
         h.end_headers()
         h.wfile.write(dados)
     return f
+
+
+def rotas_amp(*detalhes, statuses=None):
+    """Rotas do AMP falso: Login, GetInstanceStatuses e GetInstance (resposta pelo InstanceId do corpo)."""
+    por_id = {d["InstanceID"]: d for d in detalhes}
+
+    def get_instance(h, corpo):
+        iid = json.loads(corpo).get("InstanceId")
+        if iid in por_id:
+            json_ok(por_id[iid])(h, corpo)
+        else:
+            h.send_response(500)
+            h.end_headers()
+    return {"/API/Core/Login": json_ok({"success": True, "sessionID": SID}),
+            "/API/ADSModule/GetInstanceStatuses": json_ok(statuses_de(*detalhes) if statuses is None else statuses),
+            "/API/ADSModule/GetInstance": get_instance}
 
 
 class AmpPostTest(unittest.TestCase):
@@ -564,14 +804,30 @@ class AmpPostTest(unittest.TestCase):
                 os.environ["http_proxy"] = antes
 
     def test_fluxo_completo_com_o_cliente_real(self):
-        rotas = {"/API/Core/Login": json_ok({"success": True, "sessionID": SID}),
-                 "/API/ADSModule/GetInstances": json_ok(ads(inst(), inst(IID_B, nome="Valheim", running=False,
-                                                                           estado=0)))}
+        rotas = rotas_amp(inst(), inst(IID_B, nome="Valheim", running=False, estado=0))
         s = self.sobe(rotas)  # /API/Core/Logout nao existe (404): nao pode ser erro
         r = ex.coletar_amp(s.url, USUARIO, SENHA, ex.amp_post)
         self.assertEqual([(i["nome"], i["estado"]) for i in r], [("Minecraft", "rodando"), ("Valheim", "parado")])
         self.assertEqual([p["caminho"] for p in s.pedidos],
-                         ["/API/Core/Login", "/API/ADSModule/GetInstances", "/API/Core/Logout"])
+                         ["/API/Core/Login", "/API/ADSModule/GetInstanceStatuses", "/API/ADSModule/GetInstance",
+                          "/API/ADSModule/GetInstance", "/API/Core/Logout"])
+        self.assertEqual([json.loads(p["corpo"]).get("InstanceId") for p in s.pedidos[2:4]], [IID_A, IID_B])
+
+    def test_falha_parcial_com_o_cliente_real(self):
+        rotas = rotas_amp(inst(), inst(IID_B, nome="Valheim"))
+        del_b = rotas["/API/ADSModule/GetInstance"]
+
+        def get_instance(h, corpo):  # a segunda devolve 500
+            if json.loads(corpo)["InstanceId"] == IID_B:
+                h.send_response(500)
+                h.end_headers()
+                return
+            del_b(h, corpo)
+        rotas["/API/ADSModule/GetInstance"] = get_instance
+        s = self.sobe(rotas)
+        r = ex.coletar_amp(s.url, USUARIO, SENHA, ex.amp_post)
+        self.assertEqual(sorted((i["nome"], i["estado"]) for i in r), [("Minecraft", "rodando"),
+                                                                       ("instancia 2", "outro")])
 
 
 # -------------------------------------------------------------- inventariar
@@ -652,8 +908,8 @@ class InventarioJogosTest(JogosBase):
     def test_erros_curtos_e_fixos(self):
         casos = [(PostFalso(login=OSError("x " + SENHA)), "amp sem resposta"),
                  (PostFalso(login={"success": False, "resultReason": SENHA}), "amp login falhou"),
-                 (PostFalso(instancias="lixo"), "amp formato inesperado"),
-                 (PostFalso(instancias=ValueError(SENHA)), "amp sem resposta")]
+                 (PostFalso(statuses="lixo"), "amp formato inesperado"),
+                 (PostFalso(statuses=ValueError(SENHA)), "amp sem resposta")]
         for post, erro in casos:
             self.cred()
             self.agora += 1000
@@ -665,7 +921,8 @@ class InventarioJogosTest(JogosBase):
 
     def test_a_senha_nunca_aparece_em_nada(self):
         casos = [PostFalso(), PostFalso(login=OSError(SENHA)), PostFalso(login={"success": False, "x": SENHA}),
-                 PostFalso(instancias=RuntimeError(SENHA)), PostFalso(instancias={"vazio": SENHA}),
+                 PostFalso(statuses=RuntimeError(SENHA)), PostFalso(statuses={"vazio": SENHA}),
+                 PostFalso(detalhes={IID_A: RuntimeError(SENHA)}),
                  PostFalso(login=urllib.error.HTTPError(URL, 500, SENHA, {}, None)),
                  PostFalso(logout=RuntimeError(SENHA))]
         for post in casos:
@@ -704,7 +961,7 @@ class InventarioJogosTest(JogosBase):
         self.inv().inventariar()
         self.agora = NS + ex.AMP_REUSO_S
         self.inv().inventariar()
-        self.assertEqual(len(self.post.chamadas), 3)
+        self.assertEqual(len(self.post.chamadas), 4)
         self.assertEqual(self.doc()["gerado"], NS + ex.AMP_REUSO_S)
 
     def test_a_janela_cabe_na_validade_do_web(self):
@@ -718,7 +975,7 @@ class InventarioJogosTest(JogosBase):
         with open(os.path.join(self.estado, "jogos.json"), "w") as f:
             json.dump({"versao": 1, "gerado": NS + 10 ** 6, "ativo": True, "erro": None, "instancias": []}, f)
         self.inv().inventariar()
-        self.assertEqual(len(self.post.chamadas), 3)
+        self.assertEqual(len(self.post.chamadas), 4)
         self.assertEqual(self.doc()["gerado"], NS)
 
     def test_arquivo_anterior_ilegivel_ou_symlink_e_refeito(self):
@@ -728,7 +985,7 @@ class InventarioJogosTest(JogosBase):
             f.write(json.dumps({"gerado": NS}))
         os.symlink(alvo, os.path.join(self.estado, "jogos.json"))
         self.inv().inventariar()
-        self.assertEqual(len(self.post.chamadas), 3)  # nao seguiu o link para decidir
+        self.assertEqual(len(self.post.chamadas), 4)  # nao seguiu o link para decidir
         with open(alvo) as f:
             self.assertEqual(json.load(f), {"gerado": NS})  # e nao escreveu atraves dele
         self.assertFalse(os.path.islink(os.path.join(self.estado, "jogos.json")))
@@ -740,7 +997,7 @@ class InventarioJogosTest(JogosBase):
                 f.write(lixo)
             e = self.inv()
             e.inventariar()
-            self.assertEqual(len(self.post.chamadas), 3, repr(lixo)[:20])
+            self.assertEqual(len(self.post.chamadas), 4, repr(lixo)[:20])
 
     def test_falha_do_amp_nao_derruba_servicos(self):
         self.cred()
@@ -773,21 +1030,44 @@ class InventarioJogosTest(JogosBase):
 
     def test_nada_do_amp_vira_nome_de_arquivo(self):
         self.cred()
-        self.inv(PostFalso(instancias=ads(inst(nome="../../etc/passwd", iid="../../x")))).inventariar()
+        self.inv(PostFalso(instancias=[inst(nome="../../etc/passwd")],
+                           statuses=[{"InstanceID": "../../x"}, {"InstanceID": IID_A}])).inventariar()
         self.assertEqual(sorted(os.listdir(self.estado)), ["jogos.json", "servicos.json"])
         self.assertEqual(sorted(os.listdir(self._tmp.name)), sorted(["spool", "status", "amp.cred"]))
 
     def test_instancias_do_json_sao_ascii(self):
         self.cred()
-        self.inv(PostFalso(instancias=ads(inst(nome="Zé ☃ Servidor")))).inventariar()
+        self.inv(PostFalso(instancias=[inst(nome="Zé ☃ Servidor")])).inventariar()
         self.assertTrue(self.texto().isascii())
 
     def test_ordem_e_maximo_16_no_arquivo(self):
         self.cred()
-        itens = [inst("%032x" % n, nome="Srv %02d" % n, running=n % 2 == 0, estado=20 if n % 2 == 0 else 0)
+        itens = [inst(uuid_n(n), nome="Srv %02d" % n, running=n % 2 == 0, estado=20 if n % 2 == 0 else 0)
                  for n in range(30)]
-        self.inv(PostFalso(instancias=ads(*itens))).inventariar()
+        self.inv(PostFalso(instancias=itens)).inventariar()
         self.assertEqual(len(self.doc()["instancias"]), 16)
+        self.assertEqual(len(self.post.get_instances()), 16)
+
+    def test_instancias_do_amp_real_no_arquivo(self):
+        self.cred()
+        self.inv(PostFalso(instancias=[REAL_A, REAL_B, REAL_C])).inventariar()
+        d = self.doc()
+        self.assertEqual((d["ativo"], d["erro"]), (True, None))
+        self.assertEqual([(i["nome"], i["modulo"], i["estado"], i["jogadores"], i["max"]) for i in d["instancias"]],
+                         [("macaxeira", "GenericModule", "parado", 0, 32), ("nomitest01", "Minecraft", "parado",
+                                                                           None, None)])
+        self.assertTrue(all(len(i["id"]) == 8 for i in d["instancias"]))
+        for iid in (IID_ADS, IID_MAC, IID_NOMI):  # o GUID nunca sai
+            self.assertNotIn(iid, self.texto())
+
+    def test_falha_parcial_no_arquivo_e_sem_erro_global(self):
+        self.cred()
+        self.inv(PostFalso(instancias=[REAL_B, REAL_C], detalhes={IID_NOMI: OSError(SENHA)})).inventariar()
+        d = self.doc()
+        self.assertEqual(d["erro"], None)
+        self.assertEqual([(i["nome"], i["estado"]) for i in d["instancias"]],
+                         [("instancia 2", "parado"), ("macaxeira", "parado")])
+        self.assertEqual(self.logs, [])
 
     def test_sem_diretorios_nao_faz_nada(self):
         import shutil
@@ -802,9 +1082,7 @@ class IntegracaoHttpRealTest(JogosBase):
     """Executor inteiro contra o servidor HTTP falso, sem injetar `amp_post` (usa o cliente urllib de verdade)."""
 
     def test_de_ponta_a_ponta(self):
-        s = Servidor({"/API/Core/Login": json_ok({"success": True, "sessionID": SID}),
-                      "/API/ADSModule/GetInstances": json_ok(ads(inst(), inst(IID_B, nome="Palworld", running=False,
-                                                                                estado=0)))})
+        s = Servidor(rotas_amp(REAL_A, REAL_B, REAL_C))
         self.addCleanup(s.fechar)
         self.cred()
         e = ex.Executor(self.cfg, executar=lambda argv, timeout: (0, "", ""), dono=self.dono, log=self.logs.append)
@@ -812,8 +1090,13 @@ class IntegracaoHttpRealTest(JogosBase):
         e.agora_inv = lambda: NS
         e.inventariar()
         d = self.doc()
-        self.assertEqual([(i["nome"], i["estado"]) for i in d["instancias"]],
-                         [("Minecraft", "rodando"), ("Palworld", "parado")])
+        self.assertEqual([(i["nome"], i["modulo"], i["estado"], i["jogadores"], i["max"]) for i in d["instancias"]],
+                         [("macaxeira", "GenericModule", "parado", 0, 32), ("nomitest01", "Minecraft", "parado",
+                                                                           None, None)])
+        self.assertEqual(len(d["instancias"]), 2)  # o ADS01 (controlador) nao entra
+        self.assertEqual([p["caminho"] for p in s.pedidos],
+                         ["/API/Core/Login", "/API/ADSModule/GetInstanceStatuses"]
+                         + ["/API/ADSModule/GetInstance"] * 3 + ["/API/Core/Logout"])
         login = json.loads(s.pedidos[0]["corpo"])
         self.assertEqual(login, {"username": USUARIO, "password": SENHA, "token": "", "rememberMe": False})
         self.assertNotIn(SENHA, self.texto())
@@ -866,15 +1149,20 @@ class CfgAmpTest(unittest.TestCase):
 
 class UnidadeTest(unittest.TestCase):
     def test_timeout_da_unit_cobre_o_pior_caso(self):
-        """4 chamadas em lote de servicos + tailscale + 2 de rotinas (10 s cada) + AMP (login, instancias e logout,
-        8 s cada, mais ate um recebimento de sobra por chamada) tem de caber em TimeoutStartSec."""
+        """4 chamadas em lote de servicos + tailscale + 2 de rotinas (10 s cada) + AMP tem de caber em TimeoutStartSec.
+
+        AMP: login, lista e GetInstance so comecam antes do prazo de AMP_PRAZO_S e cada uma dura no maximo dois
+        recebimentos (8 s + 8 s de sobra); como o timeout do GetInstance e limitado ao que resta do prazo, a parte
+        antes do logout termina em AMP_PRAZO_S + AMP_TIMEOUT_S. O logout tem mais 2 x AMP_TIMEOUT_S."""
         cam = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                            "deploy", "kindle-monitor-inventario.service")
         with open(cam, encoding="utf-8") as f:
             linhas = [l.strip() for l in f if l.strip() and not l.startswith("#")]
         t = int(next(l for l in linhas if l.startswith("TimeoutStartSec=")).split("=")[1])
-        pior = 4 * ex.TIMEOUT_INVENTARIO + ex.TIMEOUT_TAILSCALE + 2 * ex.TIMEOUT_ROTINAS + 3 * 2 * ex.AMP_TIMEOUT_S
-        self.assertEqual(pior, 118)
+        amp = ex.AMP_PRAZO_S + ex.AMP_TIMEOUT_S + 2 * ex.AMP_TIMEOUT_S
+        self.assertEqual(amp, 64)
+        pior = 4 * ex.TIMEOUT_INVENTARIO + ex.TIMEOUT_TAILSCALE + 2 * ex.TIMEOUT_ROTINAS + amp
+        self.assertEqual(pior, 134)
         self.assertGreaterEqual(t, pior + 30)
 
 
