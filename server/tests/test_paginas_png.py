@@ -367,3 +367,50 @@ class NaoFinitosClaudeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NavIconesTest(unittest.TestCase):
+    def _nav(self):
+        return [b for b in botoes.layout("resumo") if b["visivel"] and b["y"] == botoes.nav_topo()]
+
+    def test_todos_os_rotulos_da_nav_em_negrito_26(self):
+        for pagina in botoes.PAGINAS:
+            usados = []
+            orig = cv.Canvas.texto
+
+            def espia(self, x, y, t, fonte, tam, *a, **k):
+                if y > botoes.nav_topo():  # so o que e desenhado na barra de navegacao
+                    usados.append((t, fonte, tam))
+                return orig(self, x, y, t, fonte, tam, *a, **k)
+            cv.Canvas.texto = espia
+            try:
+                tela(completo(), pagina)
+            finally:
+                cv.Canvas.texto = orig
+            for _bid, rotulo, _ic in botoes.NAV:
+                self.assertEqual([u for u in usados if u[0] == rotulo], [(rotulo, "sans-bold", 26)], (pagina, rotulo))
+
+    def test_cada_aba_tem_icone_na_metade_de_cima(self):
+        for pagina in botoes.PAGINAS:
+            c = tela(completo(), pagina)
+            for b in self._nav():
+                ativa = b["id"] == "pagina:" + pagina
+                fundo = 0 if ativa else 255
+                topo = [px(c, x, y) for y in range(b["y"] + 4, b["y"] + b["h"] // 2)
+                        for x in range(b["x"] + b["w"] // 2 - 15, b["x"] + b["w"] // 2 + 15)]
+                self.assertGreater(sum(1 for v in topo if abs(v - fundo) > 100), 30, (pagina, b["id"]))
+
+    def test_aba_atual_invertida_com_icone_e_rotulo_brancos(self):
+        c = tela(completo(), "servicos")
+        b = [n for n in self._nav() if n["id"] == "pagina:servicos"][0]
+        self.assertEqual(px(c, b["x"] + 12, b["y"] + 12), 0)
+        area = [px(c, x, y) for y in range(b["y"] + 8, b["y"] + b["h"] - 8) for x in range(b["x"] + 8, b["x"] + b["w"] - 8)]
+        self.assertGreater(sum(1 for v in area if v > 200), 100)  # icone e rotulo em branco sobre o preto
+
+    def test_nav_igual_em_todas_as_paginas_exceto_a_atual(self):
+        a = tela(completo(), "resumo")
+        b = tela(completo(), "claude")
+        n = [x for x in self._nav() if x["id"] not in ("pagina:resumo", "pagina:claude")][0]
+        for y in range(n["y"], n["y"] + n["h"]):
+            self.assertEqual(a.pixels[y * 1236 + n["x"]:y * 1236 + n["x"] + n["w"]],
+                             b.pixels[y * 1236 + n["x"]:y * 1236 + n["x"] + n["w"]])

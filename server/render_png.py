@@ -396,13 +396,35 @@ def _botao(c, b, invertido, espessura=2):
         c.texto(x + w // 2, topo + extra + cap + i * passo, ln, NEG, tam, cor, alinhar="centro")
 
 
+NAV_ICONE = 30
+NAV_TAM = 26
+_ICONE_NAV = {bid: icone for bid, _rotulo, icone in botoes.NAV}
+
+
+def _botao_nav(c, b, invertido, icone):
+    """Aba da navegacao: icone de 30 px centrado na metade de cima e rotulo SEMPRE em negrito 26 embaixo
+    (so o respiro lateral encolhe se faltar largura, nunca a fonte). A aba atual vai invertida."""
+    x, y, w, h = b["x"], b["y"], b["w"], b["h"]
+    if invertido:
+        c.retangulo_arredondado(x, y, w, h, RAIO, PRETO)
+    else:
+        c.contorno_arredondado(x, y, w, h, RAIO, PRETO, 2, BRANCO)
+    cor = BRANCO if invertido else PRETO
+    cap = _cap(NEG, NAV_TAM)
+    topo = y + (h - (NAV_ICONE + 10 + cap)) // 2  # icone, 10 px de folga e o rotulo, centrados juntos
+    if icone:
+        c.icone(x + (w - NAV_ICONE) // 2, topo, icone, NAV_ICONE, cor)
+    txt = _ajustar(c, b["rotulo"], NEG, NAV_TAM, w - 4)
+    c.texto(x + w // 2, topo + NAV_ICONE + 10 + cap, txt, NEG, NAV_TAM, cor, alinhar="centro")
+
+
 def _desenhar_botoes(c, pagina, armado, p, itens, modo=None):
     modo = perfis.modo_valido(modo)
     for b in botoes.layout(pagina, armado, c.largura, c.altura, p, itens, modo):
         if not b.get("visivel", True):  # so existe para o toque (/botoes.txt)
             continue
         if b["tipo"] == "local" and b["id"].startswith("pagina:"):
-            _botao(c, b, b["id"] == "pagina:" + pagina)
+            _botao_nav(c, b, b["id"] == "pagina:" + pagina, _ICONE_NAV.get(b["id"]))
         elif b["id"].startswith("modo:"):
             _botao(c, b, b["id"] == "modo:" + modo)
         else:
