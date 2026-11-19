@@ -205,7 +205,7 @@ class AtencaoTextoTest(unittest.TestCase):
 
     def test_usa_limiares_de_m(self):
         disco = {"rotulo": "/", "caminho": "/", "total_b": 10**12, "usado_b": 91 * 10**10, "pct": 91.0}
-        m = self._m(discos=[disco], limiares={"disco_aviso": 95})
+        m = self._m(discos=[disco], limiares={"disco_aviso": 95, "disco_critico": 99})
         self.assertFalse(any(l.startswith("ATENCAO") for l in render.render_texto(m, 38)))
 
 

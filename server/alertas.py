@@ -59,11 +59,17 @@ def _ascii(valor):
     return " ".join(s.split())
 
 
-def _texto(antes, rotulo=None, depois=""):
-    """`antes` + rotulo + `depois`, com o rotulo cortado para o total caber em TEXTO_MAX."""
-    if rotulo is None:
+_SEM_ROTULO = object()
+
+
+def _texto(antes, rotulo=_SEM_ROTULO, depois=""):
+    """`antes` + rotulo + `depois`, com o rotulo cortado para o total caber em TEXTO_MAX.
+
+    Sem argumento de rotulo, nao ha rotulo; rotulo `None`, ausente ou vazio vira "?"."""
+    if rotulo is _SEM_ROTULO:
         return (antes + depois)[:TEXTO_MAX]
-    rot = _ascii(rotulo) or "?"
+    rot = _ascii(rotulo) if rotulo is not None else ""
+    rot = rot or "?"
     sobra = max(1, TEXTO_MAX - len(antes) - len(depois))
     return (antes + rot[:sobra] + depois)[:TEXTO_MAX].rstrip()
 
@@ -87,6 +93,8 @@ def limiares(cfg):
         v = _num(cfg.get(k))
         if v is not None and lo <= v <= hi:
             r[k] = v
+    if r["disco_critico"] < r["disco_aviso"]:
+        r["disco_aviso"], r["disco_critico"] = PADRAO["disco_aviso"], PADRAO["disco_critico"]
     return r
 
 
@@ -106,7 +114,7 @@ def _r_discos(m, lim, kv):
         total, usado = _num(d.get("total_b")), _num(d.get("usado_b"))
         if total is not None and usado is not None and 0 <= usado <= total:
             livre = " - %.1f GB livres" % ((total - usado) / GIB)
-        out.append(_alerta(nivel, _texto("Disco ", d.get("rotulo", "?"), " %s%%%s" % (_pct(pct), livre)), sistema))
+        out.append(_alerta(nivel, _texto("Disco ", d.get("rotulo"), " %s%%%s" % (_pct(pct), livre)), sistema))
     return out
 
 
@@ -137,12 +145,12 @@ def _itens_servicos(m):
 
 
 def _r_servicos_falha(m, lim, kv):
-    return [_alerta("critico", _texto("", i.get("rotulo", "?"), " em falha"), "servicos")
+    return [_alerta("critico", _texto("", i.get("rotulo"), " em falha"), "servicos")
             for i in _itens_servicos(m) if i.get("estado") == "falha"]
 
 
 def _r_rotinas_falha(m, lim, kv):
-    return [_alerta("critico", _texto("", i.get("rotulo", "?"), " falhou"), "rotinas")
+    return [_alerta("critico", _texto("", i.get("rotulo"), " falhou"), "rotinas")
             for i in _lista(_dict(m.get("rotinas")).get("itens"))
             if isinstance(i, dict) and i.get("resultado") == "falha"]
 
@@ -150,12 +158,12 @@ def _r_rotinas_falha(m, lim, kv):
 def _r_unidades_falhas(m, lim, kv):
     u = _dict(_dict(m.get("rotinas")).get("unidades_falhas"))
     n = _num(u.get("n"))
-    if n is None or n <= 0:
+    if n is None or n < 1:
         return []
     nomes = [_ascii(x) for x in _lista(u.get("nomes")) if isinstance(x, str)]
     nomes = [x for x in nomes if x][:2]
     depois = ": " + ", ".join(x[:16] for x in nomes) if nomes else ""
-    return [_alerta("critico", _texto("%s unidades em falha" % _pct(n), None, depois), "rotinas")]
+    return [_alerta("critico", _texto("%s unidades em falha" % _pct(n), _SEM_ROTULO, depois), "rotinas")]
 
 
 def _r_aparelhos_offline(m, lim, kv):
@@ -164,13 +172,13 @@ def _r_aparelhos_offline(m, lim, kv):
         i = _dict(i)
         alvo, off = _num(i.get("alerta_offline_min")), _num(i.get("offline_min"))
         if alvo is not None and alvo > 0 and off is not None and off >= alvo:
-            out.append(_alerta("critico", _texto("", i.get("rotulo", "?"), " offline ha %s min" % _pct(off)),
+            out.append(_alerta("critico", _texto("", i.get("rotulo"), " offline ha %s min" % _pct(off)),
                                "aparelhos"))
     return out
 
 
 def _r_servicos_parados(m, lim, kv):
-    return [_alerta("aviso", _texto("", i.get("rotulo", "?"), " parado"), "servicos")
+    return [_alerta("aviso", _texto("", i.get("rotulo"), " parado"), "servicos")
             for i in _itens_servicos(m) if i.get("estado") == "parado" and not i.get("opcional")]
 
 
@@ -182,7 +190,7 @@ def _r_inventario_servicos(m, lim, kv):
 
 
 def _r_rotinas_atrasadas(m, lim, kv):
-    return [_alerta("aviso", _texto("", i.get("rotulo", "?"), " atrasada"), "rotinas")
+    return [_alerta("aviso", _texto("", i.get("rotulo"), " atrasada"), "rotinas")
             for i in _lista(_dict(m.get("rotinas")).get("itens"))
             if isinstance(i, dict) and i.get("atrasada") is True and i.get("resultado") != "falha"]
 
@@ -205,7 +213,7 @@ def _r_ci(m, lim, kv):
 
 
 def _r_portas(m, lim, kv):
-    return [_alerta("aviso", _texto("Porta ", p.get("rotulo", "?"), " fechada"), "ragnarok")
+    return [_alerta("aviso", _texto("Porta ", p.get("rotulo"), " fechada"), "ragnarok")
             for p in _lista(m.get("portas")) if isinstance(p, dict) and p.get("aberto") is False]
 
 

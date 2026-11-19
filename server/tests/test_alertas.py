@@ -407,5 +407,26 @@ class TextoTest(unittest.TestCase):
         self.conferir(alertas.avaliar({"discos": [disco(91, livre_gib=5.7)], "ram": {"pct": 91}}))
 
 
+class CorrecoesRevisaoTest(unittest.TestCase):
+    def test_limiares_disco_incoerentes_voltam_ao_padrao(self):
+        lim = alertas.limiares({"disco_aviso": 95, "disco_critico": 93})
+        self.assertEqual((lim["disco_aviso"], lim["disco_critico"]), (85, 93))
+        a = alertas.avaliar({"discos": [disco(94)]}, {"disco_aviso": 95, "disco_critico": 93})
+        self.assertEqual(len(a), 1)
+
+    def test_rotulo_none_vira_interrogacao(self):
+        m = {"aparelhos": {"itens": [{"rotulo": None, "alerta_offline_min": 5, "offline_min": 6}]}}
+        self.assertEqual(textos(alertas.avaliar(m)), ["? offline ha 6 min"])
+        m = {"discos": [{"rotulo": None, "caminho": "/", "pct": 90}]}
+        self.assertTrue(textos(alertas.avaliar(m))[0].startswith("Disco ? "))
+        m = {"servicos": {"itens": [item_svc(rotulo=None, estado="falhou")]}}
+        for a in textos(alertas.avaliar(m)):
+            self.assertFalse(a.startswith(" "))
+
+    def test_unidades_falhas_fracao_nao_alerta(self):
+        m = {"rotinas": {"unidades_falhas": {"n": 0.4, "nomes": []}}}
+        self.assertEqual(alertas.avaliar(m), [])
+
+
 if __name__ == "__main__":
     unittest.main()
