@@ -16,18 +16,18 @@ Opcoes: `--bind` (padrao `127.0.0.1`), `--porta` (padrao `8765`), `--config` (ar
 ## Endpoints
 | Caminho | Resposta |
 |---|---|
-| `/tela.txt` | texto puro ASCII, uma linha por linha da tela (ate `--colunas` colunas e 26 linhas; linhas `IO`/`NET` quando ha `io` na config), barras como `[#####-----]  50%`; inclui a linha `Portas: LOGIN ok CHAR ok MAP FALHA` |
+| `/tela.txt` | texto puro ASCII, uma linha por linha da tela (ate `--colunas` colunas e 26 linhas; linhas `IO`/`NET` quando ha `io` na config), barras como `[#####-----]  50%`; inclui a linha `Portas: LOGIN ok CHAR ok MAP FALHA`, o bloco de alertas do motor (ver "Motor de alertas") e, na aba `aparelhos`, Kindle e S10 |
 | `/tela.png` | imagem PNG 8-bit em tons de cinza (`image/png`), `--largura` x `--altura` (padrao 1236x1648, Kindle Paperwhite 5), gerada so com a biblioteca padrao |
 | `/historico.json` | anel em memoria das ultimas 60 amostras: `intervalo_s`, `max`, `t` (epoch), `cpu`, `ram` e `gpu` (so se houver GPU), em %, da mais antiga para a mais nova (`null` = leitura falhou) |
 | `/metricas.json` | metricas brutas em JSON (`host`, `gerado_em` ISO, cpu, ram, gpu, discos, io, servicos, ragnarok, portas, historico, pares). `?pares=0` nao consulta os pares |
-| `/botoes.json` | `{"largura","altura","pagina","p","paginas","botoes":[{id,rotulo,x,y,w,h,tipo,armado}]}`: fonte unica do layout dos botoes (pixels do PNG, origem no canto superior esquerdo); o render desenha exatamente estes retangulos (`botoes.py`); `p` e `paginas` valem na pagina servicos. `/botoes.txt` traz o mesmo layout como `id tipo x y w h` por linha (para o awk do Kindle) |
+| `/botoes.json` | `{"largura","altura","pagina","p","paginas","botoes":[{id,rotulo,x,y,w,h,tipo,armado,visivel}]}`: fonte unica do layout dos botoes (pixels do PNG, origem no canto superior esquerdo); o render desenha exatamente estes retangulos (`botoes.py`), exceto os invisiveis (`visivel: false`); `p` e `paginas` valem na pagina servicos. `/botoes.txt` traz o mesmo layout como `id tipo x y w h` por linha (para o awk do Kindle), com os invisiveis |
 | `/saude` | `ok` |
 | `/comando/estado` | lista JSON dos ultimos comandos (mesma de `metricas.comandos`) |
 | `POST /comando` | registra um pedido de comando (ver "Comandos"); exige token |
 
-Parametros (GET): `/tela.png`, `/tela.txt`, `/botoes.json` e `/botoes.txt` aceitam `?pagina=resumo|servicos|detalhes|comandos|claude` (padrao `resumo`) e, na pagina `servicos`, `&p=<n>` (1 a N; invalido = 1, acima do maximo = a ultima). `/tela.png`, `/botoes.json` e `/botoes.txt` aceitam `&armado=<id>`: acao rapida (`gpu-descarregar`, `bots-pausar`, `bots-retomar`, `monitor-reiniciar`; so na pagina comandos) ou `svc:<id>:<verbo>` de um botao da pagina servicos (o id e o verbo tem de estar no catalogo); o botao armado aparece invertido ("Confirmar?" nas linhas de servico, "Toque de novo para confirmar" nas acoes rapidas). Os quatro tambem aceitam `&modo=desempenho|balanceado|economia` (perfil de energia ativo; invalido ou ausente = `desempenho`; so muda a pagina comandos, onde o bloco AJUSTES destaca o perfil ativo e descreve o ritmo). Valor invalido e ignorado (usa o padrao), nunca 500. Os botoes de comando chamam `POST /comando` (ver "Comandos"). A pagina comandos mostra ate 8 itens de `metricas["comandos"]` (`{acao, estado, quando, detalhe}`) se existirem. Os ids dos botoes usam so `[a-z0-9:-]`.
+Parametros (GET): `/tela.png`, `/tela.txt`, `/botoes.json` e `/botoes.txt` aceitam `?pagina=resumo|servicos|aparelhos|detalhes|claude|comandos` (padrao `resumo`) e, na pagina `servicos`, `&p=<n>` (1 a N; invalido = 1, acima do maximo = a ultima). `/tela.png`, `/botoes.json` e `/botoes.txt` aceitam `&armado=<id>`: acao rapida (`gpu-descarregar`, `bots-pausar`, `bots-retomar`, `monitor-reiniciar`; so na pagina comandos) ou `svc:<id>:<verbo>` de um botao da pagina servicos (o id e o verbo tem de estar no catalogo); o botao armado aparece invertido ("Confirmar?" nas linhas de servico, "Toque de novo para confirmar" nas acoes rapidas). Os quatro tambem aceitam `&modo=desempenho|balanceado|economia` (perfil de energia ativo; invalido ou ausente = `desempenho`; so muda a pagina comandos, onde o bloco AJUSTES destaca o perfil ativo e descreve o ritmo). Valor invalido e ignorado (usa o padrao), nunca 500. Os botoes de comando chamam `POST /comando` (ver "Comandos"). A pagina comandos mostra ate 8 itens de `metricas["comandos"]` (`{acao, estado, quando, detalhe}`) se existirem. Os ids dos botoes usam so `[a-z0-9:-]`.
 
-**Contrato com o Kindle (v5)**: a barra de navegacao tem 6 botoes locais (`atualizar`, `pagina:resumo`, `pagina:servicos`, `pagina:detalhes`, `pagina:comandos`, `pagina:claude`); na pagina servicos ha tambem `servicos:anterior` e `servicos:proxima` (tipo `local`, so quando existem), que o Kindle trata trocando o `p` da proxima requisicao. Os botoes de linha `svc:<id>:<verbo>` (tipo `comando`) usam o mesmo fluxo de dois toques das acoes rapidas e fazem `POST /comando {"acao":"svc:<id>:<verbo>"}`. O Kindle deve repassar `p` (e `modo`) ao pedir `/tela.png` e `/botoes.txt`.
+**Contrato com o Kindle (v5)**: a barra de navegacao tem 6 abas locais (`pagina:resumo`, `pagina:servicos`, `pagina:aparelhos`, `pagina:detalhes`, `pagina:claude`, `pagina:comandos`); `atualizar` e o relogio do cabecalho (invisivel, em todas as paginas); na pagina resumo, as 8 linhas sao botoes `pagina:<destino>` invisiveis (ATHERON, NAS e ROTINAS -> detalhes; APARELHOS -> aparelhos; SERVICOS e RAGNAROK -> servicos; CLAUDE e GITHUB -> claude); na pagina servicos ha tambem `servicos:anterior` e `servicos:proxima` (tipo `local`, so quando existem), que o Kindle trata trocando o `p` da proxima requisicao. Os botoes de linha `svc:<id>:<verbo>` (tipo `comando`) usam o mesmo fluxo de dois toques das acoes rapidas e fazem `POST /comando {"acao":"svc:<id>:<verbo>"}`. O Kindle deve repassar `p` (e `modo`) ao pedir `/tela.png` e `/botoes.txt`.
 
 **Perfis de energia (Ajustes)**: a pagina comandos (Acoes) tem o bloco AJUSTES com tres botoes `local` `modo:desempenho`, `modo:balanceado` e `modo:economia`, um toque so. O Kindle guarda o escolhido em `/var/local/kindle-monitor/modo` (ext3, so o nome, 0644; sem arquivo = `desempenho`), le o arquivo a cada ciclo e passa `&modo=<nome>` nos dois pedidos. A tabela abaixo vive em `perfis.py` (rotulos e descricoes) e, em numeros, em `kindle/kindle-monitor/config.sh` (`PERFIL_<nome>="<intervalo_s> <ciclos_ate_o_flash>"`); `tests/test_modos.py` confere que as duas concordam. Trocar de perfil zera o contador do flash e acorda o loop (USR1), entao o efeito e imediato mesmo vindo de `economia`.
 
@@ -57,6 +57,19 @@ Copie para `config.json` e ajuste. Chaves que comecam com `_` sao comentarios e 
 - `cache_cpu_s`: segundos em que o CPU % calculado fica em cache (padrao `1.5`, entre 0 e 60). Com o Kindle pedindo a tela a cada ~2 s, o numero muda a cada requisicao. Requisicao a menos de 0,5 s da amostra anterior reutiliza o ultimo valor.
 - `io`: `{"discos": [{"rotulo", "dev"}], "redes": [{"rotulo", "if"}]}`. `dev` e o nome do dispositivo em `/proc/diskstats` (ex.: `nvme0n1`, `sda`; setores lidos = coluna 6, escritos = coluna 10, setor de 512 bytes) e `if` o da interface em `/proc/net/dev` (`rx_bytes` e `tx_bytes`). `dev` e `if` aceitam so letras, digitos, `.`, `_` e `-` (ate 32); `rotulo` tem de 1 a 16 caracteres ASCII simples; valor invalido faz o servidor recusar a config. Padrao: nada (`{"discos": [], "redes": []}`, sem bloco na tela).
 - `intervalo_io_s`: intervalo (padrao `0.3`, entre 0 e 5) entre as duas leituras feitas na primeira requisicao de I/O ou quando a amostra anterior tem mais de 30 s.
+- `limiares`: limiares do motor de alertas (`alertas.py`, ver "Motor de alertas"). Todas as chaves sao opcionais; valor que nao e numero (bool inclui), nao e finito ou esta fora da faixa volta ao padrao daquela chave, sem erro. Chave desconhecida e ignorada. `config.exemplo.json` e `deploy/config.atheron.json` trazem os mesmos valores:
+
+  | Chave | Padrao | Faixa |
+  |---|---|---|
+  | `disco_aviso` | 85 | 1 a 100 (% usado) |
+  | `disco_critico` | 93 | 1 a 100 (% usado) |
+  | `ram` | 90 | 1 a 100 (%) |
+  | `swap` | 50 | 1 a 100 (%) |
+  | `temp_cpu_c` | 85 | 40 a 120 (°C) |
+  | `kindle_bateria` | 15 | 1 a 100 (%) |
+  | `s10_bateria` | 20 | 1 a 100 (%) |
+  | `claude_limite` | 90 | 1 a 100 (% do limite de 5 h ou semanal) |
+  | `sessao_esperando_min` | 10 | 1 a 1440 (minutos) |
 
 ### I/O: como as taxas sao calculadas
 As taxas (bytes/s) saem da diferenca entre a amostra atual e a anterior, guardada em memoria, dividida pelo tempo (relogio monotonico) entre elas. Na primeira requisicao, ou se a amostra anterior tiver mais de 30 s, o servidor le duas vezes com `intervalo_io_s` entre as leituras. Se a ultima amostra tem menos de 0,5 s, a ultima taxa e reutilizada (nada e lido). Contador que voltou para tras (reboot, overflow) da `null` (`n/d` na tela) naquela amostra, nunca taxa negativa. Dispositivo ou interface que nao existe em `/proc` some da tela e do JSON; se o proprio arquivo de `/proc` nao puder ser lido, as linhas aparecem com `n/d`.
@@ -68,6 +81,16 @@ Unidades na tela: **base 1024** (1 KB/s = 1024 B/s, 1 MB/s = 1024 KB/s, igual ao
 **Cache de imagem:** o PNG renderizado fica num LRU de 8 entradas, chave (id do snapshot, pagina, p, armado, modo, tamanho; na pagina comandos tambem o conteudo de `comandos.ultimos`). A thread de coleta ja renderiza a ultima tela pedida nos ultimos 30 s a cada snapshot novo, entao o pedido seguinte do Kindle costuma ser um acerto de cache. O encoder usa zlib nivel 1 e o canvas mistura texto/cantos por tabela (pixels identicos aos de antes).
 
 Cada coletor falha isolado: o que der erro aparece como `n/d` na tela e nunca derruba a requisicao. Sem GPU NVIDIA ou sem sensor de temperatura, a linha simplesmente nao aparece.
+
+## Motor de alertas (`alertas.py`)
+`avaliar(m, lim, kv)` e pura e nunca levanta: devolve a lista de alertas `{"nivel", "texto", "pagina", "sistema"}`, ordenada por nivel (`critico`, `aviso`, `leve`) e, dentro do nivel, pela ordem das regras. `texto` e ASCII de ate 48 caracteres; `pagina` e um id de `botoes.PAGINAS`. Ela substitui a antiga regra de atencao do render: o cartao ATENCAO da imagem e a linha de atencao do `/tela.txt` usam a mesma lista. O coletor publica os limiares em `m["limiares"]` (`alertas.limiares(cfg["limiares"])`); a bateria do Kindle chega a cada pedido e entra como `kv` (a vista de `kindle_status`).
+
+Regras, com os limiares da tabela de `limiares` (`disco_critico` e `disco_aviso` valem para discos; `/` conta para `atheron`, os outros para `nas`):
+- **Critico:** disco >= `disco_critico`; servico em falha; rotina com resultado `falha`; unidades do systemd em falha; aparelho offline ha pelo menos `alerta_offline_min` (quando o aparelho define esse campo).
+- **Aviso:** disco >= `disco_aviso`; RAM >= `ram`; swap >= `swap` (com swap configurada); temperatura da CPU >= `temp_cpu_c`; servico parado que nao e `opcional`; inventario de servicos velho ou ausente; rotina atrasada; limite de 5 h ou semanal do Claude >= `claude_limite` (sem `renovado`); CI da branch padrao em falha; porta do Ragnarok fechada; bateria do Kindle <= `kindle_bateria` e sem carregar; bateria do S10 <= `s10_bateria` e descarregando; fonte velha ("<fonte> sem atualizar ha N min").
+- **Leve:** sessao do Claude `esperando` ha pelo menos `sessao_esperando_min`.
+
+Fontes que so chegam na Entrega 2 (aparelhos, rotinas, sessoes e GitHub): as regras que dependem delas leem chaves que ainda nao existem em `m`, entao nao disparam nesta entrega. Os testes das regras estao em `tests/test_alertas.py` (54 testes, incluindo limiares e valores logo abaixo deles).
 
 ## Comandos (POST /comando)
 O servidor continua sem privilegio (`User=nobody`, `ProtectSystem=strict`). Para mudar o atheron a partir do Kindle (com confirmacao em dois toques na tela), o processo web so **registra um pedido**; quem executa e um **executor root separado**, com uma tabela fixa de acoes. Nunca ha shell nem comando montado a partir do pedido.
@@ -118,24 +141,49 @@ Argv montado pelo executor (fixo por tipo; so entram o `alvo` e o `projeto` do c
 
 ## Testes
 ```
-cd server && python3 -I -m unittest discover -s tests
+cd server && (umask 022; python3 -I -m unittest discover -s tests)              # 739 testes
+cd server && (umask 022; python3 -I -m unittest discover -s tests -p test_alertas.py -v)   # um modulo
 ```
-Os testes usam fixtures e fakes: nao precisam de rede, `nvidia-smi`, `systemctl` nem `/var/lib/cerberus`.
+Os testes usam fixtures e fakes: nao precisam de rede, `nvidia-smi`, `systemctl` nem `/var/lib/cerberus`. Com `umask 0002` os testes do executor falham (ele recusa arquivo gravavel pelo grupo). Falha conhecida, anterior a esta branch e so neste servidor: `test_executor.FilaTest.test_limpeza_20_mais_novos` (21 != 20).
 
 ## Imagem (`/tela.png`)
-Retrato 1236x1648, cinco paginas e barra de navegacao fixa no rodape (96 px: Atualizar, Resumo, Servicos, Detalhes, Acoes, Claude; a pagina atual invertida). Cabecalho fino (~70 px): host, resumo dos servicos ("48 servicos · 41 ok · 5 parados"; ou o aviso de inventario velho) e hora (HH:MM, sem segundos). Visual e-ink: alto contraste, contornos finos, raios pequenos, sem sombras; fontes embutidas 26 e 34 (negrito tambem 48, 72 e 140). Estado de servico por forma antes da cor: cheia = ativo, vazia = parado, X = falha, ? = desconhecido.
-- **resumo**: 4 tiles (CPU, RAM, GPU, disco "/": numero de 72 px, barra fina, sparkline pequena; GPU "desativada" sem numero), barras finas dos outros discos (NAS HD, NAS SSD, SSD), linha de I/O (disco e rede), "Atencao" (falhas e parados nao `opcional`, ou "Tudo em ordem") e, se sobrar espaco, a grade de todos os servicos (ou o resumo por grupo); o Ragnarok fica numa linha discreta no rodape ("RAGNAROK · 0 jogadores · LOGIN ok CHAR ok MAP ok").
+Retrato 1236x1648, seis abas na barra de navegacao fixa no rodape (96 px; icone de 30 px em cima e rotulo sempre em negrito 26: Inicio, Servicos, Aparelhos, Sistema, Dev, Acoes; a aba atual invertida). Cabecalho fino (~70 px): host, resumo dos servicos ("48 servicos · 41 ok · 5 parados"; ou o aviso de inventario velho) e hora (HH:MM, sem segundos). Visual e-ink: alto contraste, contornos finos, raios pequenos, sem sombras; fontes embutidas 26 e 34 (negrito tambem 48, 72 e 140). Estado de servico por forma antes da cor: cheia = ativo, vazia = parado, X = falha, ? = desconhecido.
+- **Inicio** (`resumo`): cartao ATENCAO no alto, so com os alertas do motor (criticos, avisos e leves; "Tudo em ordem" sem alertas), com a altura que ele precisa; faixa de historico (CPU e RAM) no espaco que sobrar. Abaixo, 8 linhas de sistema, cada uma com icone de 56 px, titulo, valor e detalhe: ATHERON (CPU, RAM, temperatura e `/`), NAS (os discos que nao sao `/`), APARELHOS (detalhe com bateria do Kindle e do S10; a tailnet ainda mostra "sem dados"), SERVICOS ("N de M ok" e o detalhe por grupo), ROTINAS ("sem dados"), CLAUDE (limites de 5 h e semanal), GITHUB ("sem dados") e RAGNAROK (jogadores e portas no detalhe). Tocar numa linha abre a aba de destino (`pagina:<destino>`, ver "Contrato com o Kindle"). Quando o estado da linha nao e `ok`, uma forma no canto direito mostra o estado: X (critico), ! (aviso), vazia (leve) ou ? (sem dados).
 - **servicos**: lista densa agrupada (HOST / CONTEINERES / DOCKER / RAGNAROK, com "N de M ativos"), uma linha por servico: forma do estado, rotulo (34 ou 26), estado e, a direita, botoes contextuais de 190x84 px com 16 px de espaco (ativo: Reiniciar e Parar; parado: Ligar; falha: Reiniciar; desconhecido ou sem verbos: nada; se o catalogo so permite `reiniciar`, ele tambem serve para ligar). Paginada: "Pagina X/N" e `< Anterior` / `Proxima >` no topo, so quando ha mais de uma pagina (o atheron real da 4). A divisao em paginas so depende do catalogo (linha de 100 px, ou 64 px se o item nao tem verbos), nao do estado.
-- **detalhes**: discos completos, memoria (RAM, swap, VRAM), I/O, temperaturas, carga e uptime, historico (sparklines de ~15 min), servicos por grupo, Ragnarok e pares.
-- **claude**: cartao Claude (icone, janelas de 5 h e semanal com barra, % e quando volta; >= 90 % em negrito grande e preto; `renovado` mostra 0 %; dados velhos mostram "ha N min/h" em cinza; tokens de hoje e de 7 dias com custo) e cartao S10 (bateria, estado, temperatura, cinco caminhos com forma cheia/X/?, avisos). Le `m["claude"]` e `m["s10"]`; sem as duas chaves: "Claude/S10 desligado na config".
-- **acoes** (id `comandos`): grade 2x2 das 4 acoes rapidas, "ULTIMOS COMANDOS" (ate 8; servico aparece como "Reiniciar <id>"), Atencao e a grade de servicos no espaco que sobrar.
+- **Sistema** (`detalhes`): discos completos, memoria (RAM, swap, VRAM), I/O, temperaturas (CPU e GPU), carga, uptime, historico (sparklines de ~15 min) e o cartao ROTINAS ("sem dados" nesta entrega). Kindle, grupos de servicos, Ragnarok e pares sairam daqui.
+- **Aparelhos** (`aparelhos`): cartao TAILNET ("sem dados" nesta entrega), cartao Kindle, cartao S10 (bateria, estado, temperatura, cinco caminhos com forma cheia/X/?, avisos; le `m["s10"]`, so se houver na config) e os pares.
+- **Dev** (`claude`, so leitura): cartao Claude (icone, janelas de 5 h e semanal com barra, % e quando volta; >= 90 % em negrito grande e preto; `renovado` mostra 0 %; dados velhos mostram "ha N min/h" em cinza; tokens de hoje e de 7 dias com custo), cartoes SESSOES e GITHUB ("sem dados" nesta entrega). Le `m["claude"]`; sem a chave: "Claude desligado na config".
+- **Acoes** (`comandos`): grade 2x2 das 4 acoes rapidas, bloco AJUSTES (os tres perfis de energia, com o ativo destacado) e "ULTIMOS COMANDOS" (ate 8; servico aparece como "Reiniciar <id>") no espaco que sobrar. Saiu daqui o ATENCAO, que ficou no Inicio.
 Nada e cortado, sobreposto ou desenhado fora da imagem (testado com canvas estrito em 1236x1648, 1072x1448 e 800x1300, inclusive 52 servicos com varios em falha e 8 comandos recentes). Textos sem acento (a fonte embutida e ASCII mais `°` e `·`). Botoes de linha e de acao tem no minimo 150x84 px e 16 px de folga entre si.
 
-Em producao so entram `botoes.py` (layout dos botoes), `png.py` (encoder PNG com `struct` + `zlib`), `canvas.py` (desenho) e `render_png.py` (layout). As fontes DejaVu vem **pre-rasterizadas** em `fonte_dados.py` (arquivo gerado, ~300 KB; licenca DejaVu/Bitstream Vera no topo do arquivo). Para regerar (ferramenta de desenvolvimento, usa Pillow so via `uv`, nada global):
+Em producao so entram `alertas.py` (motor de alertas), `botoes.py` (layout dos botoes), `icones_dados.py` (icones), `png.py` (encoder PNG com `struct` + `zlib`), `canvas.py` (desenho) e `render_png.py` (layout). As fontes DejaVu vem **pre-rasterizadas** em `fonte_dados.py` (arquivo gerado, ~300 KB; licenca DejaVu/Bitstream Vera no topo do arquivo). Para regerar (ferramenta de desenvolvimento, usa Pillow so via `uv`, nada global):
 ```
 uv run --with pillow python tools/gerar_fonte.py        # reescreve server/fonte_dados.py
 ```
-Para ver o resultado sem subir o servidor: `python3 -I tools/preview.py --saida /tmp/tela.png [--cheia] [--pagina servicos --p 2 --armado svc:ai-agent:reiniciar] [--pagina comandos --modo economia]` (dados que imitam o atheron real; `--cheia` usa 52 servicos com varios em falha e 8 comandos) ou `--porta 8765` para baixar de um servidor local.
+Para ver o resultado sem subir o servidor (dados que imitam o atheron real):
+```
+python3 -I tools/preview.py --saida /tmp/tela.png                                   # aba Inicio, estado ok
+python3 -I tools/preview.py --saida /tmp/tela.png --pagina servicos --p 2 --armado svc:ai-agent:reiniciar
+python3 -I tools/preview.py --saida /tmp/tela.png --pagina comandos --modo economia
+python3 -I tools/preview.py --saida /tmp/tela.png --estado alertas                  # disco a 91 %, 2 servicos em falha, bateria do Kindle a 12 %
+python3 -I tools/preview.py --saida /tmp/tela.png --estado velho                    # inventario e limites do Claude velhos
+python3 -I tools/preview.py --saida /tmp/tela.png --cheia                           # 52 servicos, varios em falha, 8 comandos
+python3 -I tools/preview.py --todas /tmp/prev                                       # <pagina>-<estado>.png: 6 abas x 3 estados = 18 PNGs
+python3 -I tools/preview.py --saida /tmp/x.png --porta 8765 --pagina servicos --p 2 # baixa de um servidor local
+```
+`--pagina` aceita as 6 abas (`resumo`, `servicos`, `aparelhos`, `detalhes`, `claude`, `comandos`); `--estado` aceita `ok`, `alertas` e `velho`.
+
+## Ícones
+`server/icones_dados.py` e gerado por `tools/gerar_icones.py` (nao editar a mao). Entrada: `tools/icones/<nome>.svg`, com `<nome>` em `^[a-z]{2,16}$` (os outros arquivos sao ignorados); sao 23 icones, em 56, 40 e 30 px. Os SVGs sao tratados como dado nao confiavel: so os atributos `d`, `fill-rule` e `viewBox` sao lidos, por regex, sem parser XML.
+
+Origem e licenca ficam no comentario `<!-- Source: ... -->` no topo de cada SVG, e o cabecalho de `icones_dados.py` as repete:
+- Material Symbols (`@material-symbols/svg-400` 0.49.0 via jsDelivr, estilo `outlined`, variante `-fill`), Apache-2.0: inicio, servidor, nas, aparelhos, notebook, celular, leitor, servicos, conteiner, rotinas, backup, jogo, alerta, ok, rede, temperatura, acoes, sistema, dev.
+- Simple Icons 16.38.0 (CC0), com nota de marca registrada de uso privado: `claude`, `github`, `docker`, `tailscale`.
+
+Regerar (ferramenta de desenvolvimento; Pillow e svgelements so via `uv`):
+```
+uv run --no-project --with pillow --with svgelements python tools/gerar_icones.py
+```
 
 ## Recuperacao: Kindle com a interface parada
 Enquanto o monitor roda, o supervisor para a interface do Kindle (`lab126_gui`) e desliga o toque; o botao de energia o encerra normalmente. Se o supervisor morrer sem limpar (SIGKILL, falta de memoria), o Kindle pode ficar com a tela congelada e sem toque. Recuperar: `ssh root@kindle-monitor 'start lab126_gui; lipc-set-prop com.lab126.deviced enable_touch 1'` (ou, sem rede, segurar o botao de energia por ~40 s para reiniciar o aparelho).
