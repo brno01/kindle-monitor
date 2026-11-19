@@ -164,7 +164,7 @@ Quatro fontes do painel do ecossistema (Entrega 2). Quem grava e o executor root
  "aparelhos":{"<id>":{"online":true|false|null,"visto_em":<epoch>|null,"conexao":"direto"|"relay"|null}}}
 ```
 
-- Origem: `tailscale status --json` (argv fixo, sem shell, timeout 10 s, saida ate 4 MiB). Cada peer casa pelo primeiro trecho do `DNSName` (minusculo) com o `nome` do catalogo. Nome repetido: vale o que estiver online.
+- Origem: `tailscale status --json` (argv fixo, sem shell, timeout 10 s, saida ate 4 MiB). Cada peer casa pelo primeiro trecho do `DNSName` (minusculo) com o `nome` do catalogo, e so se o resto do `DNSName` for o sufixo MagicDNS da propria tailnet (tirado do `Self.DNSName`, ou de `CurrentTailnet.MagicDNSSuffix`/`MagicDNSSuffix`); no compartilhado de outra tailnet com o mesmo nome e ignorado. Sem como saber o sufixo, o `aparelhos.json` sai com `erro` (o cartao mostra sem dados). Nome repetido na minha tailnet: vale o que estiver online.
 - `online` vem de `Online` (bool, ou null). `conexao`: `CurAddr` preenchido = `direto`; senao `Relay` = `relay`. `visto_em` vem de `LastSeen` em epoch (antes de 2000 = null).
 - Peer fora do catalogo nunca sai no arquivo. Peer do catalogo sem registro no tailnet sai com `online: null`.
 - `erro` (ate 40 caracteres): `saida vazia`, `saida grande demais`, `json invalido`, `formato inesperado`, `codigo N`, `tempo esgotado`, `comando indisponivel` ou `falha ao executar`. Com erro, todos saem com `online: null`.

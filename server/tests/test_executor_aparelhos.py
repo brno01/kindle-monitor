@@ -120,6 +120,13 @@ class ValidarTest(unittest.TestCase):
         self.assertEqual(orig[0]["id"], "gw")
 
 
+def ts(peers, self_dns="meu-host.t.ts.net.", **extra):
+    """Saida minima de `tailscale status --json` da tailnet `t.ts.net` (o nome do proprio no define o sufixo)."""
+    d = {"Self": {"DNSName": self_dns}, "Peer": peers}
+    d.update(extra)
+    return json.dumps(d)
+
+
 class ParseTest(unittest.TestCase):
     def parse(self, texto, cat=None, agora=NS):
         return ex.parse_tailscale(texto, catalogo() if cat is None else cat, agora=lambda: agora)
@@ -164,24 +171,60 @@ class ParseTest(unittest.TestCase):
         self.assertIsNone(d["erro"])
 
     def test_casa_so_o_primeiro_rotulo(self):
-        txt = json.dumps({"Peer": {
+        txt = ts({
             "k1": {"DNSName": "cerberus-gw-2.t.ts.net.", "Online": True},
             "k2": {"DNSName": "x.cerberus-gw.ts.net.", "Online": True},
-            "k3": {"DNSName": "CERBERUS-GW.t.ts.net.", "Online": True}}})
+            "k3": {"DNSName": "CERBERUS-GW.t.ts.net.", "Online": True}})
         self.assertEqual(self.parse(txt, cat=ex.validar_aparelhos([ap()]))["aparelhos"]["gw"]["online"], True)  # k3
-        txt = json.dumps({"Peer": {"k1": {"DNSName": "cerberus-gw-2.t.ts.net.", "Online": True},
-                                   "k2": {"DNSName": "x.cerberus-gw.ts.net.", "Online": True}}})
+        txt = ts({"k1": {"DNSName": "cerberus-gw-2.t.ts.net.", "Online": True},
+                  "k2": {"DNSName": "x.cerberus-gw.ts.net.", "Online": True}})
         self.assertIsNone(self.parse(txt, cat=ex.validar_aparelhos([ap()]))["aparelhos"]["gw"]["online"])
 
+    def test_peer_de_outra_tailnet_nao_sobrepoe_o_da_minha(self):
+        # no compartilhado de outra tailnet com o mesmo primeiro rotulo, online, nao pode esconder o meu offline
+        txt = ts({"meu": {"DNSName": "cerberus-gw.t.ts.net.", "Online": False, "LastSeen": "2026-11-18T03:30:12Z"},
+                  "alheio": {"DNSName": "cerberus-gw.outra.ts.net.", "Online": True, "CurAddr": "203.0.113.5:41641"}})
+        d = self.parse(txt, cat=ex.validar_aparelhos([ap()]))
+        self.assertIsNone(d["erro"])
+        self.assertEqual(d["aparelhos"]["gw"], {"online": False, "visto_em": 1794972612, "conexao": None})
+        # ordem inversa
+        txt = ts({"alheio": {"DNSName": "cerberus-gw.outra.ts.net.", "Online": True},
+                  "meu": {"DNSName": "cerberus-gw.t.ts.net.", "Online": False}})
+        self.assertIs(self.parse(txt, cat=ex.validar_aparelhos([ap()]))["aparelhos"]["gw"]["online"], False)
+        # so o alheio existe: o meu aparelho fica sem dados
+        txt = ts({"alheio": {"DNSName": "cerberus-gw.outra.ts.net.", "Online": True}})
+        self.assertIsNone(self.parse(txt, cat=ex.validar_aparelhos([ap()]))["aparelhos"]["gw"]["online"])
+
+    def test_sufixo_vem_do_self_ou_do_magicdns(self):
+        gw = {"k": {"DNSName": "cerberus-gw.t.ts.net.", "Online": True}}
+        cat = ex.validar_aparelhos([ap()])
+        for extra in ({"Self": {"DNSName": "OUTRO.T.ts.net"}},  # caixa e ponto final nao importam
+                      {"Self": {}, "MagicDNSSuffix": "t.ts.net"},
+                      {"Self": None, "CurrentTailnet": {"MagicDNSSuffix": "t.ts.net."}},
+                      {"Self": {"DNSName": "x.t.ts.net."}, "MagicDNSSuffix": "t.ts.net"}):
+            with self.subTest(extra=extra):
+                d = self.parse(json.dumps(dict(extra, Peer=gw)), cat=cat)
+                self.assertIsNone(d["erro"])
+                self.assertIs(d["aparelhos"]["gw"]["online"], True)
+
+    def test_sem_sufixo_da_tailnet_e_erro_de_dados(self):
+        gw = {"k": {"DNSName": "cerberus-gw.t.ts.net.", "Online": True}}
+        for extra in ({}, {"Self": {}}, {"Self": {"DNSName": ""}}, {"Self": {"DNSName": "semponto"}},
+                      {"Self": {"DNSName": 5}}, {"Self": {"DNSName": "x."}}, {"Self": "x"},
+                      {"Self": {"DNSName": "x.."}}, {"MagicDNSSuffix": ""}, {"MagicDNSSuffix": 7},
+                      {"CurrentTailnet": {"MagicDNSSuffix": None}}, {"CurrentTailnet": []}):
+            with self.subTest(extra=extra):
+                self.assert_erro(self.parse(json.dumps(dict(extra, Peer=gw))))
+
     def test_duplicado_prefere_online(self):
-        txt = json.dumps({"Peer": {"a": {"DNSName": "cerberus-gw.t.", "Online": False},
-                                   "b": {"DNSName": "cerberus-gw.t.", "Online": True}}})
+        txt = ts({"a": {"DNSName": "cerberus-gw.t.ts.net.", "Online": False},
+                  "b": {"DNSName": "cerberus-gw.t.ts.net.", "Online": True}})
         self.assertIs(self.parse(txt, cat=ex.validar_aparelhos([ap()]))["aparelhos"]["gw"]["online"], True)
 
     def peer(self, **campos):
         base = {"DNSName": "cerberus-gw.t.ts.net."}
         base.update(campos)
-        txt = json.dumps({"Peer": {"k": base}})
+        txt = ts({"k": base})
         return self.parse(txt, cat=ex.validar_aparelhos([ap()]))["aparelhos"]["gw"]
 
     def test_online_so_aceita_bool(self):
@@ -235,15 +278,15 @@ class ParseTest(unittest.TestCase):
             self.assert_erro(self.parse(t))
 
     def test_peers_com_itens_ruins_sao_ignorados(self):
-        txt = json.dumps({"Peer": {"a": 5, "b": None, "c": [], "d": {"DNSName": 7, "Online": True},
-                                   "e": {"DNSName": None}, "f": {"Online": True},
-                                   "g": {"DNSName": "cerberus-gw.t.", "Online": True}}})
+        txt = ts({"a": 5, "b": None, "c": [], "d": {"DNSName": 7, "Online": True},
+                  "e": {"DNSName": None}, "f": {"Online": True},
+                  "g": {"DNSName": "cerberus-gw.t.ts.net.", "Online": True}})
         d = self.parse(txt, cat=ex.validar_aparelhos([ap()]))
         self.assertIsNone(d["erro"])
         self.assertIs(d["aparelhos"]["gw"]["online"], True)
 
     def test_peer_vazio_e_valido_sem_erro(self):
-        d = self.parse('{"Peer": {}}')
+        d = self.parse(ts({}))
         self.assertIsNone(d["erro"])
         self.assertTrue(all(v["online"] is None for v in d["aparelhos"].values()))
 

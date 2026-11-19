@@ -981,11 +981,39 @@ def _epoch_visto(valor):
     return n if n > 946684800 else None  # antes de 2000 = "0001-01-01" do Tailscale (nunca visto) ou lixo
 
 
+def _dns_sem_ponto(v):
+    """DNSName em minusculas e sem o ponto final; None se nao for texto."""
+    if not isinstance(v, str):
+        return None
+    v = v.strip().lower()
+    return v[:-1] if v.endswith(".") else v
+
+
+def _sufixo_tailnet(dados):
+    """Sufixo MagicDNS da propria tailnet (`<tailnet>.ts.net`) ou None.
+
+    Vem do nome do proprio no (`Self.DNSName` sem o 1o rotulo); sem ele, de `CurrentTailnet.MagicDNSSuffix` ou
+    `MagicDNSSuffix`. Um no compartilhado de outra tailnet tem outro sufixo e nao pode valer como aparelho meu."""
+    eu = dados.get("Self")
+    dns = _dns_sem_ponto(eu.get("DNSName")) if isinstance(eu, dict) else None
+    if dns:
+        suf = dns.partition(".")[2]
+        if suf:
+            return suf
+    atual = dados.get("CurrentTailnet")
+    for v in (atual.get("MagicDNSSuffix") if isinstance(atual, dict) else None, dados.get("MagicDNSSuffix")):
+        suf = _dns_sem_ponto(v)
+        if suf:
+            return suf
+    return None
+
+
 def parse_tailscale(texto, catalogo, agora=None):
     """Saida de `tailscale status --json` -> aparelhos.json (E7). Pura; NUNCA levanta.
 
     `catalogo` = lista validada por validar_aparelhos. So sai o que o catalogo pede e so id, online, visto_em e
-    conexao: nenhum IP, chave, e-mail, usuario, SO ou nome de peer de fora do catalogo. Entrada ruim vira `erro`
+    conexao: nenhum IP, chave, e-mail, usuario, SO ou nome de peer de fora do catalogo. So vale peer cujo DNSName
+    e `<nome>.<sufixo MagicDNS da minha tailnet>`; sem como saber o sufixo, e erro. Entrada ruim vira `erro`
     curto (ASCII, <= 40) com todos online null.
     """
     ids = [(a["id"], a["nome"]) for a in catalogo]
@@ -1009,11 +1037,16 @@ def parse_tailscale(texto, catalogo, agora=None):
     peers = dados.get("Peer") if isinstance(dados, dict) else None
     if not isinstance(peers, dict):
         return doc("formato inesperado", vazio)
+    sufixo = _sufixo_tailnet(dados)
+    if not sufixo:
+        return doc("sem sufixo da tailnet", vazio)  # sem ele nao da para separar meus aparelhos dos alheios
     achados = {}
     for p in peers.values():
         if not isinstance(p, dict) or not isinstance(p.get("DNSName"), str):
             continue
-        rotulo = p["DNSName"].split(".", 1)[0].lower()
+        rotulo, _, resto = _dns_sem_ponto(p["DNSName"]).partition(".")
+        if resto != sufixo:
+            continue  # no de outra tailnet (compartilhado) com o mesmo 1o rotulo
         online = p.get("Online") if isinstance(p.get("Online"), bool) else None
         if rotulo in achados and not (online is True and achados[rotulo]["online"] is not True):
             continue  # nome repetido: o primeiro vale, a nao ser que o novo esteja online e o antigo nao
