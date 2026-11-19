@@ -1895,20 +1895,132 @@ def _ci_txt(it):
                             " (%s)" % branch if branch else "")
 
 
-def _h_github(g, max_prs):
+ISSUES_LINHAS = ISSUES_MAX       # linhas de itens da secao ISSUES (o "+N" vai no titulo da secao)
+SECAO_TITULO = 42                # titulo de secao do cartao GITHUB (ISSUES, ATIVIDADE)
+SECAO_GAP = 14                   # fio e respiro antes de cada faixa (CI, ISSUES, ATIVIDADE)
+ESQUERDA_MIN = 380               # px que "repo#n titulo" precisa na linha do PR; as marcas cedem antes disso
+
+
+def _dias_txt(dias):
+    """"12d" para a idade de um PR ou issue; "" sem dado."""
+    return "" if dias is None else "%dd" % dias
+
+
+def _push_curto(dias):
+    """"hoje" / "ha 3 d" da secao ATIVIDADE."""
+    return "hoje" if dias == 0 else "ha %d d" % dias
+
+
+def _secoes_github(d, max_iss, max_rep):
+    """(issues, repos) visiveis do cartao GITHUB, cada um (linhas, "+N" resto) ou None se a secao nao aparece (sem o
+    bloco, sem repos ou `max_*` < 0). `max_*` e o numero de linhas de itens; o "+N" nao gasta linha (vai no titulo da
+    secao). O `n` de issues pode ser maior que os itens listados: a diferenca tambem entra no "+N"."""
+    iss = None
+    if d["issues"] is not None and max_iss > 0:
+        vis = d["issues"]["itens"][:max_iss]
+        iss = (vis, d["issues"]["n"] - len(vis))
+    rep = None
+    if d["repos"] and max_rep > 0:
+        vis = d["repos"][:max_rep]
+        rep = (vis, len(d["repos"]) - len(vis))
+    return iss, rep
+
+
+def _h_secao(secao):
+    return 0 if secao is None else SECAO_GAP + SECAO_TITULO + len(secao[0]) * CI_LINHA
+
+
+def _h_github(g, max_prs, max_iss=ISSUES_LINHAS, max_rep=REPOS_MAX):
     d = _github_dados(g, max_prs)
     if d is None:
         return H_SEM_DADOS
     linhas_pr = len(d["prs"]) + (1 if d["resto"] else 0)
     ruins, resto_ci, ok = _ci_linhas(d)
     linhas_ci = len(ruins) + (1 if resto_ci else 0) + (1 if ok else 0)
-    return (CARTAO_BASE + max(1, linhas_pr) * PR_LINHA + (14 + linhas_ci * CI_LINHA if linhas_ci else 0)
-            + CARTAO_FIM)
+    iss, rep = _secoes_github(d, max_iss, max_rep)
+    return (CARTAO_BASE + max(1, linhas_pr) * PR_LINHA + (SECAO_GAP + linhas_ci * CI_LINHA if linhas_ci else 0)
+            + _h_secao(iss) + _h_secao(rep) + CARTAO_FIM)
 
 
-def _card_github(c, g, x, y, w, h, max_prs=PRS_MAX):
-    """Cartao GITHUB: PRs abertos como "repo#n titulo" (forma do CI a direita, "(rascunho)" quando e o caso) e, abaixo,
-    o CI das branches padrao (o que nao esta ok primeiro, depois "N ok"). Os dados velhos mostram a idade no titulo."""
+def _marcas_pr(c, pr, largura):
+    """Marcas do PR, da esquerda para a direita: [(texto, fonte, cor)] ("conflito", "mudancas"/"aprovado", "rascunho",
+    "12d"). So as que deixam `ESQUERDA_MIN` px para "repo#n titulo" em `largura`; cedem primeiro a idade e o rascunho."""
+    marcas = []  # (prioridade: menor fica mais, texto, fonte, cor)
+    if pr.get("conflito") is True:
+        marcas.append((0, "conflito", NEG, PRETO))
+    rev = _revisao_pr(pr)
+    if rev in ("mudancas", "aprovado"):
+        marcas.append((1, rev, NEG if rev == "mudancas" else REG, PRETO if rev == "mudancas" else ESCURO))
+    if pr.get("rascunho") is True:
+        marcas.append((3, "rascunho", REG, ESCURO))
+    idade = _dias_txt(_dias(pr.get("idade_d")))
+    if idade:
+        marcas.append((2, idade, REG, ESCURO))
+
+    def total(ms):
+        return sum(int(c.medir(t, f, 26)) + 14 for _, t, f, _ in ms)
+    while marcas and largura - total(marcas) < ESQUERDA_MIN:
+        marcas.remove(max(marcas, key=lambda m: m[0]))
+    ordem = {0: 0, 1: 1, 3: 2, 2: 3}  # na tela: conflito, revisao, rascunho, idade
+    return [(t, f, cor) for _, t, f, cor in sorted(marcas, key=lambda m: ordem[m[0]])]
+
+
+def _linha_secao(c, x, w, yc, ref, texto, direita, ref_larg_max):
+    """Linha de ISSUES/ATIVIDADE: `ref` em negrito, `texto` em cinza logo depois e `direita` alinhado a direita."""
+    xr = x + w - PAD
+    if direita:
+        _texto_c(c, xr, yc, direita, REG, 26, ESCURO, "dir")
+        xr -= int(c.medir(direita, REG, 26)) + 16
+    tx = x + PAD
+    ref = _ajustar(c, ref, NEG, 26, max(80, min(ref_larg_max, xr - tx)))
+    _texto_c(c, tx, yc, ref, NEG, 26, PRETO)
+    tx += int(c.medir(ref, NEG, 26)) + 14
+    texto = _ajustar(c, texto, REG, 26, xr - tx - 8) if texto and xr - tx > 60 else ""
+    if texto:
+        _texto_c(c, tx, yc, texto, REG, 26, ESCURO)
+
+
+def _secao_titulo(c, x, w, y0, titulo, detalhe, resto):
+    """Fio e titulo da secao (`detalhe` em cinza depois do titulo e o "+N" dos itens que nao couberam a direita)."""
+    c.retangulo(x + PAD, y0 - 8, w - 2 * PAD, 2, TRILHO)
+    yc = y0 + SECAO_TITULO // 2
+    _texto_c(c, x + PAD, yc, titulo, NEG, 26, PRETO)
+    if detalhe:
+        _texto_c(c, x + PAD + int(c.medir(titulo, NEG, 26)) + 14, yc, detalhe, REG, 26, ESCURO)
+    if resto:
+        _texto_c(c, x + w - PAD, yc, "+%d" % resto, NEG, 26, ESCURO, "dir")
+
+
+def _desenhar_issues(c, x, w, y0, secao, n):
+    """Secao ISSUES a partir de `y0` (depois do fio); devolve o y logo abaixo dela."""
+    vis, resto = secao
+    _secao_titulo(c, x, w, y0, "ISSUES", str(n), resto)
+    yy = y0 + SECAO_TITULO
+    for i, it in enumerate(vis):
+        yc = yy + i * CI_LINHA + CI_LINHA // 2
+        n_it = _num(it.get("numero"))
+        ref = _repo(it) + (" #%d" % n_it if n_it is not None and n_it >= 0 else "")
+        titulo = _limpar(it.get("titulo")).strip() if isinstance(it.get("titulo"), str) else ""
+        _linha_secao(c, x, w, yc, ref, titulo, _dias_txt(_dias(it.get("idade_d"))), (w - 2 * PAD) * 45 // 100)
+    return yy + len(vis) * CI_LINHA
+
+
+def _desenhar_atividade(c, x, w, y0, secao):
+    """Secao ATIVIDADE: um repo por linha com o push mais recente primeiro ("hoje" ou "ha N d" a direita)."""
+    vis, resto = secao
+    _secao_titulo(c, x, w, y0, "ATIVIDADE", None, resto)
+    yy = y0 + SECAO_TITULO
+    for i, r in enumerate(vis):
+        yc = yy + i * CI_LINHA + CI_LINHA // 2
+        _linha_secao(c, x, w, yc, _repo(r), "", _push_curto(_dias(r.get("push_d"))), w - 2 * PAD)
+    return yy + len(vis) * CI_LINHA
+
+
+def _card_github(c, g, x, y, w, h, max_prs=PRS_MAX, max_iss=ISSUES_LINHAS, max_rep=REPOS_MAX):
+    """Cartao GITHUB: PRs abertos como "repo#n titulo" com a forma do CI a direita e, antes dela, marcas em texto
+    ("conflito", "mudancas"/"aprovado", "rascunho", idade "12d"); abaixo, o CI das branches padrao (o que nao esta ok
+    primeiro, depois "N ok"), ISSUES (n total e ate 5 linhas) e ATIVIDADE (repos com push recente). O que nao cabe vira
+    "+N". Os dados velhos mostram a idade no titulo."""
     d = _github_dados(g, max_prs)
     if d is None:
         return _card_sem_dados(c, x, y, w, h, "GitHub", "github")
@@ -1924,45 +2036,73 @@ def _card_github(c, g, x, y, w, h, max_prs=PRS_MAX):
     for i, pr in enumerate(d["prs"]):
         yc = yy + i * PR_LINHA + PR_LINHA // 2
         forma = _estado_pr(pr)[0]
-        falha = forma == "falha"
-        if falha:
+        destaque = forma == "falha" or pr.get("conflito") is True
+        if destaque:
             c.retangulo_arredondado(x + 8, yc - PR_LINHA // 2 + 2, w - 16, PR_LINHA - 4, 8, TRILHO)
         if forma is not None:
             _forma(c, xf, yc - 14, 28, forma)
         xr = xf - 16
-        if pr.get("rascunho") is True:
-            _texto_c(c, xr, yc, "(rascunho)", REG, 26, ESCURO, "dir")
-            xr -= int(c.medir("(rascunho)", REG, 26)) + 16
+        for texto, fonte, cor in reversed(_marcas_pr(c, pr, xr - (x + PAD))):
+            _texto_c(c, xr, yc, texto, fonte, 26, cor, "dir")
+            xr -= int(c.medir(texto, fonte, 26)) + 14
         tx = x + PAD
-        ref = _ajustar(c, _pr_ref(pr), NEG, 26, max(80, (xr - tx) * 45 // 100))
+        livre = xr - tx
+        ref = _ajustar(c, _pr_ref(pr), NEG, 26, max(80, livre * 45 // 100,
+                                                    min(int(c.medir(_pr_ref(pr), NEG, 26)) + 1, livre - 40)))
         _texto_c(c, tx, yc, ref, NEG, 26, PRETO)
         tx += int(c.medir(ref, NEG, 26)) + 14
         titulo = _limpar(pr.get("titulo")).strip() if isinstance(pr.get("titulo"), str) else ""
         titulo = _ajustar(c, titulo, REG, 26, xr - tx - 8) if xr - tx > 60 else ""
         if titulo:
             _texto_c(c, tx, yc, titulo, REG, 26, ESCURO)
-        if i != n_pr - 1 and not falha:
+        if i != n_pr - 1 and not destaque:
             c.retangulo(x + PAD, yc + PR_LINHA // 2 - 1, w - 2 * PAD, 2, TRILHO)
     if d["resto"]:
         _texto_c(c, x + PAD, yy + len(d["prs"]) * PR_LINHA + PR_LINHA // 2, "+%d" % d["resto"], NEG, 26, ESCURO)
+    fim = yy + n_pr * PR_LINHA
     ruins, resto_ci, ok = _ci_linhas(d)
-    if not (ruins or resto_ci or ok):
-        return
-    yc0 = yy + n_pr * PR_LINHA + 14
-    c.retangulo(x + PAD, yc0 - 8, w - 2 * PAD, 2, TRILHO)
-    for i, it in enumerate(ruins):
-        yc = yc0 + i * CI_LINHA + CI_LINHA // 2
-        _forma(c, x + PAD, yc - 14, 28, "falha" if it.get("estado") == "falha" else "parado")
-        _texto_c(c, x + PAD + 44, yc, _ajustar(c, _ci_txt(it), NEG, 26, w - 2 * PAD - 44), NEG, 26, PRETO)
-    linha = len(ruins)
-    if resto_ci:
-        _texto_c(c, x + PAD + 44, yc0 + linha * CI_LINHA + CI_LINHA // 2, "+%d" % resto_ci, NEG, 26, ESCURO)
-        linha += 1
-    if ok:
-        yc = yc0 + linha * CI_LINHA + CI_LINHA // 2
-        _forma(c, x + PAD, yc - 14, 28, "ativo")
-        _texto_c(c, x + PAD + 44, yc, "CI", NEG, 26, ESCURO)
-        _texto_c(c, x + PAD + 44 + int(c.medir("CI", NEG, 26)) + 12, yc, "%d ok" % ok, REG, 26, ESCURO)
+    if ruins or resto_ci or ok:
+        yc0 = fim + SECAO_GAP
+        c.retangulo(x + PAD, yc0 - 8, w - 2 * PAD, 2, TRILHO)
+        for i, it in enumerate(ruins):
+            yc = yc0 + i * CI_LINHA + CI_LINHA // 2
+            _forma(c, x + PAD, yc - 14, 28, "falha" if it.get("estado") == "falha" else "parado")
+            _texto_c(c, x + PAD + 44, yc, _ajustar(c, _ci_txt(it), NEG, 26, w - 2 * PAD - 44), NEG, 26, PRETO)
+        linha = len(ruins)
+        if resto_ci:
+            _texto_c(c, x + PAD + 44, yc0 + linha * CI_LINHA + CI_LINHA // 2, "+%d" % resto_ci, NEG, 26, ESCURO)
+            linha += 1
+        if ok:
+            yc = yc0 + linha * CI_LINHA + CI_LINHA // 2
+            _forma(c, x + PAD, yc - 14, 28, "ativo")
+            _texto_c(c, x + PAD + 44, yc, "CI", NEG, 26, ESCURO)
+            _texto_c(c, x + PAD + 44 + int(c.medir("CI", NEG, 26)) + 12, yc, "%d ok" % ok, REG, 26, ESCURO)
+            linha += 1
+        fim = yc0 + linha * CI_LINHA
+    iss, rep = _secoes_github(d, max_iss, max_rep)
+    if iss is not None:
+        fim = _desenhar_issues(c, x, w, fim + SECAO_GAP, iss, d["issues"]["n"])
+    if rep is not None:
+        _desenhar_atividade(c, x, w, fim + SECAO_GAP, rep)
+
+
+# incrementos do plano do cartao GITHUB, na ordem em que valem a pena: (campo, valor) com campo 0 = PRs, 1 = linhas de
+# ISSUES (ate 5), 2 = linhas de ATIVIDADE (ate 6). Primeiro 3 PRs, depois um pouco de cada secao, depois os PRs ate 6 e por fim as
+# secoes inteiras: o que pede atencao nunca some de vez e nenhuma secao toma a pagina sozinha.
+_INCREMENTOS_GITHUB = ((0, 2), (0, 3), (1, 1), (2, 1), (0, 4), (1, 2), (2, 2), (0, 5), (1, 3), (2, 3), (0, 6), (1, 4),
+                       (2, 4), (1, 5), (2, 5), (2, 6))
+
+
+def _plano_github(g, disp):
+    """(max_prs, max_iss, max_rep) mais rico que cabe em `disp` px. Cada incremento so vale se o cartao ainda cabe; o
+    piso e 1 PR sem secoes. Sem issues ou repos no arquivo, as secoes nao custam altura e so os PRs crescem, como antes."""
+    plano = [1, 0, 0]
+    for campo, valor in _INCREMENTOS_GITHUB:
+        cand = list(plano)
+        cand[campo] = valor
+        if _h_github(g, *cand) <= disp:
+            plano = cand
+    return tuple(plano)
 
 
 def _desenhar_claude(c, m):
@@ -1980,14 +2120,15 @@ def _desenhar_claude(c, m):
         cl = m["claude"]
         blocos.append((CLAUDE_H, lambda c, x, y, h: _card_claude(c, cl, x, y, w, h, agora)))
         disp -= CLAUDE_H + GAP
-        # SESSOES leva o que o GITHUB nao precisa no minimo (2 PRs); depois o GITHUB leva o que sobrar
-        linhas = (disp - GAP - _h_github(g, 2) - CARTAO_BASE - CARTAO_FIM) // SESSAO_LINHA
+        # SESSOES leva o que o GITHUB nao precisa no minimo (2 PRs e 1 linha de ISSUES e de ATIVIDADE); depois o GITHUB leva o
+        # que sobrar
+        linhas = (disp - GAP - _h_github(g, 2, 1, 1) - CARTAO_BASE - CARTAO_FIM) // SESSAO_LINHA
         max_s = max(2, min(SESSOES_MAX, linhas))
         h_s = _h_sessoes(cl, max_s, limite_s)
         blocos.append((h_s, lambda c, x, y, h: _card_sessoes(c, cl, x, y, w, h, limite_s, max_s)))
         disp -= h_s + GAP
-    max_g = next((k for k in range(PRS_MAX, 0, -1) if _h_github(g, k) <= disp), 1)
-    blocos.append((_h_github(g, max_g), lambda c, x, y, h: _card_github(c, g, x, y, w, h, max_g)))
+    k = _plano_github(g, disp)
+    blocos.append((_h_github(g, *k), lambda c, x, y, h: _card_github(c, g, x, y, w, h, *k)))
     _empilhar(c, blocos)
 
 
