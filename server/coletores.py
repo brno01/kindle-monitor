@@ -24,6 +24,7 @@ from datetime import datetime
 from urllib.parse import urlsplit
 
 import alertas
+import dev_fontes
 import ecossistema
 import servicos
 
@@ -504,6 +505,16 @@ def coletar_claude(cfg, ler, agora):
     return r
 
 
+PREFIXOS_DEV = ("/var/lib/", "/run/")
+
+
+def _caminho_dev(v):
+    """Caminho de fonte do painel Dev: absoluto, normalizado, sob /var/lib/ ou /run/. Senao ValueError."""
+    if not isinstance(v, str) or "\0" in v or os.path.normpath(v) != v or not v.startswith(PREFIXOS_DEV):
+        raise ValueError("caminho invalido")
+    return v
+
+
 def coletar_s10(caminho, ler, agora):
     """Resumo publico do S10 (resumo.json). Ausente, invalido ou com tipos errados -> {"erro": "n/d"}."""
     try:
@@ -706,8 +717,9 @@ def _isolado(fn):
 class Coletor:
     def __init__(self, config, leitor_arquivo=ler_arquivo_padrao, executar=executar_padrao,
                  buscar=buscar_http, statvfs=os.statvfs, relogio=time.monotonic, agora=time.time,
-                 dormir=time.sleep, raiz_sys="/sys", conectar=CONECTAR_PADRAO):
+                 dormir=time.sleep, raiz_sys="/sys", conectar=CONECTAR_PADRAO, listar_dir=os.scandir):
         self.config = config
+        self._listar_dir = listar_dir
         self._ler = leitor_arquivo
         self._executar = executar
         self._buscar = buscar
@@ -988,6 +1000,12 @@ class Coletor:
             m["io"] = _isolado(self._io.medir)
         if cfg.get("claude"):
             m["claude"] = _isolado(lambda: coletar_claude(cfg["claude"], self._ler, self._agora()))
+            if isinstance(cfg["claude"], dict) and cfg["claude"].get("sessoes") and "erro" not in m["claude"]:
+                m["claude"]["sessoes"] = _isolado(lambda: caro("sessoes", lambda: dev_fontes.coletar_sessoes(
+                    _caminho_dev(cfg["claude"]["sessoes"]), self._listar_dir, self._ler, self._agora())))
+        if isinstance(cfg.get("github"), dict) and cfg["github"].get("resumo"):
+            m["github"] = _isolado(lambda: dev_fontes.coletar_github(
+                _caminho_dev(cfg["github"]["resumo"]), self._ler, self._agora()))
         if cfg.get("s10"):
             m["s10"] = _isolado(lambda: coletar_s10(cfg["s10"]["resumo"], self._ler, self._agora()))
         m["limiares"] = alertas.limiares(cfg.get("limiares"))
