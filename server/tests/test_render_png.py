@@ -1058,3 +1058,330 @@ class PaginasAparelhosDevTest(unittest.TestCase):
     def test_dev_sem_claude_na_config(self):
         tx, _ = self._ver(completo(s10=S10), "claude")
         self.assertIn("Claude desligado na config", tx)
+
+
+# ------------------------------------------------- Dev: sessoes e GitHub (Entrega 2, Tarefa 23)
+
+def ses(*itens, total=None, esp=None, idade_s=5):
+    esp = sum(1 for i in itens if i["estado"] == "esperando") if esp is None else esp
+    return {"itens": list(itens), "total": len(itens) if total is None else total, "esperando": esp, "idade_s": idade_s}
+
+
+def sx(projeto, estado="trabalhando", desde_s=120):
+    return {"projeto": projeto, "estado": estado, "desde_s": desde_s}
+
+
+def prx(repo, numero, titulo="Titulo", rascunho=False, ci="ok"):
+    return {"repo": repo, "numero": numero, "titulo": titulo, "rascunho": rascunho, "ci": ci}
+
+
+def gh(prs=(), ci=(), abertos=None, velho=False, idade_s=30):
+    return {"prs": list(prs), "ci": list(ci), "abertos": len(prs) if abertos is None else abertos,
+            "ci_falhas": sum(1 for i in ci if isinstance(i, dict) and i.get("estado") == "falha"), "idade_s": idade_s, "velho": velho}
+
+
+def cix(repo, estado="ok", branch="main"):
+    return {"repo": repo, "branch": branch, "estado": estado}
+
+
+def dev(sessoes=None, github=None, **extra):
+    cl = dict(CL)
+    if sessoes is not None:
+        cl["sessoes"] = sessoes
+    m = completo(claude=cl, **extra)
+    if github is not None:
+        m["github"] = github
+    return m
+
+
+class CartaoSessoesTest(unittest.TestCase):
+    def _formas(self, m):
+        calls = []
+        orig = render_png._forma
+        render_png._forma = lambda c, x, y, lado, estado: (calls.append((lado, estado)), orig(c, x, y, lado, estado))[1]
+        try:
+            tx, ic = espiar(m, "claude")
+        finally:
+            render_png._forma = orig
+        return tx, ic, [e for lado, e in calls if lado == 28]
+
+    def test_tres_sessoes_com_resumo_estado_e_tempo(self):
+        m = dev(ses(sx("kindle-monitor", "esperando", 1500), sx("dotfiles", "trabalhando", 240),
+                    sx("cerberus", "aberta", 7200)))
+        tx, ic, formas = self._formas(m)
+        for t in ("Sessoes", "3 sessoes, 1 esperando", "kindle-monitor", "dotfiles", "cerberus",
+                  "esperando ha 25 min", "trabalhando ha 4 min", "aberta ha 2 h"):
+            self.assertIn(t, tx)
+        self.assertIn(("dev", 40), ic)
+        self.assertEqual([f for f in formas if f != "ativo"][:1], ["aviso"])  # esperando ha mais de 10 min
+        self.assertEqual(formas.count("ativo"), 1)  # so a que trabalha (a aberta e um circulo cinza proprio)
+
+    def test_esperando_recente_e_parado_e_antiga_e_aviso(self):
+        for desde, forma in ((599, "parado"), (600, "aviso"), (60, "parado"), (7200, "aviso")):
+            _, _, formas = self._formas(dev(ses(sx("p", "esperando", desde))))
+            self.assertEqual([f for f in formas if f in ("parado", "aviso")], [forma], desde)
+
+    def test_limiar_vem_de_m_limiares(self):
+        m = dev(ses(sx("p", "esperando", 120)))
+        m["limiares"] = {"sessao_esperando_min": 1}
+        _, _, formas = self._formas(m)
+        self.assertIn("aviso", formas)
+
+    def test_um_singular(self):
+        tx, _ = espiar(dev(ses(sx("p"))), "claude")
+        self.assertIn("1 sessao, 0 esperando", tx)
+
+    def test_doze_sessoes_cabem_ou_cortam_com_mais_n(self):
+        itens = [sx("proj-%d" % i, ("esperando", "trabalhando", "aberta")[i % 3], i * 100) for i in range(12)]
+        m = dev(ses(*itens), gh(), )
+        tx, _ = espiar(m, "claude")
+        proj = [t for t in tx if t.startswith("proj-")]
+        resto = [t for t in tx if t.startswith("+")]
+        self.assertTrue(proj)
+        self.assertEqual(len(proj) + (int(resto[0][1:]) if resto else 0), 12)
+        self.assertIn("12 sessoes, 4 esperando", tx)
+
+    def test_doze_sessoes_deixam_o_github_na_tela(self):
+        itens = [sx("proj-%d" % i) for i in range(12)]
+        prs = [prx("r", i, "t%d" % i) for i in range(20)]
+        tx, _ = espiar(dev(ses(*itens), gh(prs, [cix("r")])), "claude")
+        self.assertIn("GitHub", tx)
+        self.assertIn("20 PRs abertos", tx)
+        self.assertTrue([t for t in tx if t.startswith("+")])
+
+    def test_sem_sessao(self):
+        tx, _ = espiar(dev(ses(), gh()), "claude")
+        self.assertIn("nenhuma sessao aberta", tx)
+        self.assertNotIn("0 sessoes, 0 esperando", tx)
+
+    def test_sem_dados_com_nd_ou_chave_ausente(self):
+        for sess in ({"erro": "n/d"}, None, 5, "x", {"itens": "x"}):
+            tx, _ = espiar(dev(sess, gh()), "claude")
+            self.assertIn("Sessoes", tx)
+            self.assertIn("sem dados", tx)
+            self.assertNotIn("nenhuma sessao aberta", tx)
+
+    def test_idade_s_none_e_blocos_estranhos_nao_levantam(self):
+        espiar(dev(ses(sx("p"), idade_s=None)), "claude")
+        itens = [None, 5, "x", {}, {"projeto": 7, "estado": 3, "desde_s": "x"}, sx("ok", "esperando", None),
+                 sx("neg", "esperando", -5), sx("huge", "aberta", 10 ** 400), sx("b", True, True)]
+        espiar(dev({"itens": itens, "total": "x", "esperando": None, "idade_s": None}), "claude")
+        for ruim in TIPOS_ERRADOS:
+            espiar(dev(ruim), "claude")
+        for tot in (-1, 10 ** 400, float("nan"), True, 100):
+            espiar(dev({"itens": [sx("a")], "total": tot, "esperando": tot}), "claude")
+
+    def test_projeto_hostil_ou_longo_nao_sai_da_caixa(self):
+        hostis = ["W" * 40, "\u00e7\u00e3\u00f5\u0301\u4e2d\u6587" * 6, "\x00\x1b[31mX", "m" * 40, "", "..."]
+        for estado in ("esperando", "trabalhando", "aberta"):
+            for desde in (30, 100000):
+                itens = [sx(h, estado, desde) for h in hostis] * 2
+                for h in (1648, 1000, 900):
+                    c = cv.Canvas(1236, h, estrito=True)
+                    cl = {"sessoes": ses(*itens, total=40)}
+                    render_png._card_sessoes(c, cl, 48, 200, 1140, 600, 600)
+                    self.assertEqual(fora_da_caixa(c, 48, 200, 1140, 600), 255)
+
+    def test_sem_espaco_mantem_o_que_espera_e_corta_o_resto(self):
+        itens = [sx("quieto-%d" % i) for i in range(9)] + [sx("esperando-velho", "esperando", 5000)]
+        tx, _ = espiar(dev(ses(*itens)), "claude", None, 1236, 1100)
+        self.assertIn("esperando-velho", tx)
+
+
+class CartaoGithubTest(unittest.TestCase):
+    def test_zero_prs(self):
+        tx, ic = espiar(dev(ses(), gh()), "claude")
+        self.assertIn("GitHub", tx)
+        self.assertIn("nenhum PR aberto", tx)
+        self.assertIn(("github", 40), ic)
+        self.assertFalse([t for t in tx if "PRs abertos" in t])
+
+    def test_seis_prs_sem_mais_n(self):
+        prs = [prx("repo", 10 + i, "Titulo %d" % i) for i in range(6)]
+        tx, _ = espiar(dev(ses(), gh(prs)), "claude")
+        for i in range(6):
+            self.assertIn("repo#%d" % (10 + i), tx)
+        self.assertIn("6 PRs abertos", tx)
+        self.assertFalse([t for t in tx if t.startswith("+")])
+
+    def test_vinte_prs_cortam_em_seis_com_mais_n(self):
+        prs = [prx("repo", i, "Titulo %d" % i) for i in range(20)]
+        tx, _ = espiar(dev(ses(), gh(prs)), "claude")
+        refs = [t for t in tx if t.startswith("repo#")]
+        self.assertEqual(len(refs), 6)
+        self.assertIn("+14", tx)
+        self.assertIn("20 PRs abertos", tx)
+
+    def test_prs_em_falha_nao_ficam_no_corte(self):
+        prs = [prx("repo", i) for i in range(20)]
+        prs[17]["ci"] = "falha"
+        tx, _ = espiar(dev(ses(), gh(prs)), "claude")
+        self.assertIn("repo#17", tx)
+
+    def test_abertos_maior_que_a_lista(self):
+        tx, _ = espiar(dev(ses(), gh([prx("r", 1)], abertos=35)), "claude")
+        self.assertIn("35 PRs abertos", tx)
+        self.assertIn("+34", tx)
+
+    def test_titulo_de_60_cortado_pela_largura_e_rascunho(self):
+        prs = [prx("repo", 1, "W" * 60), prx("repo", 2, "Titulo curto", rascunho=True)]
+        tx, _ = espiar(dev(ses(), gh(prs)), "claude")
+        cortado = [t for t in tx if t.startswith("WWW")]
+        self.assertEqual(len(cortado), 1)
+        self.assertTrue(cortado[0].endswith("..."))
+        self.assertIn("Titulo curto", tx)
+        self.assertEqual(tx.count("(rascunho)"), 1)
+
+    def test_formas_do_ci_do_pr(self):
+        calls = []
+        orig = render_png._forma
+        render_png._forma = lambda c, x, y, lado, estado: (calls.append((lado, estado)), orig(c, x, y, lado, estado))[1]
+        try:
+            prs = [prx("a", 1, ci="ok"), prx("b", 2, ci="falha"), prx("c", 3, ci="pendente"), prx("d", 4, ci=None)]
+            espiar(dev(ses(), gh(prs)), "claude")
+        finally:
+            render_png._forma = orig
+        # o corte nao age (4 PRs): ordem original; None nao desenha forma
+        self.assertEqual([e for lado, e in calls if lado == 28], ["ativo", "falha", "parado"])
+
+    def test_ci_primeiro_o_que_falhou_depois_n_ok(self):
+        ci = [cix("a"), cix("cerberus", "falha", "main"), cix("b"), cix("dotfiles", "pendente", "dev")]
+        tx, _ = espiar(dev(ses(), gh([prx("r", 1)], ci)), "claude")
+        self.assertIn("CI falhou: cerberus (main)", tx)
+        self.assertIn("CI pendente: dotfiles (dev)", tx)
+        self.assertIn("2 ok", tx)
+        self.assertLess(tx.index("CI falhou: cerberus (main)"), tx.index("CI pendente: dotfiles (dev)"))
+        self.assertLess(tx.index("CI pendente: dotfiles (dev)"), tx.index("2 ok"))
+
+    def test_muitas_falhas_de_ci_cortam_com_mais_n(self):
+        ci = [cix("r%d" % i, "falha") for i in range(8)] + [cix("ok1")]
+        tx, _ = espiar(dev(ses(), gh([prx("r", 1)], ci)), "claude")
+        self.assertEqual(len([t for t in tx if t.startswith("CI falhou")]), 2)
+        self.assertIn("+6", tx)
+        self.assertIn("1 ok", tx)
+
+    def test_velho_mostra_a_idade_no_titulo(self):
+        tx, _ = espiar(dev(ses(), gh([prx("r", 1)], velho=True, idade_s=2000)), "claude")
+        self.assertIn("ha 33 min", tx)
+        tx, _ = espiar(dev(ses(), gh([prx("r", 1)], velho=False, idade_s=2000)), "claude")
+        self.assertNotIn("ha 33 min", tx)
+
+    def test_nd_e_ausente_viram_sem_dados(self):
+        for g in ({"erro": "n/d"}, None, 5, "x", [], {"prs": "x"}):
+            tx, _ = espiar(dev(ses(sx("p")), g), "claude")
+            self.assertIn("GitHub", tx)
+            self.assertIn("sem dados", tx)
+
+    def test_blocos_estranhos_nao_levantam(self):
+        ruins = [gh([None, 5, {}, {"repo": 3, "numero": "x", "titulo": None, "ci": 7}], [None, {"estado": 3}]),
+                 {"prs": [prx("r", 1)], "ci": "x", "abertos": "x", "velho": "sim"},
+                 {"prs": [prx("r", 1)], "abertos": -3, "idade_s": None, "velho": True},
+                 {"prs": [prx("r", 1)], "abertos": 10 ** 400}]
+        for g in ruins + TIPOS_ERRADOS:
+            espiar(dev(ses(), g), "claude")
+
+    def test_texto_hostil_nao_sai_da_caixa(self):
+        hostis = ["W" * 80, "\u00e7\u00e3\u00f5\u0301\u4e2d\u6587" * 10, "\x00\x1b[31mX\n\r", "m" * 80, "", "..."]
+        prs = [prx(h[:40], 10 ** 9 + i, h, rascunho=i % 2 == 0, ci=(None, "ok", "falha", "pendente")[i % 4])
+               for i, h in enumerate(hostis * 4)]
+        ci = [cix(h[:40], ("falha", "pendente", "ok")[i % 3], h[:40]) for i, h in enumerate(hostis * 5)]
+        for velho in (False, True):
+            for h in (1648, 1000, 900):
+                for k in (1, 3, 6):
+                    c = cv.Canvas(1236, h, estrito=True)
+                    render_png._card_github(c, gh(prs, ci, velho=velho), 48, 200, 1140, 700, k)
+                    self.assertEqual(fora_da_caixa(c, 48, 200, 1140, 700), 255)
+
+    def test_cartao_nao_desenha_acima_do_proprio_alto(self):
+        prs = [prx("repo", i, "t") for i in range(20)]
+        ci = [cix("r%d" % i, ("falha", "ok")[i % 2]) for i in range(30)]
+        g = gh(prs, ci)
+        for k in range(1, 7):
+            h = render_png._h_github(g, k)
+            c = cv.Canvas(1236, 1648, estrito=True)
+            render_png._card_github(c, g, 48, 200, 1140, h, k)
+            self.assertEqual(fora_da_caixa(c, 48, 200, 1140, h), 255, k)
+
+
+class PaginaDevCompostaTest(unittest.TestCase):
+    def test_ordem_claude_sessoes_github(self):
+        tx, _ = espiar(dev(ses(sx("p")), gh([prx("r", 1)])), "claude")
+        self.assertLess(tx.index("Claude"), tx.index("Sessoes"))
+        self.assertLess(tx.index("Sessoes"), tx.index("GitHub"))
+
+    def test_nada_sai_da_pagina_em_nenhuma_combinacao(self):
+        estados = [None, ses(), ses(sx("a")), ses(*[sx("p%d" % i, "esperando", 9999) for i in range(12)], total=12),
+                   {"erro": "n/d"}]
+        gits = [None, {"erro": "n/d"}, gh(), gh([prx("r", i) for i in range(20)], [cix("a", "falha")] * 30)]
+        for sess in estados:
+            for g in gits:
+                for h in (1648, 1200, 900):
+                    m = dev(sess, g)
+                    c = cv.Canvas(1236, h, estrito=True)
+                    render_png.desenhar(c, m, historico(), pagina="claude")
+
+    def test_so_github_configurado_sem_claude(self):
+        m = completo()
+        m["github"] = gh([prx("r", 1)])
+        tx, _ = espiar(m, "claude")
+        self.assertIn("GitHub", tx)
+        self.assertNotIn("Claude desligado na config", tx)
+        self.assertNotIn("Sessoes", tx)
+
+    def test_png_valido(self):
+        png = render_png.render_png(dev(ses(sx("p")), gh([prx("r", 1)])), historico(), pagina="claude")
+        self.assertEqual(ihdr(png), (1236, 1648))
+
+
+class LinhasClaudeGithubTest(unittest.TestCase):
+    def _ls(self, m, al=()):
+        return {x["id"]: x for x in render_png._linhas_resumo(m, [], None, list(al))}
+
+    def test_claude_com_sessoes(self):
+        l = self._ls(dev(ses(sx("a", "esperando", 9999), sx("b"), sx("c", "esperando", 5))))["claude"]
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("5h 42%  sem 18%", "3 sessoes, 2 esperando", "ok"))
+
+    def test_claude_sem_sessoes_ou_sem_dados_de_sessao_volta_ao_horario(self):
+        esperado = self._ls(completo(claude=CL))["claude"]["detalhe"]
+        self.assertTrue(esperado.startswith("5h volta "), esperado)
+        for sess in (ses(), {"erro": "n/d"}, None, 7):
+            l = self._ls(dev(sess))["claude"]
+            self.assertEqual(l["detalhe"], esperado, sess)
+            self.assertEqual(l["valor"], "5h 42%  sem 18%")
+
+    def test_claude_estado_vem_dos_alertas_do_sistema_claude(self):
+        m = dev(ses(sx("a", "esperando", 9999)))
+        self.assertEqual(self._ls(m, [{"nivel": "leve", "sistema": "claude"}])["claude"]["estado"], "leve")
+        self.assertEqual(self._ls(m, [{"nivel": "critico", "sistema": "github"}])["claude"]["estado"], "ok")
+
+    def test_github_com_ci_ok(self):
+        l = self._ls(dev(ses(), gh([prx("a", 1), prx("b", 2)], [cix("a"), cix("b")])))["github"]
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("2 PRs abertos", "CI ok", "ok"))
+
+    def test_github_ci_falhou_nomeia_o_primeiro(self):
+        ci = [cix("a"), cix("cerberus", "falha"), cix("dotfiles", "falha")]
+        l = self._ls(dev(ses(), gh([prx("a", 1)], ci)), [{"nivel": "aviso", "sistema": "github"}])["github"]
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("1 PR aberto", "CI falhou: cerberus", "aviso"))
+
+    def test_github_zero_prs_e_pendente(self):
+        l = self._ls(dev(ses(), gh([], [cix("a", "pendente")])))["github"]
+        self.assertEqual((l["valor"], l["detalhe"]), ("0 PRs abertos", "CI pendente: a"))
+        l = self._ls(dev(ses(), gh()))["github"]
+        self.assertEqual((l["valor"], l["detalhe"]), ("0 PRs abertos", ""))
+
+    def test_github_velho_usa_o_estado_dos_alertas(self):
+        g = gh([prx("a", 1)], [cix("a")], velho=True)
+        l = self._ls(dev(ses(), g), [{"nivel": "aviso", "sistema": "github"}])["github"]
+        self.assertEqual((l["valor"], l["estado"]), ("1 PR aberto", "aviso"))
+
+    def test_github_sem_dados_cinza(self):
+        for g in ({"erro": "n/d"}, None, 5, {"prs": "x"}):
+            l = self._ls(dev(ses(), g))["github"]
+            self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("sem dados", "", "sem_dados"), g)
+
+    def test_linha_desenhada_nao_sai_da_caixa(self):
+        import botoes
+        l = self._ls(dev(ses(sx("a")), gh([prx("a", 1)], [cix("r" * 40, "falha")] * 3)))["github"]
+        l["detalhe"] = "CI falhou: " + "W" * 40
+        c = cv.Canvas(1236, 1648, estrito=True)
+        render_png._linha_sistema(c, botoes.geometria_resumo()["linhas"][6], l)

@@ -223,7 +223,11 @@ def _secao(m, cols, compacto, nome=None, kindle=None):
             linhas.append("Servicos n/d")
         linhas += _linhas_catalogo(m, cols)
         linhas += _linhas_rotinas(m, cols)
-        linhas += _linhas_atencao(m, cols, kindle)
+        atencao = _linhas_atencao(m, cols, kindle)
+        dev = _linhas_dev_resumo(m)
+        while dev and 2 + len(linhas) + len(dev) + len(atencao) > MAX_LINHAS:
+            dev.pop()  # o ATENCAO tem prioridade sobre as linhas de resumo do Dev (GitHub sai primeiro)
+        linhas += dev + atencao
     return linhas
 
 
@@ -352,7 +356,7 @@ def _linhas_comandos(m, cols):
 
 
 def _linhas_claude(m, cols):
-    """Pagina claude (Dev) em texto: limites e tokens do Claude Code, mais SESSOES e GITHUB (sem dados ainda)."""
+    """Pagina claude (Dev) em texto: limites e tokens do Claude Code, mais SESSOES e GITHUB."""
     if "claude" not in m:
         return ["Claude desligado na config"]
     agora, tz = render_png._agora(m)
@@ -387,8 +391,94 @@ def _linhas_claude(m, cols):
                                                 render_png._custo_txt(t.get("custo_usd"))))
         if tok.get("velho") is True:
             linhas.append("  tokens %s" % render_png._idade_txt(tok.get("idade_s")))
-    linhas += ["", "SESSOES", "  sem dados", "", "GITHUB", "  sem dados"]
+    linhas += [""] + _linhas_sessoes(m, cols) + [""] + _linhas_github(m, cols)
     return [l.rstrip() for l in linhas]
+
+
+FORMA_SESSAO_TXT = {"ativo": "[#]", "parado": "[ ]", "aviso": "[!]", "falha": "[X]", render_png.SESSAO_ABERTA: "[-]",
+                    None: "[?]"}
+FORMA_PR_TXT = {"ativo": "[#]", "parado": "[ ]", "falha": "[X]", None: "   "}
+SESSOES_TXT_MAX = 4   # linhas de sessao na pagina em texto (o resto vira "+N"): o limite de linhas e curto
+PRS_TXT_MAX = 4
+CI_TXT_MAX = 2
+
+
+def _linhas_sessoes(m, cols):
+    """SESSOES em texto: "SESSOES N sessoes, M esperando" e uma linha por sessao (ate 4, "+N" com o resto)."""
+    cl = m.get("claude") if isinstance(m.get("claude"), dict) else {}
+    limite = render_png._limite_sessao_s(m)
+    d = render_png._sessoes_visiveis(cl, SESSOES_TXT_MAX + 1, limite)
+    if d is None:
+        return ["SESSOES", "  sem dados"]
+    vis, resto, total, esp = d
+    if not total:
+        return ["SESSOES", "  nenhuma sessao aberta"]
+    linhas = ["SESSOES " + render_png._sessoes_txt(total, esp)]
+    for it in vis:
+        forma, txt = render_png._sessao_txt(it, limite)
+        proj = render_png._limpar(it.get("projeto")).strip() if isinstance(it.get("projeto"), str) else ""
+        cabeca = "  %s " % FORMA_SESSAO_TXT.get(forma, "[?]")
+        livre = max(4, cols - len(cabeca) - len(txt) - 1)  # so o projeto encolhe (o estado e o que importa)
+        proj = (proj if len(proj) <= livre else proj[:livre - 3] + "...") or "?"
+        linhas.append("%s%s %s" % (cabeca, proj, txt))
+    if resto:
+        linhas.append("  +%d" % resto)
+    return linhas
+
+
+def _linha_pr(pr, cols):
+    """"  [X] repo#7 titulo cortado (rascunho)" cabendo em `cols`: so o titulo encolhe."""
+    forma = FORMA_PR_TXT.get(render_png._estado_pr(pr)[0], "   ")
+    cabeca = "  %s %s" % (forma, render_png._pr_ref(pr))
+    cauda = " (rascunho)" if pr.get("rascunho") is True else ""
+    titulo = render_png._limpar(pr.get("titulo")).strip() if isinstance(pr.get("titulo"), str) else ""
+    livre = cols - len(cabeca) - len(cauda) - 1
+    if livre >= 4 and titulo:
+        titulo = titulo if len(titulo) <= livre else titulo[:livre - 3] + "..."
+        return "%s %s%s" % (cabeca, titulo, cauda)
+    return cabeca + cauda
+
+
+def _linhas_github(m, cols):
+    """GITHUB em texto: "GITHUB N PRs abertos", ate 4 PRs e o CI (so o que nao esta ok, e "N ok")."""
+    d = render_png._github_dados(m.get("github"), PRS_TXT_MAX)
+    if d is None:
+        return ["GITHUB", "  sem dados"]
+    titulo = "GITHUB " + render_png._plural(d["abertos"], "PR aberto", "PRs abertos") if d["abertos"] else "GITHUB"
+    linhas = [titulo]
+    if d["velho"] and render_png._idade_txt(d["idade_s"]):
+        linhas.append("  dados " + render_png._idade_txt(d["idade_s"]))
+    if not d["abertos"]:
+        linhas.append("  nenhum PR aberto")
+    linhas += [_linha_pr(pr, cols) for pr in d["prs"]]
+    if d["resto"]:
+        linhas.append("  +%d" % d["resto"])
+    ruins = d["ci_ruins"]
+    vis = ruins if len(ruins) <= CI_TXT_MAX + 1 else ruins[:CI_TXT_MAX]
+    linhas += ["  " + render_png._ci_txt(i) for i in vis]
+    if len(vis) < len(ruins):
+        linhas.append("  +%d" % (len(ruins) - len(vis)))
+    if d["ci_ok"]:
+        linhas.append("  CI %d ok" % d["ci_ok"])
+    return linhas
+
+
+def _linhas_dev_resumo(m):
+    """Tela principal: no maximo uma linha por fonte nova ("Claude: N sessoes, M esperando", "GitHub: N PRs, CI ok");
+    os detalhes e o que pede atencao saem na pagina Dev e no ATENCAO."""
+    linhas = []
+    ses = render_png._sessoes_dados(m.get("claude") if isinstance(m.get("claude"), dict) else {})
+    if ses is not None and ses[1] > 0:
+        linhas.append("Claude: " + render_png._sessoes_txt(ses[1], ses[2]))
+    if "github" in m:
+        d = render_png._github_dados(m["github"], PRS_TXT_MAX)
+        if d is None:
+            linhas.append("GitHub: sem dados")
+        else:
+            ci = ("falhou" if any(i.get("estado") == "falha" for i in d["ci_ruins"])
+                  else "pendente" if d["ci_ruins"] else "ok" if d["ci_ok"] else "sem dados")
+            linhas.append("GitHub: %s, CI %s" % (render_png._plural(d["abertos"], "PR", "PRs"), ci))
+    return linhas
 
 
 def _linhas_kindle(kv):

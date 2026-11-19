@@ -792,8 +792,42 @@ def _l_servicos(m, kv, itens):
     return "%d de %d ok" % (r["ok"], r["total"]), det, True
 
 
-def _l_nada(m, kv, itens):  # GITHUB: o formato em `m` chega na Tarefa 23
-    return "", "", False
+def _plural(n, um, varios):
+    return "%d %s" % (n, um if n == 1 else varios)
+
+
+def _sessoes_txt(total, esperando):
+    """"3 sessoes, 1 esperando" (singular com 1)."""
+    return "%s, %d esperando" % (_plural(total, "sessao", "sessoes"), esperando)
+
+
+def _sessoes_dados(cl):
+    """(itens, total, esperando) de cl["sessoes"] (ate SESSOES_MAX itens, mais recentes primeiro), ou None se a chave
+    falta, e "n/d" ou o bloco e invalido."""
+    s = _d(cl).get("sessoes")
+    if not _ok(s) or not isinstance(s.get("itens"), list):
+        return None
+    itens = [i for i in s["itens"] if isinstance(i, dict)][:SESSOES_MAX]
+    total, esp = _num(s.get("total")), _num(s.get("esperando"))
+    total = int(total) if total is not None and total >= len(itens) else len(itens)
+    contados = sum(1 for i in itens if i.get("estado") == "esperando")
+    esp = int(esp) if esp is not None and 0 <= esp <= total else contados
+    return itens, total, esp
+
+
+def _l_github(m, kv, itens):
+    d = _github_dados(m.get("github"), PRS_MAX)
+    if d is None:
+        return "", "", False
+    valor = _plural(d["abertos"], "PR aberto", "PRs abertos")
+    falha = next((i for i in d["ci_ruins"] if i.get("estado") == "falha"), None)
+    if falha is not None:
+        det = "CI falhou: " + _repo(falha)
+    elif d["ci_ruins"]:
+        det = "CI pendente: " + _repo(d["ci_ruins"][0])
+    else:
+        det = "CI ok" if d["ci_ok"] else ""
+    return valor, det, True
 
 
 def _rotina_ok(it):
@@ -838,6 +872,9 @@ def _l_claude(m, kv, itens):
     valor = "5h %s  sem %s" % (_pct_txt(lim.get("cinco_horas")), _pct_txt(lim.get("semanal")))
     cinco = _d(lim.get("cinco_horas"))
     det = ""
+    ses = _sessoes_dados(cl)
+    if ses is not None and ses[1] > 0:
+        return valor, _sessoes_txt(ses[1], ses[2]), True
     if cinco.get("renovado") is not True and cinco.get("volta_em") is not None:
         agora, tz = _agora(m)
         det = "5h " + _volta_txt(cinco["volta_em"], agora, tz)
@@ -861,7 +898,7 @@ def _l_ragnarok(m, kv, itens):
 
 
 _CONSTRUTORES = {"atheron": _l_atheron, "nas": _l_nas, "aparelhos": _l_aparelhos, "servicos": _l_servicos,
-                 "rotinas": _l_rotinas, "claude": _l_claude, "github": _l_nada, "ragnarok": _l_ragnarok}
+                 "rotinas": _l_rotinas, "claude": _l_claude, "github": _l_github, "ragnarok": _l_ragnarok}
 
 
 _LINHAS_AVISADAS = set()  # (linha, tipo do erro) ja registrados: a tela redesenha a cada segundo
@@ -1393,13 +1430,17 @@ def _custo_txt(v):
     return "n/d" if v is None else ("US$ %.2f" % v).replace(".", ",")
 
 
-def _cabecalho_card(c, x, y, w, titulo, velho=False, idade_s=None, icone=None):
-    """Linha de titulo de um cartao (64 px): icone opcional (nome em `icones_dados`), titulo e, se os dados estao
-    velhos, a idade em cinza."""
+def _cabecalho_card(c, x, y, w, titulo, velho=False, idade_s=None, icone=None, detalhe=None):
+    """Linha de titulo de um cartao (64 px): icone opcional (nome em `icones_dados`), titulo, `detalhe` (resumo em
+    cinza logo depois do titulo) e, se os dados estao velhos, a idade em cinza a direita."""
     tx = x + PAD
     if icone:
         tx += (c.icone(x + PAD, y + 12, icone, 40, PRETO) or 0) + 12
     _texto_c(c, tx, y + 32, titulo, NEG, 34, PRETO)
+    if detalhe:
+        xd = tx + int(c.medir(titulo, NEG, 34)) + 18
+        livre = x + w - PAD - xd - (150 if velho else 0)
+        _texto_c(c, xd, y + 32, _ajustar(c, detalhe, REG, 26, livre), REG, 26, ESCURO)
     if velho and _idade_txt(idade_s):
         _texto_c(c, x + w - PAD, y + 32, _idade_txt(idade_s), REG, 26, MEDIO, "dir")
     c.retangulo(x + PAD, y + 63, w - 2 * PAD, 2, TRILHO)
@@ -1541,18 +1582,245 @@ def _empilhar(c, blocos):
         y += h + GAP
 
 
+SESSAO_LINHA = 46
+SESSOES_MAX = 12
+SESSAO_ABERTA = "aberta"  # "forma" so das sessoes: circulo cinza cheio (o estado e "abriu e nao fez nada")
+PR_LINHA = 46
+PRS_MAX = 6
+CI_LINHA = 42
+CI_PROBLEMAS_MAX = 3  # com mais que isso, ficam 2 e "+N"
+CARTAO_BASE = 64 + 4  # titulo do cartao e respiro ate a 1a linha
+CARTAO_FIM = 8
+
+
+def _limite_sessao_s(m):
+    """Segundos de uma sessao esperando ate virar aviso: o mesmo limiar do motor de alertas."""
+    return alertas.limiares(m.get("limiares") if isinstance(m, dict) else None)["sessao_esperando_min"] * 60
+
+
+def _desde_txt(desde_s):
+    """"agora" (< 1 min), "ha 5 min", "ha 3 h"... de um tempo em segundos; "" se nao for numero valido."""
+    n = _num(desde_s)
+    if n is None or n < 0:
+        return ""
+    return "agora" if n < 60 else _ha_txt(n // 60)
+
+
+def _estado_sessao(it, limite_s):
+    """(forma, estado) de uma sessao: trabalhando = ativo; esperando = aviso (>= `limite_s`) ou parado; aberta e
+    SESSAO_ABERTA; desconhecido = ?."""
+    est = it.get("estado")
+    if est == "trabalhando":
+        return "ativo", "trabalhando"
+    if est == "esperando":
+        desde = _num(it.get("desde_s"))
+        return ("aviso" if desde is not None and desde >= limite_s else "parado"), "esperando"
+    if est == "aberta":
+        return SESSAO_ABERTA, "aberta"
+    return None, "?"
+
+
+def _sessao_txt(it, limite_s):
+    """(forma, "esperando ha 12 min") de uma sessao: o texto que acompanha a forma."""
+    forma, est = _estado_sessao(it, limite_s)
+    return forma, " ".join(x for x in (est, _desde_txt(it.get("desde_s"))) if x)
+
+
+def _sessoes_visiveis(cl, max_linhas, limite_s):
+    """(visiveis, resto, total, esperando) do cartao SESSOES, com no maximo `max_linhas` linhas ("+N" conta uma), ou
+    None se for "sem dados". As piores primeiro quando precisa cortar."""
+    d = _sessoes_dados(cl)
+    if d is None:
+        return None
+    itens, total, esp = d
+    extra = max(0, total - len(itens))  # sessoes que o coletor nem listou
+    vis, resto = _cortar(itens, max(1, max_linhas - (1 if extra else 0)), lambda i: _estado_sessao(i, limite_s))
+    return vis, resto + extra, total, esp
+
+
+def _h_sessoes(cl, max_linhas, limite_s):
+    d = _sessoes_visiveis(cl, max_linhas, limite_s)
+    if d is None or not d[2]:
+        return H_SEM_DADOS
+    return CARTAO_BASE + (len(d[0]) + (1 if d[1] else 0)) * SESSAO_LINHA + CARTAO_FIM
+
+
+def _card_sessoes(c, cl, x, y, w, h, limite_s, max_linhas=SESSOES_MAX):
+    """Cartao SESSOES: uma linha por sessao do Claude Code (projeto, forma de estado, estado e ha quanto tempo), as
+    mais recentes primeiro; o resumo "N sessoes, M esperando" fica no titulo."""
+    d = _sessoes_visiveis(cl, max_linhas, limite_s)
+    if d is None:
+        return _card_sem_dados(c, x, y, w, h, "Sessoes", "dev")
+    vis, resto, total, esp = d
+    _card(c, x, y, w, h)
+    if not total:
+        yy = _cabecalho_card(c, x, y, w, "Sessoes", icone="dev")
+        _texto_c(c, x + PAD, yy + 30, "nenhuma sessao aberta", NEG, 34, MEDIO)
+        return
+    yy = _cabecalho_card(c, x, y, w, "Sessoes", icone="dev", detalhe=_sessoes_txt(total, esp)) + 4
+    ultima = len(vis) - 1 + (1 if resto else 0)
+    for i, it in enumerate(vis):
+        yc = yy + i * SESSAO_LINHA + SESSAO_LINHA // 2
+        forma, txt = _sessao_txt(it, limite_s)
+        aviso = forma == "aviso"
+        if aviso:
+            c.retangulo_arredondado(x + 8, yc - SESSAO_LINHA // 2 + 2, w - 16, SESSAO_LINHA - 4, 8, TRILHO)
+        xf = x + w - PAD - 28
+        if forma == SESSAO_ABERTA:
+            c.circulo(xf + 14, yc, 13, MEDIO)
+        else:
+            _forma(c, xf, yc - 14, 28, forma)
+        xr = xf - 16
+        _texto_c(c, xr, yc, txt, NEG if aviso else REG, 26, ESCURO, "dir")
+        tw = int(c.medir(txt, NEG, 26)) + 24
+        proj = _limpar(it.get("projeto")).strip() if isinstance(it.get("projeto"), str) else ""
+        _texto_c(c, x + PAD, yc, _ajustar(c, proj or "?", NEG, 26, xr - tw - x - PAD), NEG, 26, PRETO)
+        if i != ultima and not aviso:
+            c.retangulo(x + PAD, yc + SESSAO_LINHA // 2 - 1, w - 2 * PAD, 2, TRILHO)
+    if resto:
+        _texto_c(c, x + PAD, yy + len(vis) * SESSAO_LINHA + SESSAO_LINHA // 2, "+%d" % resto, NEG, 26, ESCURO)
+
+
+def _repo(it):
+    return (_limpar(it.get("repo")).strip() if isinstance(it.get("repo"), str) else "")[:40] or "?"
+
+
+def _pr_ref(pr):
+    n = _num(pr.get("numero"))
+    return _repo(pr) + ("#%d" % n if n is not None and n >= 0 else "")
+
+
+def _estado_pr(pr):
+    """Forma do CI de um PR: ok = ativo, falha, pendente = parado, sem CI = None (nao desenha forma)."""
+    return {"ok": "ativo", "falha": "falha", "pendente": "parado"}.get(pr.get("ci")), ""
+
+
+def _github_dados(g, max_prs):
+    """Resumo de m["github"] para o cartao e as linhas, ou None se a chave falta, e "n/d" ou o bloco e invalido:
+    {"prs": ate `max_prs` PRs (os com CI em falha primeiro quando precisa cortar), "resto": PRs que ficaram de fora,
+     "abertos", "ci_ruins": entradas de CI com falha e depois pendentes, "ci_ok": quantas ok, "velho", "idade_s"}."""
+    if not _ok(g) or not isinstance(g.get("prs"), list):
+        return None
+    prs = [p for p in g["prs"] if isinstance(p, dict)][:20]
+    ci = [i for i in g.get("ci", []) if isinstance(i, dict)][:30] if isinstance(g.get("ci"), list) else []
+    abertos = _num(g.get("abertos"))
+    abertos = int(abertos) if abertos is not None and abertos >= len(prs) else len(prs)
+    if len(prs) > max_prs:
+        prs = sorted(prs, key=lambda p: -_GRAVIDADE.get(_estado_pr(p)[0], 1))[:max(0, max_prs)]
+    ruins = [i for i in ci if i.get("estado") == "falha"] + [i for i in ci if i.get("estado") == "pendente"]
+    return {"prs": prs, "resto": abertos - len(prs), "abertos": abertos, "ci_ruins": ruins,
+            "ci_ok": sum(1 for i in ci if i.get("estado") == "ok"), "velho": g.get("velho") is True,
+            "idade_s": g.get("idade_s")}
+
+
+def _ci_linhas(d):
+    """(problemas visiveis, "+N" resto, ok): linhas da faixa de CI do cartao GITHUB."""
+    ruins = d["ci_ruins"]
+    if len(ruins) <= CI_PROBLEMAS_MAX:
+        return ruins, 0, d["ci_ok"]
+    return ruins[:CI_PROBLEMAS_MAX - 1], len(ruins) - (CI_PROBLEMAS_MAX - 1), d["ci_ok"]
+
+
+def _ci_txt(it):
+    branch = _limpar(it.get("branch")).strip()[:40] if isinstance(it.get("branch"), str) else ""
+    return "CI %s: %s%s" % ("falhou" if it.get("estado") == "falha" else "pendente", _repo(it),
+                            " (%s)" % branch if branch else "")
+
+
+def _h_github(g, max_prs):
+    d = _github_dados(g, max_prs)
+    if d is None:
+        return H_SEM_DADOS
+    linhas_pr = len(d["prs"]) + (1 if d["resto"] else 0)
+    ruins, resto_ci, ok = _ci_linhas(d)
+    linhas_ci = len(ruins) + (1 if resto_ci else 0) + (1 if ok else 0)
+    return (CARTAO_BASE + max(1, linhas_pr) * PR_LINHA + (14 + linhas_ci * CI_LINHA if linhas_ci else 0)
+            + CARTAO_FIM)
+
+
+def _card_github(c, g, x, y, w, h, max_prs=PRS_MAX):
+    """Cartao GITHUB: PRs abertos como "repo#n titulo" (forma do CI a direita, "(rascunho)" quando e o caso) e, abaixo,
+    o CI das branches padrao (o que nao esta ok primeiro, depois "N ok"). Os dados velhos mostram a idade no titulo."""
+    d = _github_dados(g, max_prs)
+    if d is None:
+        return _card_sem_dados(c, x, y, w, h, "GitHub", "github")
+    _card(c, x, y, w, h)
+    abertos = d["abertos"]
+    yy = _cabecalho_card(c, x, y, w, "GitHub", d["velho"], d["idade_s"], icone="github",
+                         detalhe=_plural(abertos, "PR aberto", "PRs abertos") if abertos else None) + 4
+    n_pr = len(d["prs"]) + (1 if d["resto"] else 0)
+    if not n_pr:
+        _texto_c(c, x + PAD, yy + PR_LINHA // 2, "nenhum PR aberto", NEG, 34, MEDIO)
+        n_pr = 1
+    xf = x + w - PAD - 28
+    for i, pr in enumerate(d["prs"]):
+        yc = yy + i * PR_LINHA + PR_LINHA // 2
+        forma = _estado_pr(pr)[0]
+        falha = forma == "falha"
+        if falha:
+            c.retangulo_arredondado(x + 8, yc - PR_LINHA // 2 + 2, w - 16, PR_LINHA - 4, 8, TRILHO)
+        if forma is not None:
+            _forma(c, xf, yc - 14, 28, forma)
+        xr = xf - 16
+        if pr.get("rascunho") is True:
+            _texto_c(c, xr, yc, "(rascunho)", REG, 26, ESCURO, "dir")
+            xr -= int(c.medir("(rascunho)", REG, 26)) + 16
+        tx = x + PAD
+        ref = _ajustar(c, _pr_ref(pr), NEG, 26, max(80, (xr - tx) * 45 // 100))
+        _texto_c(c, tx, yc, ref, NEG, 26, PRETO)
+        tx += int(c.medir(ref, NEG, 26)) + 14
+        titulo = _limpar(pr.get("titulo")).strip() if isinstance(pr.get("titulo"), str) else ""
+        titulo = _ajustar(c, titulo, REG, 26, xr - tx - 8) if xr - tx > 60 else ""
+        if titulo:
+            _texto_c(c, tx, yc, titulo, REG, 26, ESCURO)
+        if i != n_pr - 1 and not falha:
+            c.retangulo(x + PAD, yc + PR_LINHA // 2 - 1, w - 2 * PAD, 2, TRILHO)
+    if d["resto"]:
+        _texto_c(c, x + PAD, yy + len(d["prs"]) * PR_LINHA + PR_LINHA // 2, "+%d" % d["resto"], NEG, 26, ESCURO)
+    ruins, resto_ci, ok = _ci_linhas(d)
+    if not (ruins or resto_ci or ok):
+        return
+    yc0 = yy + n_pr * PR_LINHA + 14
+    c.retangulo(x + PAD, yc0 - 8, w - 2 * PAD, 2, TRILHO)
+    for i, it in enumerate(ruins):
+        yc = yc0 + i * CI_LINHA + CI_LINHA // 2
+        _forma(c, x + PAD, yc - 14, 28, "falha" if it.get("estado") == "falha" else "parado")
+        _texto_c(c, x + PAD + 44, yc, _ajustar(c, _ci_txt(it), NEG, 26, w - 2 * PAD - 44), NEG, 26, PRETO)
+    linha = len(ruins)
+    if resto_ci:
+        _texto_c(c, x + PAD + 44, yc0 + linha * CI_LINHA + CI_LINHA // 2, "+%d" % resto_ci, NEG, 26, ESCURO)
+        linha += 1
+    if ok:
+        yc = yc0 + linha * CI_LINHA + CI_LINHA // 2
+        _forma(c, x + PAD, yc - 14, 28, "ativo")
+        _texto_c(c, x + PAD + 44, yc, "CI", NEG, 26, ESCURO)
+        _texto_c(c, x + PAD + 44 + int(c.medir("CI", NEG, 26)) + 12, yc, "%d ok" % ok, REG, 26, ESCURO)
+
+
 def _desenhar_claude(c, m):
-    """Dev: cartao do Claude Code mais SESSOES e GITHUB (sem dados ate a Entrega 2)."""
+    """Dev: cartao do Claude Code, SESSOES e GITHUB. Sem espaco para tudo, SESSOES e GITHUB dividem o que sobra (cada
+    um corta com "+N"); o que ainda nao couber fica de fora, do fim."""
     w = c.largura - 2 * MARGEM
-    if "claude" not in m:
+    if "claude" not in m and "github" not in m:
         c.texto(c.largura // 2, (botoes.TOPO + botoes.limite(c.altura)) // 2 + _cap(NEG, 34) // 2,
                 "Claude desligado na config", NEG, 34, ESCURO, "centro")
         return
-    agora = _agora(m)
-    _empilhar(c, [
-        (CLAUDE_H, lambda c, x, y, h: _card_claude(c, m["claude"], x, y, w, h, agora)),
-        (H_SEM_DADOS, lambda c, x, y, h: _card_sem_dados(c, x, y, w, h, "Sessoes", "dev")),
-        (H_SEM_DADOS, lambda c, x, y, h: _card_sem_dados(c, x, y, w, h, "GitHub", "github"))])
+    agora, limite_s, g = _agora(m), _limite_sessao_s(m), m.get("github")
+    blocos = []
+    disp = botoes.limite(c.altura) - botoes.TOPO
+    if "claude" in m:
+        cl = m["claude"]
+        blocos.append((CLAUDE_H, lambda c, x, y, h: _card_claude(c, cl, x, y, w, h, agora)))
+        disp -= CLAUDE_H + GAP
+        # SESSOES leva o que o GITHUB nao precisa no minimo (2 PRs); depois o GITHUB leva o que sobrar
+        linhas = (disp - GAP - _h_github(g, 2) - CARTAO_BASE - CARTAO_FIM) // SESSAO_LINHA
+        max_s = max(2, min(SESSOES_MAX, linhas))
+        h_s = _h_sessoes(cl, max_s, limite_s)
+        blocos.append((h_s, lambda c, x, y, h: _card_sessoes(c, cl, x, y, w, h, limite_s, max_s)))
+        disp -= h_s + GAP
+    max_g = next((k for k in range(PRS_MAX, 0, -1) if _h_github(g, k) <= disp), 1)
+    blocos.append((_h_github(g, max_g), lambda c, x, y, h: _card_github(c, g, x, y, w, h, max_g)))
+    _empilhar(c, blocos)
 
 
 APARELHO_LINHA = 56

@@ -359,5 +359,120 @@ class TextoEcossistemaTest(unittest.TestCase):
             self._t(local(rotinas=ruim), 38)
 
 
+def _sx(projeto, estado="trabalhando", desde_s=120):
+    return {"projeto": projeto, "estado": estado, "desde_s": desde_s}
+
+
+def _prx(repo, numero, titulo="Titulo", rascunho=False, ci="ok"):
+    return {"repo": repo, "numero": numero, "titulo": titulo, "rascunho": rascunho, "ci": ci}
+
+
+def _gh(prs=(), ci=(), velho=False, abertos=None):
+    return {"prs": list(prs), "ci": list(ci), "abertos": len(prs) if abertos is None else abertos,
+            "ci_falhas": sum(1 for i in ci if i["estado"] == "falha"), "idade_s": 2000 if velho else 30, "velho": velho}
+
+
+def _dev(sessoes=None, github=None, **extra):
+    cl = {"limites": {"cinco_horas": {"pct": 42.0, "volta_em": 1_794_000_000}, "semanal": {"pct": 18.0}, "idade_s": 3,
+                      "velho": False}, "tokens": {"erro": "n/d"}}
+    if isinstance(sessoes, list):
+        sessoes = {"itens": sessoes, "total": len(sessoes), "esperando": sum(1 for s in sessoes
+                                                                                      if s["estado"] == "esperando"),
+                         "idade_s": 4}
+    if sessoes is not None:
+        cl["sessoes"] = sessoes
+    m = local(claude=cl, **extra)
+    if github is not None:
+        m["github"] = github
+    return m
+
+
+class TextoDevTest(unittest.TestCase):
+    def _t(self, m, cols=38, **k):
+        linhas = render.render_texto(m, cols, **k)
+        self.assertLessEqual(len(linhas), 26)
+        for l in linhas:
+            self.assertTrue(l.isascii() and l.isprintable(), repr(l))
+            self.assertLessEqual(len(l), cols, l)
+        return linhas
+
+    def test_pagina_dev_com_sessoes_e_github(self):
+        m = _dev([_sx("kindle-monitor", "esperando", 1500), _sx("dotfiles")],
+                 _gh([_prx("kindle-monitor", 14, "Painel do ecossistema"), _prx("dotfiles", 7, "WIP", True, None)],
+                     [_ci for _ci in ({"repo": "cerberus", "branch": "main", "estado": "falha"},
+                                      {"repo": "dotfiles", "branch": "main", "estado": "ok"})]))
+        t = "\n".join(self._t(m, 60, pagina="claude"))
+        for x in ("SESSOES 2 sessoes, 1 esperando", "[!] kindle-monitor esperando ha 25 min",
+                  "[#] dotfiles trabalhando ha 2 min", "GITHUB 2 PRs abertos", "kindle-monitor#14 Painel do ecossistema",
+                  "dotfiles#7 WIP (rascunho)", "CI falhou: cerberus (main)", "CI 1 ok"):
+            self.assertIn(x, t)
+
+    def test_pagina_dev_sem_dados(self):
+        for m in (_dev(), _dev({"erro": "n/d"}, {"erro": "n/d"})):
+            linhas = self._t(m, pagina="claude")
+            i = linhas.index("SESSOES")
+            self.assertEqual(linhas[i + 1], "  sem dados")
+            j = linhas.index("GITHUB")
+            self.assertEqual(linhas[j + 1], "  sem dados")
+
+    def test_pagina_dev_sem_sessao_e_sem_pr(self):
+        linhas = self._t(_dev([], _gh()), pagina="claude")
+        self.assertIn("  nenhuma sessao aberta", linhas)
+        self.assertIn("  nenhum PR aberto", linhas)
+
+    def test_pagina_dev_velho_mostra_a_idade(self):
+        t = "\n".join(self._t(_dev([], _gh([_prx("r", 1)], velho=True)), pagina="claude"))
+        self.assertIn("dados ha 33 min", t)
+
+    def test_pagina_dev_12_sessoes_e_20_prs_cabem_em_26_linhas(self):
+        sess = [_sx("proj-%d" % i, ("esperando", "trabalhando", "aberta")[i % 3], 100 * i) for i in range(12)]
+        prs = [_prx("repo-%d" % i, i, "W" * 60, i % 2 == 0, (None, "ok", "falha", "pendente")[i % 4]) for i in range(20)]
+        ci = [{"repo": "r%d" % i, "branch": "main", "estado": ("falha", "ok", "pendente")[i % 3]} for i in range(30)]
+        for cols in (20, 38, 60):
+            linhas = self._t(_dev(sess, _gh(prs, ci, velho=True)), cols, pagina="claude")
+            t = "\n".join(linhas)
+            self.assertIn("GITHUB", t)
+            self.assertIn("SESSOES", t)
+
+    def test_projeto_e_titulo_hostis_so_ascii(self):
+        sess = [_sx("\u00e7\u00e3o\x1b[31m" * 8, "esperando", 9999), _sx("W" * 40)]
+        prs = [_prx("\u4e2d\u6587" * 10, 10 ** 9, "\x00\x1b[0m\u00e9" * 20)]
+        for cols in (20, 38, 80):
+            self._t(_dev(sess, _gh(prs)), cols, pagina="claude")
+            self._t(_dev(sess, _gh(prs)), cols)
+
+    def test_blocos_ruins_nao_levantam(self):
+        for ruim in (None, 5, "x", [], [1, None], {"itens": "x"}, {"erro": "n/d"}, float("nan"), True):
+            cl = {"sessoes": ruim}
+            self._t(local(claude=cl, github=ruim), 38, pagina="claude")
+            self._t(local(claude=cl, github=ruim), 38)
+
+    def test_tela_principal_tem_uma_linha_por_fonte(self):
+        m = _dev([_sx("a", "esperando", 9999), _sx("b")], _gh([_prx("r", 1)], [{"repo": "r", "branch": "m", "estado": "ok"}]))
+        linhas = self._t(m)
+        self.assertEqual([l for l in linhas if l.startswith("Claude:")], ["Claude: 2 sessoes, 1 esperando"])
+        self.assertEqual([l for l in linhas if l.startswith("GitHub:")], ["GitHub: 1 PR, CI ok"])
+        m = _dev([_sx("a")], _gh([_prx("r", 1), _prx("s", 2)], [{"repo": "r", "branch": "m", "estado": "falha"}]))
+        self.assertIn("GitHub: 2 PRs, CI falhou", self._t(m))
+
+    def test_tela_principal_sem_sessao_ou_sem_github(self):
+        linhas = self._t(_dev([], None))
+        self.assertFalse([l for l in linhas if l.startswith(("Claude:", "GitHub:"))])
+        self.assertIn("GitHub: sem dados", self._t(_dev([], {"erro": "n/d"})))
+
+    def test_atencao_nunca_e_cortado_pelas_linhas_do_dev(self):
+        itens = [{"id": "s%d" % i, "rotulo": "S%d" % i, "grupo": "host", "estado": "falha"} for i in range(8)]
+        for cols in (38, 60):
+            discos = [{"rotulo": "D%d" % i, "caminho": "/mnt/d%d" % i, "total_b": 10, "usado_b": 6, "pct": 60.0}
+                      for i in range(5)]
+            base = _dev([_sx("a")], _gh([_prx("r", 1)]), servicos=[], pares=[], discos=discos,
+                        servicos_kindle={"inventario": "ok", "itens": itens})
+            linhas = self._t(base, cols)
+            self.assertIn("ATENCAO (8)", linhas)
+            self.assertEqual(len([l for l in linhas if l.startswith("[X] S")]), 6)
+            self.assertIn("+2", linhas)
+            self.assertNotIn("...", linhas)
+
+
 if __name__ == "__main__":
     unittest.main()
