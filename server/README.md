@@ -179,7 +179,7 @@ Quatro fontes do painel do ecossistema (Entrega 2). Quem grava e o executor root
 
 - `timer`: `systemctl show -p Id,Result,LoadState,ExecMainStatus,ExecMainExitTimestamp --timestamp=unix -- <alvos>` (uma chamada). `Result=success` = `ok` com `ultima_em`. Outro resultado = `falha` (detalhe `exit N` ou o proprio resultado). Unidade inexistente = `desconhecido` ("sem unidade"). Nunca rodou = `desconhecido`.
 - `arquivo`: mtime do arquivo, ou o maior mtime das entradas diretas do diretorio (ate 2000 entradas; sem seguir symlink; sem ler conteudo). Resultado `ok` ou `desconhecido`, nunca `falha`: o atraso sai de `max_idade_h` (aviso).
-- `unidades_falhas`: `systemctl list-units --failed --plain --no-legend --no-pager`. `n` conta as linhas; `nomes` guarda as 5 primeiras que casam `^[A-Za-z0-9_.@:-]{1,40}$`.
+- `unidades_falhas`: `systemctl list-units --failed --plain --no-legend --no-pager`. `n` conta as linhas; `nomes` guarda as 5 primeiras que casam `^[A-Za-z0-9_.@:-]{1,40}$`. Linha que cita `empresa-x` (qualquer caixa) nao conta nem aparece; o servidor refaz o filtro em `m.rotinas.unidades_falhas` (nome e `n`).
 - Se o `systemctl` falhar (saida diferente de 0 ou excecao), todas as rotinas saem `desconhecido` e `unidades_falhas` zerado.
 
 ### sessoes/<id>.json (claude-sessao)

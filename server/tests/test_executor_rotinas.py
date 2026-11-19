@@ -186,6 +186,19 @@ class ParseFalhasTest(unittest.TestCase):
         self.assertEqual(ex.parse_falhas(t)["nomes"], ["u%d.service" % i for i in range(5)])
 
 
+    def test_unidade_empresa-x_fica_fora_do_nome_e_da_contagem(self):
+        t = ("empresa-x-sync.service loaded failed failed x\n"
+             "srv-empresa-x-repo.mount loaded failed failed x\n"
+             "empresa-x-API.service loaded failed failed x\n"
+             "rclone-nas-sync.service loaded failed failed empresa-x sync\n")
+        r = ex.parse_falhas(t)
+        self.assertEqual(r, {"n": 0, "nomes": []})
+        t = ("empresa-x-sync.service loaded failed failed x\n"
+             "srv-empresa-x-repo.mount loaded failed failed x\n"
+             "rclone-nas-sync.service loaded failed failed x\n")
+        self.assertEqual(ex.parse_falhas(t), {"n": 1, "nomes": ["rclone-nas-sync.service"]})
+
+
 class FakeEntrada:
     def __init__(self, mtime, link=False, erro=False):
         self._m, self._l, self._e = mtime, link, erro

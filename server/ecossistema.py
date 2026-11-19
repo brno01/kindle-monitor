@@ -205,8 +205,13 @@ def _unidades_falhas(d):
     n = u.get("n")
     n = min(max(n, 0), 9999) if _inteiro(n) else 0
     nomes = u.get("nomes")
-    nomes = [sanear(x, NOME_FALHA_TAM) for x in nomes if isinstance(x, str)] if isinstance(nomes, list) else []
-    return {"n": n, "nomes": [x for x in nomes if x][:NOMES_FALHAS_MAX]}
+    nomes = [x for x in nomes if isinstance(x, str)] if isinstance(nomes, list) else []
+    # defesa em profundidade: nome da empresa-x nunca vai para a tela e sai da contagem
+    # (testa o original e o saneado: controles no meio do nome nao escondem a palavra)
+    seguros = [x for x in nomes if "empresa-x" not in x.lower() and "empresa-x" not in sanear(x, 400).lower()]
+    n = max(0, n - (len(nomes) - len(seguros)))
+    seguros = [sanear(x, NOME_FALHA_TAM) for x in seguros]
+    return {"n": n, "nomes": [x for x in seguros if x][:NOMES_FALHAS_MAX]}
 
 
 def montar_rotinas(catalogo, texto, agora):

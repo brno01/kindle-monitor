@@ -359,6 +359,14 @@ class MontarRotinasTest(unittest.TestCase):
         self.assertTrue(all(n.isascii() and len(n) <= 40 and n.isprintable() for n in u["nomes"]))
         self.assertEqual(u["nomes"][2], "z" * 40)
 
+    def test_unidades_falhas_sem_empresa-x(self):
+        falhas = {"n": 4, "nomes": ["empresa-x-sync.service", "srv-empresa-x-repo.mount", "club\x00petro.service", "rclone-nas-sync.service"]}
+        u = eco.montar_rotinas(CAT_R, ro_doc(falhas=falhas), AGORA)["unidades_falhas"]
+        self.assertEqual(u, {"n": 1, "nomes": ["rclone-nas-sync.service"]})
+        falhas = {"n": 1, "nomes": ["empresa-x-sync.service"]}
+        u = eco.montar_rotinas(CAT_R, ro_doc(falhas=falhas), AGORA)["unidades_falhas"]
+        self.assertEqual(u, {"n": 0, "nomes": []})
+
     def test_unidades_falhas_tipos_errados(self):
         for f in (None, "x", 5, [], {"n": "3", "nomes": "x"}, {"n": True, "nomes": [1]}, {"n": -4, "nomes": {}},
                   {"n": 1.5}, {"n": 10 ** 12, "nomes": []}):

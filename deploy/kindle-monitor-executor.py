@@ -1147,13 +1147,14 @@ def parse_falhas(texto):
     """Saida de `systemctl list-units --failed --plain --no-legend` -> {"n", "nomes"}.
 
     1a coluna de cada linha; `n` conta as linhas (limitado a 9999); `nomes` so tem as que passam em
-    ^[A-Za-z0-9_.@:-]{1,40}$ (ate 5). Pura; nunca levanta."""
+    ^[A-Za-z0-9_.@:-]{1,40}$ (ate 5). Linha que cita "empresa-x" (qualquer caixa) nao conta nem aparece.
+    Pura; nunca levanta."""
     n, nomes = 0, []
     if not isinstance(texto, str):
         return {"n": 0, "nomes": []}
     for linha in texto[:SAIDA_ROTINAS_MAX].splitlines():
         col = linha.split(None, 1)
-        if not col:
+        if not col or "empresa-x" in linha.lower():  # nada da empresa-x vai para a tela (nem na contagem)
             continue
         n += 1
         if len(nomes) < FALHAS_NOMES_MAX and RE_UNIDADE_FALHA.match(col[0]):
