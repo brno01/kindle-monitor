@@ -28,7 +28,10 @@ import stat
 import subprocess
 import sys
 import datetime
+import hashlib
 import time
+import unicodedata
+import urllib.error
 import urllib.request
 
 _stat = stat
@@ -97,6 +100,24 @@ RE_AMP_URL = re.compile(r"^http://([0-9]{1,3}(?:\.[0-9]{1,3}){3}):([1-9][0-9]{0,
 RE_AMP_CREDENCIAIS = re.compile(r"^/etc/kindle-monitor/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 CHAVES_AMP = {"url", "credenciais"}
 REDES_AMP = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "192.168.0.0/16", "100.64.0.0/10"))
+AMP_TIMEOUT_S = 8         # por chamada (login, GetInstances, logout)
+AMP_MAX_BYTES = 1 << 20   # resposta maior que isso e erro
+# O inventario roda a cada ~15 s, mas o AMP so e consultado de novo quando o jogos.json tem AMP_REUSO_S s ou mais (evita
+# um login a cada 15 s). Tem de ficar abaixo de ecossistema.INVENTARIO_VALIDADE_S (60) menos o intervalo do timer e a
+# duracao de uma rodada: com 45 o arquivo chegaria a ~60 s e o web o chamaria de velho de tempos em tempos.
+AMP_REUSO_S = 30
+AMP_CREDENCIAL_MAX = 1024
+AMP_USUARIO_MAX = 128
+AMP_SENHA_MAX = 256
+AMP_ID_MAX = 200
+AMP_VALOR_MAX = 99999     # jogadores e vagas: acima disso o dado e lixo
+RE_AMP_SESSAO = re.compile(r"^[A-Za-z0-9_-]{8,128}\Z")
+# AppState do AMP -> estado do painel. 20 = pronto; 0 = parado; 250 = suspenso (conta como parado); 200 = falha; os
+# transitorios (pre-inicio, configurando, iniciando, reiniciando, parando, dormindo, esperando, instalando,
+# atualizando, aguardando o usuario, 100 e 300) = iniciando; o resto = outro. Running falso ganha de tudo (parado).
+APPSTATE_ESTADO = dict([(20, "rodando"), (0, "parado"), (250, "parado"), (200, "falha")]
+                       + [(n, "iniciando") for n in (5, 7, 10, 30, 40, 50, 60, 70, 80, 100, 300)])
+AMP_MODULOS_ADS = ("ads", "adsmodule")  # a propria instancia do controlador (ADS) nao e um servidor de jogo
 PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # `--` antes dos alvos: nome do catalogo que comece com "-" nunca vira opcao. LoadState distingue unit inexistente
@@ -130,6 +151,16 @@ class Falha(Exception):
     def __init__(self, msg, rc=1):
         super().__init__(msg)
         self.rc = rc
+
+
+class AmpErro(Exception):
+    """Falha do coletor do AMP. O texto e FIXO e curto (nunca vem do servidor nem da credencial): vai para o jogos.json."""
+
+
+class CredencialInvalida(Exception):
+    """Arquivo de credenciais do AMP existe mas nao serve. Sem detalhe: nao cita caminho, dono nem conteudo."""
+    def __init__(self):
+        super().__init__("credencial amp invalida")
 
 
 class Recusa(Exception):
@@ -399,7 +430,7 @@ def bots_ativos(texto):
 
 class Executor:
     def __init__(self, cfg, executar=executar_padrao, http=http_padrao, agora_ns=time.time_ns,
-                 ollama=OLLAMA_PADRAO, dono=None, log=_log_padrao, relogio=time.monotonic):
+                 ollama=OLLAMA_PADRAO, dono=None, log=_log_padrao, relogio=time.monotonic, amp_post=None):
         """`dono` = (uid, gid do spool) esperado; padrao (0, nogroup). Injetavel para testes sem root."""
         cfg = validar_cfg(cfg)
         self.spool = cfg["spool"]
@@ -408,6 +439,8 @@ class Executor:
         self.catalogo = {i["id"]: i for i in cfg["catalogo"]}
         self.aparelhos = list(cfg["aparelhos"])
         self.rotinas = list(cfg["rotinas"])
+        self.amp = cfg["amp"]  # None = feature desligada; so `validar_amp` a preenche em producao
+        self._amp_post = amp_post  # None = o cliente urllib `amp_post` (definido mais abaixo no modulo)
         self.agora_inv = time.time
         self.executar = executar
         self.http = http
@@ -513,6 +546,8 @@ class Executor:
                 self._isolado("aparelhos", self._inventariar_aparelhos)
             if self.rotinas:
                 self._isolado("rotinas", self._inventariar_rotinas)
+            if self.amp:
+                self._isolado("jogos", self._inventariar_jogos)
             return 1
         finally:
             self._fechar(self._pai_fds)
@@ -534,6 +569,50 @@ class Executor:
             self.log("rotinas: coleta falhou (%s)" % _curto(type(e).__name__, 40))
             doc = rotinas_desconhecidas(self.rotinas, agora=self.agora_inv)
         self._gravar_arquivo(ROTINAS_ARQ, json.dumps(doc, separators=(",", ":")).encode("utf-8"))
+
+    def _jogos_recente(self, agora):
+        """True se o jogos.json atual (arquivo regular do dono esperado, aberto sem seguir link) tem `gerado` de menos de
+        AMP_REUSO_S s atras: o AMP nao e consultado de novo. Qualquer duvida (ausente, link, lixo, no futuro) = False."""
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0)
+        try:
+            fd = os.open(JOGOS_ARQ, flags, dir_fd=self.fd_estado)
+        except OSError:
+            return False
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != (self.dono[0] if self.dono else 0) \
+                    or st.st_size > COOLDOWN_LER_MAX:
+                return False
+            gerado = json.loads(os.read(fd, COOLDOWN_LER_MAX).decode("utf-8")).get("gerado")
+        except (OSError, ValueError, AttributeError, RecursionError):
+            return False
+        finally:
+            os.close(fd)
+        return isinstance(gerado, (int, float)) and not isinstance(gerado, bool) and 0 <= agora - gerado < AMP_REUSO_S
+
+    def _inventariar_jogos(self):
+        """Consulta o AMP (no maximo a cada AMP_REUSO_S s) e grava status/jogos.json. Sem arquivo de credenciais = AMP
+        desligado (`ativo` false, sem erro, sem abrir conexao). Falha = `erro` com texto fixo. Nunca levanta."""
+        if self._jogos_recente(_agora_int(self.agora_inv)):
+            return
+        ativo, erro, itens = False, None, []
+        try:
+            cred = ler_credencial(self.amp["credenciais"], self.dono[0] if self.dono else 0)
+            if cred is not None:
+                ativo = True
+                itens = coletar_amp(self.amp["url"], cred[0], cred[1], self._amp_post or amp_post)
+        except CredencialInvalida as e:
+            ativo, erro = True, str(e)
+        except AmpErro as e:
+            erro = str(e)
+        except Exception:
+            erro = "amp sem resposta"
+        finally:
+            cred = None
+        if erro is not None:
+            self.log("jogos: %s" % erro)
+        doc = {"versao": 1, "gerado": _agora_int(self.agora_inv), "ativo": ativo, "erro": erro, "instancias": itens}
+        self._gravar_arquivo(JOGOS_ARQ, json.dumps(doc, separators=(",", ":")).encode("utf-8"))
 
     def _inventariar_aparelhos(self):
         """Roda `tailscale status --json` (argv fixo, sem shell) e grava status/aparelhos.json. Nunca levanta."""
@@ -1317,6 +1396,199 @@ def coletar_rotinas(catalogo, executar, agora=time.time):
             rotinas[r["id"]] = {"resultado": "ok" if ultima is not None else "desconhecido",
                                 "ultima_em": ultima, "detalhe": _curto(det, 24)}
     return {"versao": 1, "gerado": _agora_int(agora), "rotinas": rotinas, "unidades_falhas": falhas}
+
+
+# ------------------------------------------------------------------------ jogos (AMP)
+
+def _controle(ch):
+    o = ord(ch)
+    return o < 32 or o == 127 or 0x80 <= o < 0xA0
+
+
+def ler_credencial(caminho, uid=0):
+    """`(usuario, senha)` do arquivo de credenciais do AMP; None se o arquivo nao existe (AMP desligado).
+
+    Duas linhas: usuario e senha. So vale arquivo regular, do dono `uid` (root), modo exatamente 0600 ou 0400, aberto
+    sem seguir symlink e sem bloquear em FIFO. Qualquer outra coisa e CredencialInvalida, sem citar o caminho nem o
+    conteudo. A senha so existe nesta tupla: nunca vai a log, argv, JSON ou excecao."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0)
+    try:
+        fd = os.open(caminho, flags)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise CredencialInvalida() from None
+    try:
+        st = os.fstat(fd)
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid != uid or (st.st_mode & 0o7777) not in (0o600, 0o400)
+                or st.st_size > AMP_CREDENCIAL_MAX):
+            raise CredencialInvalida()
+        bruto = os.read(fd, AMP_CREDENCIAL_MAX + 1)
+    except OSError:
+        raise CredencialInvalida() from None
+    finally:
+        os.close(fd)
+    if len(bruto) > AMP_CREDENCIAL_MAX:
+        raise CredencialInvalida()
+    try:
+        linhas = [l[:-1] if l.endswith("\r") else l for l in bruto.decode("utf-8").split("\n")]
+    except UnicodeDecodeError:
+        raise CredencialInvalida() from None
+    while linhas and not linhas[-1]:
+        linhas.pop()
+    if len(linhas) != 2:
+        raise CredencialInvalida()
+    usuario, senha = linhas
+    if (not 1 <= len(usuario) <= AMP_USUARIO_MAX or not 1 <= len(senha) <= AMP_SENHA_MAX
+            or any(_controle(ch) for ch in usuario + senha)):
+        raise CredencialInvalida()
+    return usuario, senha
+
+
+class _SemRedirect(urllib.request.HTTPRedirectHandler):
+    """Nunca segue redirect: a senha so vai para o host da config."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def amp_post(url, corpo, timeout):
+    """POST JSON em `url` (ja montada a partir da `amp.url` validada) e devolve o JSON da resposta.
+
+    Sem proxy, sem redirect, so os cabecalhos Content-Type e Accept `application/json`. `timeout` vale por operacao
+    de rede e tambem como prazo da chamada inteira (uma resposta que goteja nao estica o inventario); a resposta
+    passa de AMP_MAX_BYTES = AmpErro. Excecoes de rede/HTTP/JSON sobem como estao (o chamador as troca por texto fixo)."""
+    dados = json.dumps(corpo).encode("utf-8")
+    req = urllib.request.Request(url, data=dados, method="POST", headers={
+        "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "kindle-monitor"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _SemRedirect)
+    prazo = time.monotonic() + timeout
+    partes, total = [], 0
+    with opener.open(req, timeout=timeout) as r:
+        while True:
+            if time.monotonic() > prazo:
+                raise TimeoutError("prazo da chamada")
+            parte = r.read1(65536)  # read1: no maximo uma leitura de socket, para o prazo valer entre as partes
+            if not parte:
+                break
+            total += len(parte)
+            if total > AMP_MAX_BYTES:
+                raise AmpErro("amp resposta grande")
+            partes.append(parte)
+    return json.loads(b"".join(partes).decode("utf-8"))
+
+
+def _ascii_amp(valor, tam):
+    """Texto do AMP (dado nao confiavel) -> ASCII imprimivel: NFKD, sem combinantes nem controles, ate `tam`."""
+    if not isinstance(valor, str):
+        return ""
+    s = unicodedata.normalize("NFKD", valor[:tam * 4])
+    s = "".join(c for c in s if not unicodedata.combining(c) and unicodedata.category(c)[0] != "C")
+    return " ".join(s.encode("ascii", "ignore").decode("ascii").split())[:tam]
+
+
+def _inteiro_amp(v):
+    """Contagem do AMP -> int 0..AMP_VALOR_MAX; None se nao for numero inteiro razoavel."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if isinstance(v, float):
+        if v != v or v in (float("inf"), float("-inf")) or v != int(v):
+            return None
+        v = int(v)
+    return v if 0 <= v <= AMP_VALOR_MAX else None
+
+
+def _estado_amp(running, appstate):
+    if running is not True:
+        return "parado"
+    if type(appstate) is not int:
+        return "outro"
+    return APPSTATE_ESTADO.get(appstate, "outro")
+
+
+def _instancia_amp(it):
+    """Uma instancia da API -> item de jogos.json, ou None se nao serve (sem id) ou for o controlador ADS."""
+    iid = it.get("InstanceID")
+    if not isinstance(iid, str) or not 0 < len(iid) <= AMP_ID_MAX:
+        return None
+    modulo, exibicao = it.get("Module"), it.get("ModuleDisplayName")
+    if isinstance(modulo, str) and modulo.strip().lower() in AMP_MODULOS_ADS:
+        return None
+    mod = _ascii_amp(modulo, 16)
+    if not mod or mod.lower() == "genericmodule":
+        mod = _ascii_amp(exibicao, 16) or mod
+    estado = _estado_amp(it.get("Running"), it.get("AppState"))
+    if it.get("Suspended") is True:
+        estado = "parado"
+    jogadores = maximo = None
+    if estado == "rodando":
+        m = it.get("Metrics")
+        usuarios = m.get("Active Users") if isinstance(m, dict) else None
+        if isinstance(usuarios, dict):
+            jogadores = _inteiro_amp(usuarios.get("RawValue"))
+            maximo = _inteiro_amp(usuarios.get("MaxValue")) if jogadores is not None else None
+    return {"id": hashlib.sha256(iid.encode("utf-8")).hexdigest()[:8],
+            "nome": _ascii_amp(it.get("FriendlyName"), 24) or "sem nome", "modulo": mod, "estado": estado,
+            "jogadores": jogadores, "max": maximo}
+
+
+def parse_instancias(dados):
+    """Resposta de ADSModule/GetInstances -> ate 16 itens de jogos.json (ligadas primeiro, depois por nome).
+
+    A resposta e dado nao confiavel: so id (hash de 8 hex), nome, modulo, estado e contagens saem, tudo saneado. Formato
+    que nao e lista de alvos com AvailableInstances = AmpErro("amp formato inesperado")."""
+    erro = AmpErro("amp formato inesperado")
+    if isinstance(dados, dict):
+        dados = dados.get("result")
+    if not isinstance(dados, list):
+        raise erro
+    achadas = {}
+    for alvo in dados:
+        if not isinstance(alvo, dict):
+            raise erro
+        lista = alvo.get("AvailableInstances")
+        if lista is None:
+            continue
+        if not isinstance(lista, list):
+            raise erro
+        for it in lista:
+            i = _instancia_amp(it) if isinstance(it, dict) else None
+            if i is not None and i["id"] not in achadas:
+                achadas[i["id"]] = i
+    ordem = sorted(achadas.values(), key=lambda i: (i["estado"] != "rodando", i["nome"].lower(), i["id"]))
+    return ordem[:JOGOS_MAX]
+
+
+def coletar_amp(url, usuario, senha, post):
+    """Login, lista de instancias e logout no AMP; devolve `parse_instancias`. `post(url, corpo, timeout)` e injetavel.
+
+    Toda falha vira AmpErro com texto FIXO ("amp sem resposta", "amp login falhou", "amp formato inesperado"...): nada
+    do servidor, da senha ou da excecao original entra na mensagem. O logout e so de cortesia (a API pode nem ter o
+    metodo): falha dele e ignorada. A senha so vai no corpo do login."""
+    try:
+        r = post(url + "/API/Core/Login",
+                 {"username": usuario, "password": senha, "token": "", "rememberMe": False}, AMP_TIMEOUT_S)
+    except AmpErro:
+        raise
+    except urllib.error.HTTPError:
+        raise AmpErro("amp login falhou") from None
+    except Exception:
+        raise AmpErro("amp sem resposta") from None
+    sessao = r.get("sessionID") if isinstance(r, dict) and r.get("success") is True else None
+    if not isinstance(sessao, str) or not RE_AMP_SESSAO.match(sessao):
+        raise AmpErro("amp login falhou")
+    try:
+        try:
+            dados = post(url + "/API/ADSModule/GetInstances", {"SESSIONID": sessao}, AMP_TIMEOUT_S)
+        except AmpErro:
+            raise
+        except Exception:
+            raise AmpErro("amp sem resposta") from None
+        return parse_instancias(dados)
+    finally:
+        try:
+            post(url + "/API/Core/Logout", {"SESSIONID": sessao}, AMP_TIMEOUT_S)
+        except Exception:
+            pass
 
 
 def carregar_cfg(caminho):
