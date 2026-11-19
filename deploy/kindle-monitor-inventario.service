@@ -17,10 +17,10 @@ PrivateTmp=yes
 TimeoutStartSec=120
 # Same hardening as the executor. VALIDATE ON THE HOST (see server/README.md): systemctl needs D-Bus, incus its unix socket.
 ProtectSystem=strict
-ReadWritePaths=/run/kindle-monitor
+# the inventory only writes status/*.json (created by tmpfiles.d before any unit starts); the spool and the parent
+# are opened read-only. tailscaled's socket needs no entry: connect() works on a read-only mount.
+ReadWritePaths=/run/kindle-monitor/status
 ReadWritePaths=-/var/lib/incus/unix.socket
-# tailscale status --json talks to tailscaled over this socket (connect() needs write access under ProtectSystem=strict)
-ReadWritePaths=-/run/tailscale
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 # AF_UNIX is required (D-Bus, incus socket); do not remove it.
