@@ -209,6 +209,15 @@ class AtencaoTextoTest(unittest.TestCase):
         self.assertFalse(any(l.startswith("ATENCAO") for l in render.render_texto(m, 38)))
 
 
+class AtencaoKindleTextoTest(unittest.TestCase):
+    def test_bateria_do_kindle_aparece_no_resumo_texto(self):
+        m = {"host": "x", "cpu": {"pct": 1}}
+        t = "\n".join(render.render_texto(m, 48, "resumo", 1, kindle={"bateria": 5, "carregando": False}))
+        self.assertIn("Bateria do Kindle 5%", t)
+        t = "\n".join(render.render_texto(m, 48, "resumo", 1))
+        self.assertNotIn("Bateria do Kindle", t)
+
+
 class PaginaClaudeTextoTest(unittest.TestCase):
     def test_pagina_claude_so_ascii_e_cabe(self):
         m = local() | {

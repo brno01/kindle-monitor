@@ -599,6 +599,87 @@ class DesenhoResumoTest(unittest.TestCase):
                     self.assertEqual(min(fora, default=255), 255, (cx["id"], ln["estado"], y))
 
 
+class CorrecoesRevisaoPngTest(unittest.TestCase):
+    @staticmethod
+    def _texto_desenhado(fn):
+        textos = []
+        orig = cv.Canvas.texto
+
+        def espia(self, x, y, t, *a, **k):
+            textos.append(t)
+            return orig(self, x, y, t, *a, **k)
+        cv.Canvas.texto = espia
+        try:
+            fn()
+        finally:
+            cv.Canvas.texto = orig
+        return textos
+
+    def test_historico_intervalo_invalido_usa_15s(self):
+        for ruim in ("x", float("nan"), float("inf"), -3, 0, True, [1]):
+            h = historico() | {"intervalo_s": ruim}
+            c = cv.Canvas(1236, 1648, estrito=True)
+            tx = self._texto_desenhado(lambda: render_png._card_historico(
+                c, h, render_png._series_historico(h, (("CPU", "cpu"),)), 48, 100, 1100, 300))
+            self.assertIn("ultimos 15 min", tx, ruim)  # 60 amostras x 15 s
+
+    def test_historico_valor_atual_limitado_a_0_100(self):
+        h = {"cpu": [150.0] * 6, "ram": [-20.0] * 6}
+        c = cv.Canvas(1236, 1648, estrito=True)
+        tx = self._texto_desenhado(lambda: render_png._card_historico(
+            c, h, render_png._series_historico(h, (("CPU", "cpu"), ("RAM", "ram"))), 48, 100, 1100, 300))
+        self.assertIn("100%", tx)
+        self.assertIn("0%", tx)
+        self.assertNotIn("150%", tx)
+        self.assertNotIn("-20%", tx)
+
+    def test_card_atencao_com_uma_linha_mostra_pelo_menos_um_item(self):
+        at = [{"nivel": "aviso", "texto": "Primeiro alerta"}, {"nivel": "aviso", "texto": "Segundo"},
+              {"nivel": "aviso", "texto": "Terceiro"}]
+        h = render_png.ATENCAO_TITULO + render_png.ATENCAO_LINHA + 14
+        c = cv.Canvas(1236, 1648, estrito=True)
+        tx = self._texto_desenhado(lambda: render_png._card_atencao(c, at, 48, 158, 1140, h))
+        self.assertIn("Primeiro alerta", tx)
+
+    def test_erro_de_construtor_e_registrado_uma_vez(self):
+        import contextlib
+        import io
+        orig = render_png._CONSTRUTORES["nas"]
+
+        def quebra(m, kv, itens):
+            raise ValueError("falha de teste")
+        render_png._CONSTRUTORES["nas"] = quebra
+        render_png._LINHAS_AVISADAS.clear()
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(buf):
+                for _ in range(3):
+                    ls = render_png._linhas_resumo({}, [], None, [])
+        finally:
+            render_png._CONSTRUTORES["nas"] = orig
+            render_png._LINHAS_AVISADAS.clear()
+        self.assertEqual(ls[1]["valor"], "sem dados")
+        self.assertEqual(buf.getvalue().count("falha de teste"), 1, buf.getvalue())
+        self.assertIn("nas", buf.getvalue())
+
+    def test_campos_kindle_tolera_tipos_errados(self):
+        kv = {"bateria": 50, "temp_c": "x", "wifi_ok": True, "wifi": "forte", "bt": True, "bt_conectados": "dois",
+              "autonomia": 5, "latencia": ["a"], "tailscale": "direto", "relogio": 7, "whispersync": {}}
+        bat, det, pares = render_png._campos_kindle(kv)
+        d = dict(pares)
+        self.assertEqual((d["RELOGIO"], d["WHISPERSYNC"]), ("n/d", "n/d"))
+        self.assertEqual(d["ELO"], "direto · n/d")
+        self.assertEqual(d["BLUETOOTH"], "ligado")
+        self.assertEqual(d["WI-FI"], "conectado")
+        self.assertIn("n/d", det)
+        c = cv.Canvas(1236, 1648, estrito=True)
+        render_png._card_kindle(c, kv, 48, 100, 1140, 400)
+
+    def test_residuos_removidos(self):
+        for nome in ("_aviso_inventario", "_bytes_txt"):
+            self.assertFalse(hasattr(render_png, nome), nome)
+
+
 class PaginasAparelhosDevTest(unittest.TestCase):
     KV = {"bateria": 86, "carregando": False, "temp_c": 29, "autonomia": "2 d 4 h", "wifi": 3, "wifi_ok": True,
           "aviao": False, "bt": False, "bt_conectados": 0, "tailscale": "direto", "latencia": "38 ms",

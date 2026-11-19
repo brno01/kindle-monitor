@@ -29,7 +29,7 @@ ROTULO_ARMADO = "Toque de novo para confirmar"
 ROTULO_ARMADO_CURTO = "Confirmar?"
 ROTULOS_VERBO = {"reiniciar": "Reiniciar", "ligar": "Ligar", "parar": "Parar"}
 
-# (id do botao, rotulo, icone); o icone e desenhado na Tarefa 7 e pode nao existir em icones_dados ainda
+# (id do botao, rotulo, icone); o icone vem de icones_dados (o render tolera um icone que ainda nao exista)
 NAV = (
     ("pagina:resumo", "Inicio", "inicio"),
     ("pagina:servicos", "Servicos", "servicos"),
@@ -54,6 +54,7 @@ ATUALIZAR_W = 200      # botao invisivel sobre o relogio do cabecalho
 ATUALIZAR_H = 70
 LINHA_RESUMO_H = 112   # linhas da tela inicial: geometria fixa, ancorada acima da navegacao
 LINHA_RESUMO_GAP = 12
+ATENCAO_MIN_H = 108    # altura minima do cartao ATENCAO (titulo + 1 linha + folga; igual a render_png._h_atencao(1))
 # (id da linha, pagina de destino ao tocar), na ordem de cima para baixo
 LINHAS_RESUMO = (
     ("atheron", "detalhes"), ("nas", "detalhes"), ("aparelhos", "aparelhos"), ("servicos", "servicos"),
@@ -154,12 +155,16 @@ def geometria_resumo(largura=1236, altura=1648):
     """Geometria fixa da tela inicial (nao depende das metricas).
 
     {"atencao": {x,y,w,h}, "linhas": [{"id","destino","x","y","w","h"}]}: 8 linhas de 112 px com 12 px entre elas,
-    a ultima terminando em `limite(altura)`; o ATENCAO vai de TOPO ate a primeira linha.
+    a ultima terminando em `limite(altura)`; o ATENCAO vai de TOPO ate a primeira linha. Em tela baixa, em que as
+    linhas nao cabem acima da navegacao deixando ao menos ATENCAO_MIN_H para o ATENCAO, `linhas` fica vazia e o
+    ATENCAO ocupa tudo ate `limite(altura)`.
     """
     n = len(LINHAS_RESUMO)
     total = n * LINHA_RESUMO_H + (n - 1) * LINHA_RESUMO_GAP
     y0 = limite(altura) - total
     w = largura - 2 * MARGEM
+    if y0 - TOPO < ATENCAO_MIN_H:
+        return {"atencao": {"x": MARGEM, "y": TOPO, "w": w, "h": max(0, limite(altura) - TOPO)}, "linhas": []}
     linhas = [{"id": lid, "destino": dest, "x": MARGEM, "y": y0 + i * (LINHA_RESUMO_H + LINHA_RESUMO_GAP),
                "w": w, "h": LINHA_RESUMO_H} for i, (lid, dest) in enumerate(LINHAS_RESUMO)]
     return {"atencao": {"x": MARGEM, "y": TOPO, "w": w, "h": max(0, y0 - TOPO)}, "linhas": linhas}

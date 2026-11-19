@@ -1,12 +1,13 @@
 """Tela PNG (retrato, tons de cinza) do kindle-monitor. Funcoes puras: metricas -> bytes PNG.
 
-Cinco paginas (resumo, servicos, detalhes, comandos, claude) mais a barra de navegacao fixa no rodape. Os botoes vem
+Seis paginas (resumo, servicos, aparelhos, detalhes, claude, comandos) mais a barra de navegacao fixa no rodape. Os botoes vem
 sempre de `botoes.layout` (a mesma funcao que serve /botoes.json): aqui so se desenha o que ela devolve.
 Visual e-ink: alto contraste, contornos finos, raios pequenos, sem sombras; so os tamanhos de fonte embutidos
 (26 e 34; negrito tambem 48, 72 e 140). Estado de servico: forma antes da cor (cheia = ativo, vazia = parado,
 X = falha, ? = desconhecido).
 """
 import math
+import sys
 import unicodedata
 from datetime import datetime
 
@@ -86,11 +87,6 @@ def _tamanho(usado, total, base=1000):
     f = float(base) ** i
     fmt = "%.0f" if t >= 40 else "%.1f"  # 33/42 GB, 373/932 GB, mas 7.4/19.4 GB
     return (fmt + "/" + fmt + " %s") % (usado / f, total / f, un[i])
-
-
-def _bytes_txt(v, base):
-    t, i, un = _un(v, base)
-    return ("%.0f %s" if t >= 100 else "%.1f %s") % (t, un[i])
 
 
 def _uptime(seg):
@@ -184,17 +180,6 @@ def _forma_ok(c, x, y, lado, ok):
 
 
 # ------------------------------------------------------------------ cabecalho
-
-def _aviso_inventario(m):
-    sk = m.get("servicos_kindle")
-    if not isinstance(sk, dict):
-        return None
-    if sk.get("inventario") == "velho":
-        return "estados desatualizados"
-    if sk.get("inventario") == "ausente":
-        return "sem inventario de servicos"
-    return None
-
 
 def _cabecalho(c, m, itens):
     """Fino: host a esquerda e hora (HH:MM, sem segundos) a direita; uma linha clara embaixo (abaixo da barra do Kindle).
@@ -567,9 +552,9 @@ def _linhas_atencao(n):
     return n if n <= ATENCAO_MAX else ATENCAO_MAX + 1
 
 
-def _h_atencao(n, linhas=None):
+def _h_atencao(n):
     """Altura do card: titulo + (linhas de itens | 'Tudo em ordem')."""
-    corpo = 64 if n == 0 else (linhas if linhas is not None else _linhas_atencao(n)) * ATENCAO_LINHA
+    corpo = 64 if n == 0 else _linhas_atencao(n) * ATENCAO_LINHA
     return ATENCAO_TITULO + corpo + 14
 
 
@@ -588,12 +573,12 @@ def _card_atencao(c, atencao, x, y, w, h):
         _texto_c(c, x + PAD + 48, yc, "Tudo em ordem", NEG, 34, PRETO)
         return
     cabem = max(1, (h - ATENCAO_TITULO - 14) // ATENCAO_LINHA)
-    mostrar = atencao[:ATENCAO_MAX] if n <= min(ATENCAO_MAX, cabem) else atencao[:min(ATENCAO_MAX, cabem - 1)]
+    mostrar = atencao[:ATENCAO_MAX] if n <= min(ATENCAO_MAX, cabem) else atencao[:max(1, min(ATENCAO_MAX, cabem - 1))]
     for i, it in enumerate(mostrar):
         yc = y + ATENCAO_TITULO + i * ATENCAO_LINHA + ATENCAO_LINHA // 2
         _forma(c, x + PAD, yc - 14, 28, _FORMA_NIVEL.get(it.get("nivel"), "desconhecido"))
         _texto_c(c, x + PAD + 44, yc, _ajustar(c, it.get("texto", "?"), NEG, 34, w - 2 * PAD - 44), NEG, 34, PRETO)
-    if n > len(mostrar):
+    if n > len(mostrar) and len(mostrar) < cabem:  # com uma linha so, o "+N" ja esta no titulo
         yc = y + ATENCAO_TITULO + len(mostrar) * ATENCAO_LINHA + ATENCAO_LINHA // 2
         _texto_c(c, x + PAD + 44, yc, "+%d" % (n - len(mostrar)), NEG, 26, ESCURO)
 
@@ -759,6 +744,18 @@ _CONSTRUTORES = {"atheron": _l_atheron, "nas": _l_nas, "aparelhos": _l_aparelhos
                  "rotinas": _l_nada, "claude": _l_claude, "github": _l_nada, "ragnarok": _l_ragnarok}
 
 
+_LINHAS_AVISADAS = set()  # (linha, tipo do erro) ja registrados: a tela redesenha a cada segundo
+
+
+def _avisar_linha(lid, exc):
+    """Registra no stderr (journal) o erro de um construtor de linha, uma vez por linha e tipo de erro."""
+    chave = (lid, type(exc).__name__)
+    if chave in _LINHAS_AVISADAS:
+        return
+    _LINHAS_AVISADAS.add(chave)
+    print("render_png: linha %s do resumo sem dados (%s: %s)" % (lid, type(exc).__name__, exc), file=sys.stderr)
+
+
 def _linhas_resumo(m, itens, kv, alertas):
     """As 8 linhas da tela inicial (ordem de botoes.LINHAS_RESUMO): {"id","icone","titulo","valor","detalhe","estado"}.
     Pura e tolerante: `m`, `itens`, `kv` ou `alertas` com tipo errado so deixam a linha em "sem dados".
@@ -768,7 +765,8 @@ def _linhas_resumo(m, itens, kv, alertas):
     for lid, icone, titulo, sistemas in _LINHAS:
         try:
             valor, detalhe, tem = _CONSTRUTORES[lid](m, kv, itens)
-        except Exception:
+        except Exception as e:
+            _avisar_linha(lid, e)
             valor, detalhe, tem = "", "", False
         estado = _pior_nivel(alertas, sistemas) or ("ok" if tem else "sem_dados")
         saida.append({"id": lid, "icone": icone, "titulo": titulo, "valor": valor or SEM_DADOS,
@@ -822,7 +820,7 @@ def _desenhar_resumo(c, m, hist, itens, kv=None):
     atencao = _atencao(m, kv)
     caixa = geo["atencao"]
     h = min(_h_atencao(len(atencao)), caixa["h"] - botoes.LINHA_RESUMO_GAP)
-    if h >= ATENCAO_TITULO + ATENCAO_LINHA + 14:  # tela baixa demais (so fora do Kindle): sem espaco para o cartao
+    if h >= botoes.ATENCAO_MIN_H:  # tela baixa demais (so fora do Kindle): sem espaco para o cartao
         _card_atencao(c, atencao, caixa["x"], caixa["y"], caixa["w"], h)
         _faixa_historico(c, hist, caixa, h)
     linhas = _linhas_resumo(m, itens, kv, atencao)
@@ -912,7 +910,10 @@ def _card_historico(c, hist, series, x, y, w, h, titulo_h=52):
     linha sai de `h` (76 px na pagina Sistema)."""
     _card(c, x, y, w, h)
     c.texto(x + PAD, y + 14 + _cap(NEG, 26), "HISTORICO", NEG, 26, ESCURO)
-    minutos = int(round(len(series[0][1]) * (hist.get("intervalo_s") or 15) / 60.0))
+    intervalo = _num(hist.get("intervalo_s"))
+    if intervalo is None or intervalo <= 0:
+        intervalo = 15
+    minutos = int(round(len(series[0][1]) * intervalo / 60.0))
     c.texto(x + w - PAD, y + 14 + _cap(NEG, 26), "ultimos %d min" % minutos if minutos else "", REG, 26,
             ESCURO, alinhar="dir")
     lh = (h - titulo_h - 8) // len(series)
@@ -921,7 +922,7 @@ def _card_historico(c, hist, series, x, y, w, h, titulo_h=52):
         top = y + titulo_h + i * lh
         _texto_c(c, x + PAD, top + (lh - pad) // 2, rot, NEG, 26, ESCURO)
         ultimo = next((v for v in reversed(serie) if _num(v) is not None), None)
-        _texto_c(c, x + w - PAD, top + (lh - pad) // 2, "%d%%" % int(round(ultimo)), NEG, 34, PRETO, "dir")
+        _texto_c(c, x + w - PAD, top + (lh - pad) // 2, "%d%%" % int(round(min(100.0, max(0.0, ultimo)))), NEG, 34, PRETO, "dir")
         _sparkline(c, x + PAD + 90, top + lh - pad, w - 2 * PAD - 90 - 90, lh - 2 * pad, serie)
 
 
@@ -1003,15 +1004,23 @@ def _sim_nao(v, sim, nao):
     return "n/d" if v is None else (sim if v else nao)
 
 
+def _txt(v):
+    """Texto do campo da vista do Kindle; so str nao vazia vale, o resto e None."""
+    return v if isinstance(v, str) and v else None
+
+
 def _campos_kindle(kv):
-    """(bateria %, detalhe da bateria, [(rotulo, valor)] de radios, elo, relogio e sincronizacao) da vista do Kindle."""
+    """(bateria %, detalhe da bateria, [(rotulo, valor)] de radios, elo, relogio e sincronizacao) da vista do Kindle.
+    Campo de tipo errado vira "n/d" (ou some do detalhe da bateria), nunca levanta."""
     det = ["carregando" if kv.get("carregando") else "na bateria"]
     if kv.get("temp_c") is not None:
-        det.append("%d°C" % kv["temp_c"])
+        t = _num(kv["temp_c"])
+        det.append("%d°C" % t if t is not None else "n/d")
     if kv.get("autonomia"):
-        det.append(kv["autonomia"])
+        det.append(_txt(kv["autonomia"]) or "n/d")
     if kv.get("wifi_ok"):
-        wifi = "%d/5" % kv["wifi"] if kv.get("wifi") is not None else "conectado"
+        w = _num(kv.get("wifi"))
+        wifi = "%d/5" % w if w is not None else "conectado"
     else:
         wifi = "desconectado"
     if kv.get("bt") is None:
@@ -1019,14 +1028,14 @@ def _campos_kindle(kv):
     elif not kv["bt"]:
         bt = "desligado"
     else:
-        n = kv.get("bt_conectados") or 0
-        bt = "ligado" if not n else "%d conectado%s" % (n, "s" if n > 1 else "")
-    elo = kv.get("tailscale") or "n/d"
+        n = _num(kv.get("bt_conectados")) or 0
+        bt = "ligado" if n < 1 else "%d conectado%s" % (n, "s" if n > 1 else "")
+    elo = _txt(kv.get("tailscale")) or "n/d"
     if kv.get("latencia"):
-        elo += " · " + kv["latencia"]
+        elo += " · " + (_txt(kv["latencia"]) or "n/d")
     pares = (("WI-FI", wifi), ("BLUETOOTH", bt),
              ("AVIAO", _sim_nao(kv.get("aviao"), "ligado", "desligado")), ("ELO", elo),
-             ("RELOGIO", kv.get("relogio") or "n/d"), ("WHISPERSYNC", kv.get("whispersync") or "n/d"))
+             ("RELOGIO", _txt(kv.get("relogio")) or "n/d"), ("WHISPERSYNC", _txt(kv.get("whispersync")) or "n/d"))
     return kv.get("bateria"), " · ".join(det), pares
 
 

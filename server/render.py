@@ -112,7 +112,7 @@ def _linhas_io(io, cols):
     return linhas
 
 
-def _secao(m, cols, compacto, nome=None):
+def _secao(m, cols, compacto, nome=None, kindle=None):
     linhas = ["== %s ==" % (nome or m.get("host", "?"))]
     cpu, ram, swap, gpu = m.get("cpu"), m.get("ram"), m.get("swap"), m.get("gpu")
 
@@ -222,7 +222,7 @@ def _secao(m, cols, compacto, nome=None):
         elif svcs is not None:
             linhas.append("Servicos n/d")
         linhas += _linhas_catalogo(m, cols)
-        linhas += _linhas_atencao(m, cols)
+        linhas += _linhas_atencao(m, cols, kindle)
     return linhas
 
 
@@ -243,9 +243,9 @@ ATENCAO_MAX = 6
 PREFIXO_NIVEL = {"critico": "[X]", "aviso": "[!]", "leve": "[ ]"}
 
 
-def _linhas_atencao(m, cols):
+def _linhas_atencao(m, cols, kindle=None):
     """Alertas do motor (os mesmos do cartao ATENCAO da imagem): ate 6 e '+N' com o resto; vazio sem alertas."""
-    lista = alertas.avaliar(m, None, None)
+    lista = alertas.avaliar(m, None, kindle)
     if not lista:
         return []
     linhas = ["ATENCAO (%d)" % len(lista)]
@@ -326,36 +326,35 @@ def _linhas_claude(m, cols):
     agora, tz = render_png._agora(m)
     num, ok = render_png._num, render_png._ok
     linhas = []
-    if True:
-        cl = m["claude"] if isinstance(m["claude"], dict) else {}
-        lim, tok = cl.get("limites"), cl.get("tokens")
-        linhas.append("CLAUDE")
-        if not ok(lim):
-            linhas.append("  limites n/d")
-        else:
-            for chave, nome in (("cinco_horas", "5h"), ("semanal", "Semanal")):
-                j = lim.get(chave)
-                j = j if isinstance(j, dict) else {}
-                pct = num(j.get("pct"))
-                if pct is None:
-                    linhas.append("  %-7s n/d" % nome)
-                    continue
-                ren = j.get("renovado") is True
-                pct = 0.0 if ren else min(100.0, max(0.0, float(pct)))
-                sub = "renovado" if ren else render_png._volta_txt(j.get("volta_em"), agora, tz)
-                linhas.append(("  %-7s %3d%% %s" % (nome, round(pct), sub)).rstrip())
-            if lim.get("velho") is True:
-                linhas.append("  limites %s" % render_png._idade_txt(lim.get("idade_s")))
-        if not ok(tok):
-            linhas.append("  tokens n/d")
-        else:
-            for chave, nome in (("hoje", "Hoje"), ("sete_dias", "7 dias")):
-                t = tok.get(chave)
-                t = t if isinstance(t, dict) else {}
-                linhas.append("  %-7s %s tok %s" % (nome, render_png._tokens_txt(t.get("total")),
-                                                    render_png._custo_txt(t.get("custo_usd"))))
-            if tok.get("velho") is True:
-                linhas.append("  tokens %s" % render_png._idade_txt(tok.get("idade_s")))
+    cl = m["claude"] if isinstance(m["claude"], dict) else {}
+    lim, tok = cl.get("limites"), cl.get("tokens")
+    linhas.append("CLAUDE")
+    if not ok(lim):
+        linhas.append("  limites n/d")
+    else:
+        for chave, nome in (("cinco_horas", "5h"), ("semanal", "Semanal")):
+            j = lim.get(chave)
+            j = j if isinstance(j, dict) else {}
+            pct = num(j.get("pct"))
+            if pct is None:
+                linhas.append("  %-7s n/d" % nome)
+                continue
+            ren = j.get("renovado") is True
+            pct = 0.0 if ren else min(100.0, max(0.0, float(pct)))
+            sub = "renovado" if ren else render_png._volta_txt(j.get("volta_em"), agora, tz)
+            linhas.append(("  %-7s %3d%% %s" % (nome, round(pct), sub)).rstrip())
+        if lim.get("velho") is True:
+            linhas.append("  limites %s" % render_png._idade_txt(lim.get("idade_s")))
+    if not ok(tok):
+        linhas.append("  tokens n/d")
+    else:
+        for chave, nome in (("hoje", "Hoje"), ("sete_dias", "7 dias")):
+            t = tok.get(chave)
+            t = t if isinstance(t, dict) else {}
+            linhas.append("  %-7s %s tok %s" % (nome, render_png._tokens_txt(t.get("total")),
+                                                render_png._custo_txt(t.get("custo_usd"))))
+        if tok.get("velho") is True:
+            linhas.append("  tokens %s" % render_png._idade_txt(tok.get("idade_s")))
     linhas += ["", "SESSOES", "  sem dados", "", "GITHUB", "  sem dados"]
     return [l.rstrip() for l in linhas]
 
@@ -407,7 +406,8 @@ def _linhas_aparelhos(m, cols, kv=None):
 def render_texto(metricas, colunas, pagina="resumo", p=1, kindle=None):
     """Monta a tela: lista de linhas ASCII, cada uma com no maximo `colunas` caracteres.
 
-    `pagina`: "resumo" e "detalhes" mostram a tela completa (o texto ja e um resumo denso); "comandos" so lista os rotulos.
+    `pagina`: "resumo" e "detalhes" mostram a tela completa (o texto ja e um resumo denso); "servicos", "aparelhos",
+    "claude" e "comandos" tem texto proprio (ver `botoes.PAGINAS`); `p` pagina a lista de "servicos".
     """
     cols = max(1, int(colunas))
     m = metricas if isinstance(metricas, dict) else {}
@@ -426,7 +426,7 @@ def render_texto(metricas, colunas, pagina="resumo", p=1, kindle=None):
         linhas = [ascii_seguro(l)[:cols] for l in linhas]
         return linhas[:MAX_LINHAS]
     try:
-        linhas += _secao(m, cols, compacto=False)
+        linhas += _secao(m, cols, compacto=False, kindle=kindle)
     except Exception:
         linhas.append("n/d")
 

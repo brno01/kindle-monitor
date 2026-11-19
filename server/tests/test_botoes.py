@@ -271,6 +271,19 @@ class ResumoGeometriaTest(unittest.TestCase):
         self.assertLessEqual(ult["y"] + ult["h"], botoes.nav_topo(1648) - 16)
         self.assertEqual(g["atencao"], {"x": 48, "y": botoes.TOPO, "w": 1236 - 96, "h": 532 - botoes.TOPO})
 
+    def test_tela_baixa_nao_emite_linhas_com_y_negativo(self):
+        for altura in (600, 800, 1000, 1200):
+            g = botoes.geometria_resumo(1236, altura)
+            self.assertEqual(g["linhas"], [], altura)
+            lay = botoes.layout("resumo", None, 1236, altura)
+            self.assertEqual([b for b in lay if b["id"].startswith("pagina:") and not b["visivel"]], [], altura)
+            for b in lay:
+                self.assertGreaterEqual(b["y"], 0, (altura, b["id"]))
+            self.assertGreaterEqual(g["atencao"]["h"], 0)
+        g = botoes.geometria_resumo(1236, 1648)
+        self.assertEqual(len(g["linhas"]), 8)
+        self.assertGreaterEqual(g["linhas"][0]["y"] - botoes.TOPO, botoes.ATENCAO_MIN_H)
+
     def test_independe_das_metricas_e_aparece_no_layout(self):
         g = botoes.geometria_resumo(1236, 1648)
         inv = [b for b in botoes.layout("resumo") if not b["visivel"] and b["id"] != "atualizar"]
