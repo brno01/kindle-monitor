@@ -72,6 +72,9 @@
   "_comentario_rotinas": "Catalogo de rotinas (inventario root rotinas.json, validade 60 s). Exemplo comentado; renomeie _exemplo_rotinas para rotinas para ligar. tipo timer: alvo = unit .service; tipo arquivo: alvo = caminho absoluto sob /srv/, /var/lib/ ou /var/backups/ (vale o mtime). rotulo ASCII ate 20; max_idade_h de 0.1 a 720: acima disso a rotina fica atrasada (aviso). Maximo 16. Lista invalida e descartada inteira.",
   "_exemplo_rotinas": [{"id": "senhas", "rotulo": "Backup senhas", "tipo": "timer", "alvo": "cerberus-vault-backup.service", "max_idade_h": 26}],
 
+  "_comentario_amp": "Painel de jogos (servidores do CubeCoders AMP; o executor root consulta o AMP e grava status/jogos.json, ver 'Painel de jogos (AMP)' no README). Exemplo comentado; renomeie _exemplo_amp para amp para ligar. url: so http, host IPv4 privado (10/8, 192.168/16 ou 100.64/10), porta escrita, sem usuario/senha nem caminho. credenciais: arquivo direto em /etc/kindle-monitor/ com 2 linhas (usuario e senha), dono root, modo 0600 ou 0400; sem o arquivo o AMP simplesmente nao aparece. Chave ausente ou invalida = desligado.",
+  "_exemplo_amp": {"url": "http://10.0.0.60:8080", "credenciais": "/etc/kindle-monitor/amp.cred"},
+
   "_comentario_balanceador": "Arquivo JSON do balanceador do Ragnarok (campo players_by.ragnarok; chave ausente = 0 jogadores; 'updated' com mais de 120 s = dado PARADO). Use null para desligar (ex.: no nomad).",
   "_comentario_claude": "Arquivos do claude-uso (limites de 5 h/semanal e tokens). Sem a chave 'claude' a secao some. Arquivo ausente, invalido ou velho (limites > 15 min, tokens > 20 min) mostra n/d ou aviso.",
   "claude": {"limites": "/var/lib/claude-uso/limites.json", "tokens": "/var/lib/claude-uso/tokens.json"},
