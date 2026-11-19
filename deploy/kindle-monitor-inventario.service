@@ -13,12 +13,14 @@ NoNewPrivileges=yes
 # incus reads its client config under /root/.config: read-only keeps /root unwritable but readable
 ProtectHome=read-only
 PrivateTmp=yes
-# up to 4 batched calls with a 10 s timeout each
+# up to 5 calls (4 batched + tailscale status) with a 10 s timeout each
 TimeoutStartSec=60
 # Same hardening as the executor. VALIDATE ON THE HOST (see server/README.md): systemctl needs D-Bus, incus its unix socket.
 ProtectSystem=strict
 ReadWritePaths=/run/kindle-monitor
 ReadWritePaths=-/var/lib/incus/unix.socket
+# tailscale status --json talks to tailscaled over this socket (connect() needs write access under ProtectSystem=strict)
+ReadWritePaths=-/run/tailscale
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 # AF_UNIX is required (D-Bus, incus socket); do not remove it.

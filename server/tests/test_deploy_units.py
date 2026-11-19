@@ -41,6 +41,17 @@ class UnidadesTest(unittest.TestCase):
         self.assertTrue(any(l.startswith("ExecStart=") and "--inventario" in l and "--config /etc/kindle-monitor/config.json" in l
                             for l in inv))
 
+    def test_so_o_inventario_acessa_o_socket_do_tailscale(self):
+        inv, exe = linhas(ler("kindle-monitor-inventario.service")), linhas(ler("kindle-monitor-executor.service"))
+        self.assertIn("ReadWritePaths=-/run/tailscale", inv)
+        self.assertNotIn("ReadWritePaths=-/run/tailscale", exe)
+        # nada mais foi afrouxado: so essa linha a mais em ReadWritePaths no inventario
+        rw = lambda ls: {l for l in ls if l.startswith("ReadWritePaths=")}
+        self.assertEqual(rw(inv) - rw(exe), {"ReadWritePaths=-/run/tailscale"})
+        self.assertEqual(rw(exe) - rw(inv), set())
+        # AF_UNIX (socket do tailscaled) continua permitido
+        self.assertIn("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6", inv)
+
     def test_instalador_instala_e_habilita_o_timer(self):
         s = ler("instalar-atheron.sh")
         self.assertIn("kindle-monitor-inventario.service", s)
