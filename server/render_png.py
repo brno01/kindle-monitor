@@ -830,6 +830,14 @@ def _l_github(m, kv, itens):
     return valor, det, True
 
 
+ROTINAS_SEM = "rotinas sem dado"
+
+
+def _todas_desconhecidas(itens):
+    """True se ha rotinas e todas estao `desconhecido` (o systemctl falhou: nada de verde por falta de erro)."""
+    return bool(itens) and all(i.get("resultado") not in ("ok", "falha") for i in itens)
+
+
 def _rotina_ok(it):
     return it.get("resultado") == "ok" and it.get("atrasada") is not True
 
@@ -850,6 +858,8 @@ def _l_rotinas(m, kv, itens):
     ok, its = fonte
     if not ok:
         return SEM_DADOS, INVENTARIO_SEM, True
+    if _todas_desconhecidas(its):
+        return SEM_DADOS, ROTINAS_SEM, None  # None: "sem dados" mesmo com o aviso do motor (ver _linhas_resumo)
     valor = "%d de %d ok" % (sum(1 for i in its if _rotina_ok(i)), len(its))
     prob = next((i for i in its if not _rotina_ok(i)), None)
     if prob is not None:
@@ -925,7 +935,10 @@ def _linhas_resumo(m, itens, kv, alertas):
         except Exception as e:
             _avisar_linha(lid, e)
             valor, detalhe, tem = "", "", False
-        estado = _pior_nivel(alertas, sistemas) or ("ok" if tem else "sem_dados")
+        pior = _pior_nivel(alertas, sistemas)
+        if tem is None and pior != "critico":  # fonte inteira sem dado: o aviso "sem dados" nao muda a forma "?"
+            pior = None
+        estado = pior or ("ok" if tem else "sem_dados")
         saida.append({"id": lid, "icone": icone, "titulo": titulo, "valor": valor or SEM_DADOS,
                       "detalhe": detalhe, "estado": estado})
     return saida
@@ -1056,7 +1069,7 @@ def _rotinas_visiveis(rot):
     """(visiveis, resto, unidades_n, nomes) do cartao ROTINAS, ou None se for "sem dados" (sem bloco, lista vazia ou
     inventario velho/ausente)."""
     fonte = _fonte_itens({"rotinas": rot}, "rotinas")
-    if fonte is None or not fonte[0] or not fonte[1]:
+    if fonte is None or not fonte[0] or not fonte[1] or _todas_desconhecidas(fonte[1]):
         return None
     n, nomes = _unidades_falhas({"rotinas": rot})
     vis, resto = _cortar(fonte[1], ROTINAS_MAX - (1 if n else 0), _estado_rotina)
@@ -1079,8 +1092,10 @@ def _card_rotinas(c, rot, x, y, w, h):
     d = _rotinas_visiveis(rot)
     if d is None:
         _texto_c(c, x + PAD, y + 44 + 30, SEM_DADOS, NEG, 34, MEDIO)
-        if _fonte_itens({"rotinas": rot}, "rotinas") not in (None, (True, [])):
-            _texto_c(c, x + w - PAD, y + 44 + 30, INVENTARIO_SEM, REG, 26, ESCURO, "dir")
+        fonte = _fonte_itens({"rotinas": rot}, "rotinas")
+        if fonte not in (None, (True, [])):
+            sem = ROTINAS_SEM if fonte[0] else INVENTARIO_SEM
+            _texto_c(c, x + w - PAD, y + 44 + 30, sem, REG, 26, ESCURO, "dir")
         return
     vis, resto, n, nomes = d
     for i, it in enumerate(vis):

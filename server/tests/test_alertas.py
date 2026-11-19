@@ -165,6 +165,87 @@ class RotinasTest(unittest.TestCase):
         self.assertEqual((a[0]["nivel"], a[0]["sistema"]), ("aviso", "rotinas"))
         self.assertEqual(alertas.avaliar(self.rot([{"rotulo": "T", "resultado": "ok", "atrasada": False}])), [])
 
+    def item(self, i="senhas", rotulo="Backup senhas", resultado="ok", tipo="timer", alvo=None, **k):
+        d = {"id": i, "rotulo": rotulo, "resultado": resultado, "tipo": tipo,
+             "alvo": alvo if alvo is not None else ("%s.service" % i if tipo == "timer" else None)}
+        d.update(k)
+        return d
+
+    def test_todas_desconhecidas_um_aviso_so(self):
+        its = [self.item(resultado="desconhecido"), self.item("arq", "Arquivo senhas", "desconhecido", "arquivo"),
+               self.item("tok", "Tokens", "desconhecido", "arquivo")]
+        a = alertas.avaliar(self.rot(its))
+        self.assertEqual([(x["nivel"], x["texto"], x["sistema"]) for x in a],
+                         [("aviso", "Rotinas sem dados", "rotinas")])
+
+    def test_todas_desconhecidas_com_inventario_velho_so_alerta_o_inventario(self):
+        m = self.rot([self.item(resultado="desconhecido")])
+        m["rotinas"]["inventario"] = "velho"
+        m["rotinas"]["idade_s"] = 300
+        self.assertEqual(textos(alertas.avaliar(m)), ["Rotinas sem atualizar ha 5 min"])
+
+    def test_uma_timer_desconhecida_entre_conhecidas_e_leve(self):
+        its = [self.item(resultado="desconhecido"), self.item("arq", "Arquivo senhas", "ok", "arquivo")]
+        a = alertas.avaliar(self.rot(its))
+        self.assertEqual([(x["nivel"], x["texto"], x["sistema"]) for x in a],
+                         [("leve", "Rotina Backup senhas sem dado", "rotinas")])
+
+    def test_arquivo_desconhecido_isolado_nao_alerta(self):
+        # arquivo que ainda nao existe de proposito (o executor grava desconhecido): sem alerta
+        its = [self.item(resultado="ok"), self.item("arq", "Arquivo senhas", "desconhecido", "arquivo")]
+        self.assertEqual(alertas.avaliar(self.rot(its)), [])
+
+    def test_rotina_desconhecida_sem_tipo_no_item_nao_alerta(self):
+        its = [{"id": "a", "rotulo": "A", "resultado": "ok"}, {"id": "b", "rotulo": "B", "resultado": "desconhecido"}]
+        self.assertEqual(alertas.avaliar(self.rot(its)), [])
+
+    def test_unidade_em_falha_que_e_alvo_de_rotina_timer_em_falha_nao_duplica(self):
+        its = [self.item(resultado="falha", alvo="backup.service")]
+        a = alertas.avaliar(self.rot(its, {"n": 1, "nomes": ["backup.service"]}))
+        self.assertEqual(textos(a), ["Backup senhas falhou"])
+
+    def test_unidades_em_falha_tira_so_o_nome_ja_alertado_e_mantem_o_n_real(self):
+        its = [self.item(resultado="falha", alvo="backup.service")]
+        a = alertas.avaliar(self.rot(its, {"n": 3, "nomes": ["backup.service", "a.service",
+                                                              "b.service"]}))
+        self.assertEqual(textos(a), ["Backup senhas falhou", "2 unidades em falha: a.service, b.service"])
+        a = alertas.avaliar(self.rot(its, {"n": 2, "nomes": ["backup.service", "a.service"]}))
+        self.assertEqual(textos(a), ["Backup senhas falhou", "1 unidade em falha: a.service"])
+
+    def test_unidade_em_falha_so_e_retirada_se_a_rotina_timer_esta_em_falha(self):
+        its = [self.item(resultado="ok", alvo="backup.service")]
+        a = alertas.avaliar(self.rot(its, {"n": 1, "nomes": ["backup.service"]}))
+        self.assertEqual(textos(a), ["1 unidade em falha: backup.service"])
+        its = [self.item(resultado="falha", alvo="outra.service")]
+        a = alertas.avaliar(self.rot(its, {"n": 1, "nomes": ["backup.service"]}))
+        self.assertEqual(textos(a), ["Backup senhas falhou", "1 unidade em falha: backup.service"])
+
+    def test_unidades_em_falha_com_n_maior_que_os_nomes_continua_alertando(self):
+        # n=2 mas so 1 nome listado (o outro nome ficou de fora do corte): sobra 1 unidade sem nome
+        its = [self.item(resultado="falha", alvo="backup.service")]
+        a = alertas.avaliar(self.rot(its, {"n": 2, "nomes": ["backup.service"]}))
+        self.assertEqual(textos(a), ["Backup senhas falhou", "1 unidade em falha"])
+
+    def test_backup_atrasado_nas_duas_rotinas_alerta_so_a_timer(self):
+        its = [self.item("senhas", "Backup senhas", atrasada=True),
+               self.item("senhas-arq", "Arquivo senhas", tipo="arquivo", atrasada=True)]
+        a = alertas.avaliar(self.rot(its))
+        self.assertEqual([(x["nivel"], x["texto"]) for x in a], [("aviso", "Backup senhas atrasada")])
+
+    def test_backup_atrasado_so_no_arquivo_ou_so_na_timer_continua_alertando(self):
+        a = alertas.avaliar(self.rot([self.item("senhas", "Backup senhas"),
+                                      self.item("senhas-arq", "Arquivo senhas", tipo="arquivo", atrasada=True)]))
+        self.assertEqual(textos(a), ["Arquivo senhas atrasada"])
+        a = alertas.avaliar(self.rot([self.item("senhas", "Backup senhas", atrasada=True),
+                                      self.item("senhas-arq", "Arquivo senhas", tipo="arquivo")]))
+        self.assertEqual(textos(a), ["Backup senhas atrasada"])
+
+    def test_outras_rotinas_atrasadas_nao_somem_junto_com_o_par_do_backup(self):
+        its = [self.item("senhas", "Backup senhas", atrasada=True),
+               self.item("senhas-arq", "Arquivo senhas", tipo="arquivo", atrasada=True),
+               self.item("outra", "Outra", tipo="arquivo", atrasada=True)]
+        self.assertEqual(textos(alertas.avaliar(self.rot(its))), ["Backup senhas atrasada", "Outra atrasada"])
+
     def test_unidades_falhas_um_alerta_com_ate_2_nomes(self):
         a = alertas.avaliar(self.rot(falhas={"n": 4, "nomes": ["a.service", "b.service", "c.service", "d.service"]}))
         self.assertEqual(len(a), 1)
@@ -334,10 +415,48 @@ class FonteVelhaTest(unittest.TestCase):
         m = {"aparelhos": {"inventario": "velho", "itens": [], "idade_s": 600},
              "rotinas": {"inventario": "velho", "itens": [], "unidades_falhas": {"n": 0, "nomes": []}}}
         a = alertas.avaliar(m)
-        self.assertEqual([x["sistema"] for x in a], ["aparelhos", "rotinas"])
-        self.assertEqual(a[0]["texto"], "Aparelhos sem atualizar ha 10 min")
-        self.assertEqual(a[1]["texto"], "Rotinas sem atualizar")  # sem idade_s
+        # mesma causa (o inventario root parado): um aviso so, com a maior idade conhecida
+        self.assertEqual([x["texto"] for x in a], ["Inventario root sem atualizar ha 10 min"])
         self.assertTrue(all(x["texto"].isascii() and len(x["texto"]) <= 48 for x in a))
+
+    def test_inventario_velho_sozinho_mantem_o_aviso_da_fonte(self):
+        a = alertas.avaliar({"aparelhos": {"inventario": "velho", "itens": [], "idade_s": 600}})
+        self.assertEqual([x["texto"] for x in a], ["Aparelhos sem atualizar ha 10 min"])
+        a = alertas.avaliar({"rotinas": {"inventario": "velho", "itens": [], "unidades_falhas": {"n": 0, "nomes": []}}})
+        self.assertEqual([x["texto"] for x in a], ["Rotinas sem atualizar"])
+
+    def test_tres_inventarios_parados_viram_um_aviso(self):
+        m = {"servicos_kindle": {"itens": [], "inventario": "velho", "idade_s": 180},
+             "aparelhos": {"inventario": "velho", "itens": [], "idade_s": 120},
+             "rotinas": {"inventario": "velho", "itens": [], "idade_s": 240,
+                         "unidades_falhas": {"n": 0, "nomes": []}}}
+        a = alertas.avaliar(m)
+        self.assertEqual([(x["nivel"], x["texto"]) for x in a], [("aviso", "Inventario root sem atualizar ha 4 min")])
+
+    def test_servicos_ausente_e_aparelhos_velho_tambem_se_juntam(self):
+        m = {"servicos_kindle": {"itens": [], "inventario": "ausente", "idade_s": None},
+             "aparelhos": {"inventario": "velho", "itens": [], "idade_s": 600}}
+        self.assertEqual(textos(alertas.avaliar(m)), ["Inventario root sem atualizar ha 10 min"])
+
+    def test_inventarios_parados_sem_idade_conhecida(self):
+        m = {"servicos_kindle": {"itens": [], "inventario": "ausente"},
+             "rotinas": {"inventario": "velho", "itens": [], "unidades_falhas": {"n": 0, "nomes": []}}}
+        self.assertEqual(textos(alertas.avaliar(m)), ["Inventario root sem atualizar"])
+
+    def test_inventario_parado_com_relogio_adiantado(self):
+        m = {"aparelhos": {"inventario": "velho", "itens": [], "idade_s": 300, "relogio_adiantado": True}}
+        self.assertEqual(textos(alertas.avaliar(m)), ["Aparelhos sem atualizar com relogio adiantado"])
+        m["rotinas"] = {"inventario": "velho", "itens": [], "idade_s": 300, "relogio_adiantado": True,
+                        "unidades_falhas": {"n": 0, "nomes": []}}
+        self.assertEqual(textos(alertas.avaliar(m)), ["Inventario root com relogio adiantado"])
+
+    def test_inventario_junto_nao_engole_as_outras_fontes_velhas(self):
+        m = {"aparelhos": {"inventario": "velho", "itens": [], "idade_s": 120},
+             "rotinas": {"inventario": "velho", "itens": [], "idade_s": 120,
+                         "unidades_falhas": {"n": 0, "nomes": []}},
+             "github": {"velho": True, "idade_s": 7200}}
+        self.assertEqual(sorted(textos(alertas.avaliar(m))),
+                         ["GitHub sem atualizar ha 120 min", "Inventario root sem atualizar ha 2 min"])
 
     def test_ausente_nao_conta_como_velha_e_velho_false_nao_alerta(self):
         m = {"aparelhos": {"inventario": "ausente", "itens": []}, "claude": {"limites": {"velho": False}},

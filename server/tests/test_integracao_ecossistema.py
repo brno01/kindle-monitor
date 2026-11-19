@@ -164,9 +164,30 @@ class PontaAPontaTest(Base):
         m = self.metricas(agora=NS + 300)
         self.assertEqual(m["aparelhos"]["inventario"], "velho")
         textos = [a["texto"] for a in alertas.avaliar(m)]
-        self.assertIn("Aparelhos sem atualizar ha 5 min", textos)
-        self.assertIn("Rotinas sem atualizar ha 5 min", textos)
+        # aparelhos e rotinas parados pela mesma causa (o inventario root): um aviso so
+        self.assertIn("Inventario root sem atualizar ha 5 min", textos)
+        self.assertFalse([t for t in textos if t.startswith(("Aparelhos sem", "Rotinas sem"))])
         self.assertFalse([t for t in textos if "offline" in t or "atrasada" in t])  # velho nunca vira dado
+
+    def linhas(self, m):
+        return {x["id"]: x for x in render_png._linhas_resumo(m, [], None, alertas.avaliar(m))}
+
+    def test_tailscale_com_erro_nao_parece_verde(self):
+        self.ts = "nao e json"  # parse_tailscale grava "erro" com todos online null
+        m = self.metricas()
+        self.assertEqual(m["aparelhos"]["inventario"], "ausente")
+        l = self.linhas(m)["aparelhos"]
+        self.assertEqual((l["valor"], l["detalhe"]), ("sem dados", "inventario sem atualizar"))  # nao "0 de N online"
+
+    def test_systemctl_falhando_deixa_rotinas_sem_dados_e_alerta_uma_vez(self):
+        self.show = (1, "", "boom")  # o executor grava todas as rotinas `desconhecido`
+        m = self.metricas()
+        self.assertEqual({i["resultado"] for i in m["rotinas"]["itens"]}, {"desconhecido"})
+        textos = [a["texto"] for a in alertas.avaliar(m)]
+        self.assertEqual(textos.count("Rotinas sem dados"), 1)
+        self.assertFalse([t for t in textos if t.startswith("Rotina ")])
+        l = self.linhas(m)["rotinas"]
+        self.assertEqual((l["valor"], l["estado"]), ("sem dados", "sem_dados"))
 
     def test_render_png_desenha_inicio_aparelhos_e_sistema(self):
         m = self.metricas()

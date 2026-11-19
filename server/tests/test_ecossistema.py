@@ -10,6 +10,11 @@ import ecossistema as eco
 AGORA = 1_700_000_000.0
 
 
+def textos_de(lista):
+    itens = lista["itens"] if isinstance(lista, dict) else lista
+    return [a["texto"] for a in itens]
+
+
 def aparelho(**kw):
     d = {"id": "gw", "nome": "cerberus-gw", "rotulo": "Gateway", "icone": "rede", "alerta_offline_min": 10}
     d.update(kw)
@@ -165,6 +170,69 @@ class MontarAparelhosTest(unittest.TestCase):
         self.assertEqual(eco.montar_aparelhos(CAT_A, ap_doc(gerado=AGORA + 3), AGORA)["inventario"], "ok")
         self.assertEqual(eco.montar_aparelhos(CAT_A, ap_doc(gerado=AGORA + 300), AGORA)["inventario"], "velho")
 
+    def test_erro_do_executor_vira_inventario_ausente(self):
+        # o executor grava "erro": "<texto curto>" com todos online null quando o tailscale falha
+        doc = json.dumps({"versao": 1, "gerado": AGORA - 5, "erro": "json invalido",
+                          "aparelhos": {"gw": {"online": None, "visto_em": None, "conexao": None}}})
+        r = eco.montar_aparelhos(CAT_A, doc, AGORA)
+        self.assertEqual((r["inventario"], r["idade_s"]), ("ausente", None))
+        self.assertEqual(len(r["itens"]), 2)
+        self.assertTrue(all(i["online"] is None for i in r["itens"]))
+
+    def test_erro_vazio_ou_nulo_nao_atrapalha(self):
+        for erro in (None, "", "   "):
+            with self.subTest(erro=erro):
+                doc = json.dumps({"versao": 1, "gerado": AGORA - 5, "erro": erro,
+                                  "aparelhos": {"gw": {"online": True, "visto_em": int(AGORA), "conexao": "direto"}}})
+                r = eco.montar_aparelhos(CAT_A, doc, AGORA)
+                self.assertEqual((r["inventario"], r["itens"][0]["online"]), ("ok", True))
+
+    def test_relogio_adiantado_e_sinalizado_e_nao_vira_ha_zero_min(self):
+        r = eco.montar_aparelhos(CAT_A, ap_doc(gerado=AGORA + 300), AGORA)
+        self.assertEqual((r["inventario"], r["idade_s"], r.get("relogio_adiantado")), ("velho", 300, True))
+        r = eco.montar_aparelhos(CAT_A, ap_doc(gerado=AGORA - 120), AGORA)  # velho de verdade: sem a marca
+        self.assertEqual((r["inventario"], r["idade_s"]), ("velho", 120))
+        self.assertNotIn("relogio_adiantado", r)
+        r = eco.montar_aparelhos(CAT_A, ap_doc(gerado=AGORA + 3), AGORA)  # dentro da tolerancia: ok
+        self.assertNotIn("relogio_adiantado", r)
+
+    def test_offline_sem_visto_usa_o_primeiro_instante_offline(self):
+        d = ap_doc(aparelhos={"gw": {"online": False, "visto_em": None, "conexao": None}})
+        desde = {}
+        gw = eco.montar_aparelhos(CAT_A, d, AGORA, desde)["itens"][0]
+        self.assertEqual((gw["online"], gw["offline_min"]), (False, 0))  # visto agora pela 1a vez
+        self.assertEqual(desde, {"gw": AGORA})
+        depois = ap_doc(gerado=AGORA + 15 * 60 - 5, aparelhos={"gw": {"online": False, "visto_em": None,
+                                                                      "conexao": None}})
+        gw = eco.montar_aparelhos(CAT_A, depois, AGORA + 15 * 60, desde)["itens"][0]
+        self.assertEqual(gw["offline_min"], 15)
+        self.assertEqual(desde, {"gw": AGORA})  # a referencia nao anda
+        # voltou a ficar online: a referencia some
+        on = ap_doc(aparelhos={"gw": {"online": True, "visto_em": int(AGORA), "conexao": "direto"}})
+        on = ap_doc(gerado=AGORA + 20 * 60 - 5,
+                    aparelhos={"gw": {"online": True, "visto_em": int(AGORA + 20 * 60), "conexao": "direto"}})
+        eco.montar_aparelhos(CAT_A, on, AGORA + 20 * 60, desde)
+        self.assertEqual(desde, {})
+
+    def test_offline_sem_visto_sem_dicionario_continua_sem_minutos(self):
+        d = ap_doc(aparelhos={"gw": {"online": False, "visto_em": None, "conexao": None}})
+        self.assertIsNone(eco.montar_aparelhos(CAT_A, d, AGORA)["itens"][0]["offline_min"])
+
+    def test_primeiro_offline_so_vale_com_alerta_offline_min_e_inventario_ok(self):
+        d = ap_doc(aparelhos={"s10": {"online": False, "visto_em": None, "conexao": None}})  # s10 nao tem alerta
+        desde = {}
+        self.assertIsNone(eco.montar_aparelhos(CAT_A, d, AGORA, desde)["itens"][1]["offline_min"])
+        self.assertEqual(desde, {})
+        desde = {"gw": AGORA - 3600}  # inventario velho (sem dado): nao apaga nem inventa
+        r = eco.montar_aparelhos(CAT_A, ap_doc(gerado=AGORA - 120), AGORA, desde)
+        self.assertEqual(desde, {"gw": AGORA - 3600})
+        self.assertIsNone(r["itens"][0]["offline_min"])
+
+    def test_visto_conhecido_vence_o_primeiro_instante(self):
+        d = ap_doc(aparelhos={"gw": {"online": False, "visto_em": int(AGORA - 15 * 60), "conexao": None}})
+        desde = {"gw": AGORA - 3600}
+        self.assertEqual(eco.montar_aparelhos(CAT_A, d, AGORA, desde)["itens"][0]["offline_min"], 15)
+
     def test_json_invalido(self):
         for t in ("", "{", "[]", "null", "3", '{"gerado": 1}', '{"aparelhos": {}}',
                   '{"gerado": "x", "aparelhos": {}}', '{"gerado": true, "aparelhos": {}}',
@@ -214,8 +282,21 @@ class MontarRotinasTest(unittest.TestCase):
         self.assertEqual(r["inventario"], "ok")
         self.assertEqual(r["itens"][0], {"id": "senhas", "rotulo": "Backup senhas", "resultado": "ok",
                                          "ultima_em": int(AGORA - 3600), "idade_h": 1.0, "max_idade_h": 26,
-                                         "atrasada": False})
+                                         "atrasada": False, "tipo": "timer",
+                                         "alvo": "cerberus-vault-backup.service"})
         self.assertEqual(r["unidades_falhas"], {"n": 0, "nomes": []})
+
+    def test_item_carrega_tipo_e_so_o_alvo_do_timer(self):
+        cat = eco.validar_rotinas([rotina(), rotina(id="arq", tipo="arquivo", alvo="/srv/nas/backups/x")])
+        d = ro_doc(rotinas={"senhas": {"resultado": "ok", "ultima_em": int(AGORA), "detalhe": ""},
+                            "arq": {"resultado": "ok", "ultima_em": int(AGORA), "detalhe": ""}})
+        a, b = eco.montar_rotinas(cat, d, AGORA)["itens"]
+        self.assertEqual((a["tipo"], a["alvo"]), ("timer", "cerberus-vault-backup.service"))
+        self.assertEqual((b["tipo"], b["alvo"]), ("arquivo", None))  # caminho de arquivo nao sai no JSON
+
+    def test_relogio_adiantado_em_rotinas(self):
+        r = eco.montar_rotinas(CAT_R, ro_doc(gerado=AGORA + 999), AGORA)
+        self.assertEqual((r["inventario"], r["idade_s"], r.get("relogio_adiantado")), ("velho", 999, True))
 
     def test_atrasada(self):
         d = ro_doc(rotinas={"senhas": {"resultado": "ok", "ultima_em": int(AGORA - 27 * 3600), "detalhe": ""}})
@@ -357,6 +438,30 @@ class ColetorTest(unittest.TestCase):
         r = alertas.avaliar(m)
         itens = r["itens"] if isinstance(r, dict) else r
         self.assertFalse([a for a in itens if "offline" in a["texto"]])
+
+    def test_offline_sem_visto_alerta_pelo_primeiro_instante_visto_pelo_servidor(self):
+        d = ap_doc(aparelhos={"gw": {"online": False, "visto_em": None, "conexao": None}})
+        arq = {"/run/kindle-monitor/status/aparelhos.json": d}
+        relogio = [AGORA]
+        c = self.coletor({"aparelhos": [aparelho()]}, arq)
+        c._agora = lambda: relogio[0]
+        self.assertEqual(c.aparelhos_inventario()["itens"][0]["offline_min"], 0)
+        self.assertFalse([a for a in alertas.avaliar({"aparelhos": c.aparelhos_inventario()}) if "offline" in a["texto"]])
+        relogio[0] = AGORA + 11 * 60
+        arq["/run/kindle-monitor/status/aparelhos.json"] = ap_doc(
+            gerado=relogio[0], aparelhos={"gw": {"online": False, "visto_em": None, "conexao": None}})
+        r = c.aparelhos_inventario()
+        self.assertEqual(r["itens"][0]["offline_min"], 11)
+        self.assertIn("Gateway offline ha 11 min", textos_de(alertas.avaliar({"aparelhos": r})))
+        # volta a ficar online e cai de novo: a contagem recomeca
+        relogio[0] = AGORA + 12 * 60
+        arq["/run/kindle-monitor/status/aparelhos.json"] = ap_doc(
+            gerado=relogio[0], aparelhos={"gw": {"online": True, "visto_em": int(relogio[0]), "conexao": "direto"}})
+        c.aparelhos_inventario()
+        relogio[0] = AGORA + 20 * 60
+        arq["/run/kindle-monitor/status/aparelhos.json"] = ap_doc(
+            gerado=relogio[0], aparelhos={"gw": {"online": False, "visto_em": None, "conexao": None}})
+        self.assertEqual(c.aparelhos_inventario()["itens"][0]["offline_min"], 0)
 
     def test_inventario_velho_vira_aviso_de_fonte(self):
         arq = {"/run/kindle-monitor/status/aparelhos.json": ap_doc(gerado=AGORA - 300)}

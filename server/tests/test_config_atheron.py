@@ -51,6 +51,12 @@ class ConfigAtheronTest(unittest.TestCase):
         lista = self.cfg["rotinas"]
         self.assertEqual(len(eco.validar_rotinas(lista)), len(lista))
 
+    def test_rotinas_de_producao_sao_as_duas_do_backup(self):
+        # `tokens` (tokens.json, 1 h) duplicava o aviso de dados velhos de claude.tokens: nao e rotina
+        self.assertEqual([(r["id"], r["tipo"]) for r in self.cfg["rotinas"]],
+                         [("senhas", "timer"), ("senhas-arq", "arquivo")])
+        self.assertFalse([r for r in self.cfg["rotinas"] if r["alvo"].endswith("/tokens.json")])
+
     def test_nenhum_nome_empresa-x(self):
         for a in self.cfg["aparelhos"]:
             self.assertNotIn("empresa-x", a["nome"].lower())

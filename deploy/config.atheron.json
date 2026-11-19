@@ -71,8 +71,7 @@
   ],
   "rotinas": [
     {"id": "senhas", "rotulo": "Backup senhas", "tipo": "timer", "alvo": "cerberus-vault-backup.service", "max_idade_h": 26},
-    {"id": "senhas-arq", "rotulo": "Arquivo senhas", "tipo": "arquivo", "alvo": "/srv/nas/backups/vaultwarden", "max_idade_h": 26},
-    {"id": "tokens", "rotulo": "Tokens Claude", "tipo": "arquivo", "alvo": "/var/lib/claude-uso/tokens.json", "max_idade_h": 1}
+    {"id": "senhas-arq", "rotulo": "Arquivo senhas", "tipo": "arquivo", "alvo": "/srv/nas/backups/vaultwarden", "max_idade_h": 26}
   ],
   "s10": {"resumo": "/run/cerberus-s10-publico/resumo.json"},
   "balanceador": "/var/lib/cerberus/memory-balancer.json",

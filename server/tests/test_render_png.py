@@ -828,6 +828,26 @@ class LinhaRotinasTest(unittest.TestCase):
         l = self._l({"rotinas": rotinas(its)})
         self.assertEqual((l["valor"], l["detalhe"]), ("1 de 2 ok", "Backup senhas sem dado"))
 
+    def test_todas_desconhecidas_e_sem_dados_nao_ok(self):
+        # o systemctl falhou: o executor grava tudo desconhecido; a linha nao pode parecer verde
+        its = [rot("a", "Backup senhas", resultado="desconhecido", idade_h=None),
+               rot("b", "Arquivo senhas", resultado="desconhecido", idade_h=None)]
+        l = self._l({"rotinas": rotinas(its)})
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("sem dados", "rotinas sem dado", "sem_dados"))
+        # mesmo com o aviso "Rotinas sem dados" do motor, a forma continua sendo a do "?"
+        l = self._l({"rotinas": rotinas(its)}, [{"nivel": "aviso", "sistema": "rotinas"}])
+        self.assertEqual((l["valor"], l["estado"]), ("sem dados", "sem_dados"))
+        # um alerta critico (unidade em falha) continua mandando
+        l = self._l({"rotinas": rotinas(its)}, [{"nivel": "critico", "sistema": "rotinas"}])
+        self.assertEqual((l["valor"], l["estado"]), ("sem dados", "critico"))
+
+    def test_algumas_desconhecidas_ficam_aviso_pelo_alerta_do_motor(self):
+        its = [rot("a", "Backup senhas", resultado="desconhecido", idade_h=None), rot("b", "Sync cofre")]
+        l = self._l({"rotinas": rotinas(its)}, [{"nivel": "leve", "sistema": "rotinas"}])
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("1 de 2 ok", "Backup senhas sem dado", "leve"))
+        l = self._l({"rotinas": rotinas(its)}, [{"nivel": "aviso", "sistema": "rotinas"}])
+        self.assertEqual(l["estado"], "aviso")
+
     def test_unidades_em_falha_sem_rotina_com_problema(self):
         l = self._l({"rotinas": rotinas(ROTS4, n=2, nomes=["a.service", "b.service"])})
         self.assertEqual((l["valor"], l["detalhe"]), ("4 de 4 ok", "2 unidades em falha"))
@@ -971,6 +991,16 @@ class CartaoRotinasTest(unittest.TestCase):
             self.assertIn("ROTINAS", tx)
             self.assertIn("sem dados", tx)
             self.assertNotIn("Backup senhas", tx)
+
+    def test_todas_desconhecidas_mostra_sem_dados_no_cartao(self):
+        its = [rot("a", "Backup senhas", resultado="desconhecido", idade_h=None),
+               rot("b", "Arquivo senhas", resultado="desconhecido", idade_h=None)]
+        tx, _ = espiar(completo(rotinas=rotinas(its)), "detalhes")
+        self.assertIn("ROTINAS", tx)
+        self.assertIn("sem dados", tx)
+        self.assertIn("rotinas sem dado", tx)
+        self.assertNotIn("inventario sem atualizar", tx)
+        self.assertNotIn("Backup senhas", tx)
 
     def test_dezesseis_rotinas_cortam_com_mais_n_e_mantem_problemas(self):
         its = [rot("r%d" % k, "Rotina %02d" % k) for k in range(16)]

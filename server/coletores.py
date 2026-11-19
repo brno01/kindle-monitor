@@ -744,6 +744,7 @@ class Coletor:
         self._rotinas = ecossistema.validar_rotinas(config.get("rotinas"))
         self._aparelhos_caminho = os.path.join(estado, ecossistema.APARELHOS_ARQ)
         self._rotinas_caminho = os.path.join(estado, ecossistema.ROTINAS_ARQ)
+        self._offline_desde = {}  # {id do aparelho: 1o instante visto offline sem `visto_em`}; ver montar_aparelhos
         self._lock_pares = threading.Lock()
         self._pares_t = None
         self._pares_v = None
@@ -786,7 +787,7 @@ class Coletor:
         if not self._aparelhos:
             return None
         return ecossistema.montar_aparelhos(self._aparelhos, self._ler_inventario(self._aparelhos_caminho),
-                                            self._agora())
+                                            self._agora(), self._offline_desde)
 
     def rotinas_inventario(self):
         """Rotinas do catalogo com o estado do inventario root; None sem catalogo."""

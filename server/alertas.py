@@ -155,13 +155,29 @@ def _r_rotinas_falha(m, lim, kv):
             if isinstance(i, dict) and i.get("resultado") == "falha"]
 
 
+def _alvos_em_falha(m):
+    """Unidades `alvo` das rotinas `timer` em falha: ja alertadas pela propria rotina."""
+    return {_ascii(i.get("alvo")) for i in _lista(_dict(m.get("rotinas")).get("itens"))
+            if isinstance(i, dict) and i.get("resultado") == "falha" and i.get("tipo") == "timer"
+            and isinstance(i.get("alvo"), str)}
+
+
 def _r_unidades_falhas(m, lim, kv):
     u = _dict(_dict(m.get("rotinas")).get("unidades_falhas"))
     n = _num(u.get("n"))
     if n is None or n < 1:
         return []
     nomes = [_ascii(x) for x in _lista(u.get("nomes")) if isinstance(x, str)]
-    nomes = [x for x in nomes if x][:2]
+    nomes = [x for x in nomes if x]
+    cobertos = _alvos_em_falha(m)
+    if cobertos:
+        # a unidade da rotina em falha ja tem o alerta da rotina: sai da contagem e da lista
+        restam = [x for x in nomes if x not in cobertos]
+        n -= len(nomes) - len(restam)
+        nomes = restam
+        if n < 1:
+            return []
+    nomes = nomes[:2]
     antes = "%s %s em falha" % (_pct(n), "unidade" if round(n) == 1 else "unidades")
     if not nomes:
         return [_alerta("critico", _texto(antes), "rotinas")]
@@ -188,17 +204,62 @@ def _r_servicos_parados(m, lim, kv):
             for i in _itens_servicos(m) if i.get("estado") == "parado" and not i.get("opcional")]
 
 
+def _inventarios_parados(m):
+    """Blocos de inventario root parados: servicos (velho ou ausente), aparelhos e rotinas (velho). Com 2 ou mais a
+    causa e a mesma (o executor root parou) e `_r_inventario_servicos` emite um aviso so."""
+    out = []
+    sk = _dict(m.get("servicos_kindle"))
+    if sk.get("inventario") in ("velho", "ausente"):
+        out.append(sk)
+    for nome in ("aparelhos", "rotinas"):
+        b = _dict(m.get(nome))
+        if b.get("inventario") == "velho":
+            out.append(b)
+    return out
+
+
 def _r_inventario_servicos(m, lim, kv):
+    parados = _inventarios_parados(m)
+    if len(parados) >= 2:
+        if any(b.get("relogio_adiantado") is True for b in parados):
+            return [_alerta("aviso", "Inventario root com relogio adiantado", "servicos")]
+        idades = [v for v in (_num(b.get("idade_s")) for b in parados) if v is not None and v >= 0]
+        texto = ("Inventario root sem atualizar ha %s min" % _pct(max(idades) // 60) if idades
+                 else "Inventario root sem atualizar")
+        return [_alerta("aviso", _texto(texto), "servicos")]
     inv = _dict(m.get("servicos_kindle")).get("inventario")
     if inv in ("velho", "ausente"):
         return [_alerta("aviso", "Inventario de servicos %s" % inv, "servicos")]
     return []
 
 
+# o arquivo `senhas-arq` e o resultado do mesmo backup que a timer `senhas`: atrasadas juntas, so a timer alerta
+_ARQUIVO_DO_MESMO_BACKUP = {"senhas-arq": "senhas"}
+
+
 def _r_rotinas_atrasadas(m, lim, kv):
-    return [_alerta("aviso", _texto("", i.get("rotulo"), " atrasada"), "rotinas")
-            for i in _lista(_dict(m.get("rotinas")).get("itens"))
-            if isinstance(i, dict) and i.get("atrasada") is True and i.get("resultado") != "falha"]
+    its = [i for i in _lista(_dict(m.get("rotinas")).get("itens"))
+           if isinstance(i, dict) and i.get("atrasada") is True and i.get("resultado") != "falha"]
+    ids = {i.get("id") for i in its}
+    return [_alerta("aviso", _texto("", i.get("rotulo"), " atrasada"), "rotinas") for i in its
+            if _ARQUIVO_DO_MESMO_BACKUP.get(i.get("id"), object()) not in ids]
+
+
+def _r_rotinas_sem_dados(m, lim, kv):
+    """Rotina `desconhecido` nunca falha nem atrasa, entao o painel parecia verde sem dado nenhum. Todas as
+    rotinas do catalogo desconhecidas (inventario ok, ex.: o systemctl falhou) = um aviso so; uma isolada = alerta
+    leve, mas so para `timer` (um `arquivo` desconhecido pode ainda nao existir de proposito)."""
+    r = _dict(m.get("rotinas"))
+    if r.get("inventario") != "ok":
+        return []
+    its = [i for i in _lista(r.get("itens")) if isinstance(i, dict)]
+    if not its:
+        return []
+    desconhecidas = [i for i in its if i.get("resultado") == "desconhecido"]
+    if len(desconhecidas) == len(its):
+        return [_alerta("aviso", "Rotinas sem dados", "rotinas")]
+    return [_alerta("leve", _texto("Rotina ", i.get("rotulo"), " sem dado"), "rotinas")
+            for i in desconhecidas if i.get("tipo") == "timer"]
 
 
 def _r_claude_limites(m, lim, kv):
@@ -245,7 +306,9 @@ _NOME_FONTE = {"limites": "Limites do Claude", "tokens": "Tokens do Claude", "s1
 def _fonte_velha(nome, sistema, bloco):
     legivel = _NOME_FONTE.get(nome) or _ascii(nome).capitalize()
     idade = _num(_dict(bloco).get("idade_s"))
-    if idade is not None and idade >= 0:
+    if _dict(bloco).get("relogio_adiantado") is True:
+        texto = _texto("%s sem atualizar com relogio adiantado" % legivel)
+    elif idade is not None and idade >= 0:
         texto = _texto("%s sem atualizar ha %s min" % (legivel, _pct(idade // 60)))
     else:
         texto = _texto("%s sem atualizar" % legivel)
@@ -261,9 +324,10 @@ def _r_fontes_velhas(m, lim, kv):
                                  ("github", "github", m.get("github"))):
         if _dict(bloco).get("velho") is True:
             out.append(_fonte_velha(nome, sistema, bloco))
-    for nome, bloco in (("aparelhos", m.get("aparelhos")), ("rotinas", m.get("rotinas"))):
-        if _dict(bloco).get("inventario") == "velho":
-            out.append(_fonte_velha(nome, nome, bloco))
+    if len(_inventarios_parados(m)) < 2:  # com 2 ou mais, `_r_inventario_servicos` ja deu o aviso unico
+        for nome, bloco in (("aparelhos", m.get("aparelhos")), ("rotinas", m.get("rotinas"))):
+            if _dict(bloco).get("inventario") == "velho":
+                out.append(_fonte_velha(nome, nome, bloco))
     return out
 
 
@@ -283,7 +347,7 @@ def _r_sessoes(m, lim, kv):
 _REGRAS = (_r_discos, _r_servicos_falha, _r_rotinas_falha, _r_unidades_falhas, _r_aparelhos_offline,
            _r_ram, _r_swap, _r_temp,
            _r_servicos_parados, _r_inventario_servicos,
-           _r_rotinas_atrasadas, _r_claude_limites, _r_ci, _r_portas,
+           _r_rotinas_atrasadas, _r_rotinas_sem_dados, _r_claude_limites, _r_ci, _r_portas,
            _r_bateria_kindle, _r_bateria_s10, _r_fontes_velhas,
            _r_sessoes)
 

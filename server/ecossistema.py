@@ -129,9 +129,12 @@ def validar_rotinas(lista):
 # ------------------------------------------------------------------------ montagem
 
 def _ler_inventario(texto, chave, agora):
-    """(situacao, idade_s, dados). `texto` None = ausente; velho/futuro/ruim nunca vira dado."""
+    """(situacao, idade_s, dados, adiantado). `texto` None = ausente; velho/futuro/ruim nunca vira dado.
+
+    `adiantado` e True quando o `gerado` esta no futuro alem da tolerancia (relogio do executor adiantado); a idade
+    e entao a diferenca absoluta, nao um "0" que pareceria recente."""
     if texto is None:
-        return "ausente", None, {}
+        return "ausente", None, {}, False
     try:
         d = json.loads(texto)
         gerado, dados = d["gerado"], d[chave]
@@ -139,20 +142,36 @@ def _ler_inventario(texto, chave, agora):
             raise ValueError("formato")
         idade = agora - gerado
         if -FUTURO_TOLERADO_S <= idade <= INVENTARIO_VALIDADE_S:
-            return "ok", max(0, int(idade)), d
-        return "velho", max(0, int(idade)), {}
+            return "ok", max(0, int(idade)), d, False
+        if idade < 0:
+            return "velho", int(-idade), {}, True
+        return "velho", max(0, int(idade)), {}, False
     except Exception:
-        return "ausente", None, {}
+        return "ausente", None, {}, False
 
 
 def _epoch(v):
     return int(v) if _numero(v) and v >= 0 else None
 
 
-def montar_aparelhos(catalogo, texto, agora):
-    """Catalogo + aparelhos.json -> {"inventario", "idade_s", "itens"}. Nunca levanta."""
+def _com_erro(d):
+    """O executor grava `erro` (texto curto) quando a coleta falhou: o inventario nao vale como dado."""
+    e = d.get("erro") if isinstance(d, dict) else None
+    return isinstance(e, str) and bool(e.strip())
+
+
+def montar_aparelhos(catalogo, texto, agora, primeiro_offline=None):
+    """Catalogo + aparelhos.json -> {"inventario", "idade_s", "itens"}. Nunca levanta.
+
+    `erro` nao vazio no arquivo (tailscale falhou) conta como inventario "ausente". `primeiro_offline` e um
+    dicionario opcional `{id: instante}` do chamador (o Coletor o guarda em memoria): um aparelho offline sem
+    `visto_em` e com `alerta_offline_min` conta os minutos desde a primeira vez que foi visto offline aqui. Esse
+    dicionario e o unico efeito colateral: ganha o id ao ver o aparelho offline sem `visto_em` e perde ao ve-lo
+    online; inventario sem dado nao mexe nele."""
     try:
-        situacao, idade, d = _ler_inventario(texto, "aparelhos", agora)
+        situacao, idade, d, adiantado = _ler_inventario(texto, "aparelhos", agora)
+        if situacao == "ok" and _com_erro(d):
+            situacao, idade, d = "ausente", None, {}
         inv = d.get("aparelhos") if situacao == "ok" else {}
         itens = []
         for c in catalogo:
@@ -161,11 +180,20 @@ def montar_aparelhos(catalogo, texto, agora):
             online = e.get("online") if isinstance(e.get("online"), bool) else None
             visto = _epoch(e.get("visto_em"))
             offline = max(0, int((agora - visto) // 60)) if online is False and visto is not None else None
+            if primeiro_offline is not None:
+                if online is True or (online is False and visto is not None):
+                    primeiro_offline.pop(c["id"], None)
+                elif online is False and c.get("alerta_offline_min") is not None:
+                    desde = primeiro_offline.setdefault(c["id"], agora)
+                    offline = max(0, int((agora - desde) // 60))
             conexao = e.get("conexao") if e.get("conexao") in CONEXOES else None
             itens.append({"id": c["id"], "rotulo": sanear(c["rotulo"], 16), "icone": c["icone"],
                           "online": online, "offline_min": offline, "conexao": conexao,
                           "alerta_offline_min": c.get("alerta_offline_min")})
-        return {"inventario": situacao, "idade_s": idade, "itens": itens}
+        r = {"inventario": situacao, "idade_s": idade, "itens": itens}
+        if adiantado:
+            r["relogio_adiantado"] = True
+        return r
     except Exception:
         return {"inventario": "ausente", "idade_s": None, "itens": []}
 
@@ -184,7 +212,7 @@ def _unidades_falhas(d):
 def montar_rotinas(catalogo, texto, agora):
     """Catalogo + rotinas.json -> {"inventario", "idade_s", "itens", "unidades_falhas"}. Nunca levanta."""
     try:
-        situacao, idade, d = _ler_inventario(texto, "rotinas", agora)
+        situacao, idade, d, adiantado = _ler_inventario(texto, "rotinas", agora)
         inv = d.get("rotinas") if situacao == "ok" else {}
         itens = []
         for c in catalogo:
@@ -195,9 +223,13 @@ def montar_rotinas(catalogo, texto, agora):
             idade_h = round(max(0.0, (agora - ultima) / 3600), 1) if ultima is not None else None
             itens.append({"id": c["id"], "rotulo": sanear(c["rotulo"], 20), "resultado": resultado,
                           "ultima_em": ultima, "idade_h": idade_h, "max_idade_h": c["max_idade_h"],
-                          "atrasada": idade_h is not None and idade_h > c["max_idade_h"]})
+                          "atrasada": idade_h is not None and idade_h > c["max_idade_h"],
+                          "tipo": c.get("tipo"), "alvo": c.get("alvo") if c.get("tipo") == "timer" else None})
         falhas = _unidades_falhas(d) if situacao == "ok" else {"n": 0, "nomes": []}
-        return {"inventario": situacao, "idade_s": idade, "itens": itens, "unidades_falhas": falhas}
+        r = {"inventario": situacao, "idade_s": idade, "itens": itens, "unidades_falhas": falhas}
+        if adiantado:
+            r["relogio_adiantado"] = True
+        return r
     except Exception:
         return {"inventario": "ausente", "idade_s": None, "itens": [],
                 "unidades_falhas": {"n": 0, "nomes": []}}
