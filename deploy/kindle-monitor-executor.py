@@ -19,6 +19,7 @@ catalogo "rotinas" le `systemctl show` dos timers, o mtime dos arquivos (sem seg
 """
 import argparse
 import grp
+import ipaddress
 import json
 import os
 import re
@@ -87,6 +88,15 @@ CHAVES_ROTINA = {"id", "rotulo", "tipo", "alvo", "max_idade_h"}
 RE_PROJETO = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}\Z")
 CHAVES_CATALOGO = {"id", "rotulo", "grupo", "tipo", "alvo", "projeto", "prefixo", "verbos", "protegido", "opcional"}
 RE_BOT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}\Z")  # nunca comeca com "-" (viraria opcao)
+# Painel de jogos (AMP): chave `amp` da config e arquivo status/jogos.json. A senha do AMP nunca sai do arquivo de
+# credenciais para nada que nao seja o corpo do POST de login (log, argv, JSON, excecao e tela nunca a veem).
+JOGOS_ARQ = "jogos.json"
+JOGOS_MAX = 16
+AMP_DIR_CREDENCIAIS = "/etc/kindle-monitor/"
+RE_AMP_URL = re.compile(r"^http://([0-9]{1,3}(?:\.[0-9]{1,3}){3}):([1-9][0-9]{0,4})/?\Z")
+RE_AMP_CREDENCIAIS = re.compile(r"^/etc/kindle-monitor/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+CHAVES_AMP = {"url", "credenciais"}
+REDES_AMP = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "192.168.0.0/16", "100.64.0.0/10"))
 PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # `--` antes dos alvos: nome do catalogo que comece com "-" nunca vira opcao. LoadState distingue unit inexistente
@@ -287,6 +297,36 @@ def validar_rotinas(lista):
     return saida
 
 
+def validar_amp(valor):
+    """Valida a chave `amp` da config (mesmas regras do web; um teste confere). None = feature desligada.
+
+    `{"url": "http://<ipv4 privado>:<porta>", "credenciais": "/etc/kindle-monitor/<arquivo>"}`: so http, host IPv4 em
+    10.0.0.0/8, 192.168.0.0/16 ou 100.64.0.0/10 (nunca loopback, nome de host nem IP publico), porta 1-65535
+    explicita, sem usuario/senha, caminho ou query na URL; o arquivo de credenciais fica direto em
+    /etc/kindle-monitor/. ValueError com a causa (que nunca cita o valor). Devolve uma copia com a URL sem a barra final."""
+    if valor is None:
+        return None
+    if not isinstance(valor, dict):
+        raise ValueError("amp deve ser um objeto")
+    if set(valor) != CHAVES_AMP:
+        raise ValueError("amp: chaves devem ser url e credenciais")
+    url, cred = valor["url"], valor["credenciais"]
+    m = RE_AMP_URL.match(url) if isinstance(url, str) else None
+    if not m:
+        raise ValueError("amp.url invalida (http://IPv4:porta)")
+    try:
+        ip = ipaddress.IPv4Address(m.group(1))
+    except ValueError:
+        raise ValueError("amp.url: IPv4 invalido") from None
+    if not any(ip in rede for rede in REDES_AMP):
+        raise ValueError("amp.url: o host deve ser IPv4 privado (10/8, 192.168/16 ou 100.64/10)")
+    if int(m.group(2)) > 65535:
+        raise ValueError("amp.url: porta fora de 1 a 65535")
+    if not isinstance(cred, str) or not RE_AMP_CREDENCIAIS.match(cred):
+        raise ValueError("amp.credenciais deve ser um arquivo direto em " + AMP_DIR_CREDENCIAIS)
+    return {"url": "http://%s:%s" % (m.group(1), m.group(2)), "credenciais": cred}
+
+
 def acao_valida(acao):
     return acao in ACOES or bool(RE_SVC_ACAO.match(acao))
 
@@ -303,11 +343,13 @@ def validar_cfg(c):
     """Valida a secao "comandos" da config. ValueError com a causa."""
     if not isinstance(c, dict):
         raise ValueError("comandos deve ser um objeto")
-    r = {"spool": SPOOL_PADRAO, "estado": ESTADO_PADRAO, "acoes": list(ACOES), "catalogo": [], "aparelhos": [], "rotinas": []}
+    r = {"spool": SPOOL_PADRAO, "estado": ESTADO_PADRAO, "acoes": list(ACOES), "catalogo": [], "aparelhos": [], "rotinas": [],
+         "amp": None}
     r.update({k: v for k, v in c.items() if k in r})
     r["catalogo"] = validar_catalogo(r["catalogo"])
     r["aparelhos"] = validar_aparelhos(r["aparelhos"])
     r["rotinas"] = validar_rotinas(r["rotinas"])
+    r["amp"] = validar_amp(r["amp"])
     for k in ("spool", "estado"):
         if not isinstance(r[k], str) or not os.path.isabs(r[k]):
             raise ValueError("comandos.%s deve ser um caminho absoluto (texto)" % k)
@@ -1297,6 +1339,12 @@ def carregar_cfg(caminho):
     except ValueError as e:
         cfg["rotinas"] = []
         cfg["rotinas_erro"] = str(e)
+    # amp invalida desliga so o painel de jogos (None) e deixa o motivo para o main registrar
+    try:
+        cfg["amp"] = validar_amp(dados.get("amp"))
+    except ValueError as e:
+        cfg["amp"] = None
+        cfg["amp_erro"] = str(e)
     return cfg
 
 
@@ -1316,6 +1364,8 @@ def main(argv=None, log=_log_padrao):
         log("aparelhos invalidos, aparelhos.json nao gravado: %s" % _curto(cfg["aparelhos_erro"], 120))
     if args.inventario and cfg.get("rotinas_erro"):
         log("rotinas invalidas, rotinas.json nao gravado: %s" % _curto(cfg["rotinas_erro"], 120))
+    if args.inventario and cfg.get("amp_erro"):
+        log("amp invalida, jogos.json nao gravado: %s" % _curto(cfg["amp_erro"], 120))
     signal.signal(signal.SIGTERM, _sigterm)
     try:
         ex = Executor(cfg, log=log)

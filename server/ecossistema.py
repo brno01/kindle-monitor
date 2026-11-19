@@ -6,6 +6,7 @@ executor (deploy/kindle-monitor-executor.py), que e a referencia (roda como root
 `nome` repetido tambem descartam a lista; a unica diferenca intencional e o icone (aqui confere `icones_dados.ICONES`).
 `tests/test_paridade_catalogos.py` confere a paridade. Nada aqui levanta com entrada ruim.
 """
+import ipaddress
 import json
 import os
 import re
@@ -17,6 +18,7 @@ INVENTARIO_VALIDADE_S = 60
 FUTURO_TOLERADO_S = 5
 APARELHOS_ARQ = "aparelhos.json"
 ROTINAS_ARQ = "rotinas.json"
+JOGOS_ARQ = "jogos.json"
 
 MAX_ITENS = 16
 CHAVES_APARELHO = frozenset(("id", "nome", "rotulo", "icone", "alerta_offline_min"))
@@ -28,6 +30,11 @@ RE_ROTULO_ROTINA = re.compile(r"^[\x20-\x7e]{1,20}\Z")
 RE_ALVO_TIMER = re.compile(r"^[A-Za-z0-9_.@-]{1,64}\.service\Z")
 PREFIXOS_ARQUIVO = ("/srv/", "/var/lib/", "/var/backups/")
 NEGADOS_ARQUIVO = ("/var/lib/claude-uso",)  # igual ao executor (paridade)
+# chave `amp` da config (painel de jogos); igual ao executor, que e a referencia
+AMP_DIR_CREDENCIAIS = "/etc/kindle-monitor/"
+RE_AMP_URL = re.compile(r"^http://([0-9]{1,3}(?:\.[0-9]{1,3}){3}):([1-9][0-9]{0,4})/?\Z")
+RE_AMP_CREDENCIAIS = re.compile(r"^/etc/kindle-monitor/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+REDES_AMP = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "192.168.0.0/16", "100.64.0.0/10"))
 CONEXOES = ("direto", "relay")
 RESULTADOS = ("ok", "falha", "desconhecido")
 NOMES_FALHAS_MAX = 5
@@ -126,6 +133,25 @@ def validar_rotinas(lista):
         return saida
     except Exception:
         return []
+
+
+def validar_amp(valor):
+    """Chave `amp` normalizada (`{"url", "credenciais"}`), ou None se ausente ou invalida: feature desligada. Nunca
+    levanta. O web so usa a chave para saber que o painel de jogos esta configurado; quem fala com o AMP e le a
+    credencial e o executor root, com as mesmas regras (`tests/test_paridade_catalogos.py` confere)."""
+    try:
+        if not isinstance(valor, dict) or set(valor) != {"url", "credenciais"}:
+            return None
+        url, cred = valor["url"], valor["credenciais"]
+        m = RE_AMP_URL.match(url) if isinstance(url, str) else None
+        if not m or not isinstance(cred, str) or not RE_AMP_CREDENCIAIS.match(cred):
+            return None
+        ip = ipaddress.IPv4Address(m.group(1))
+        if not any(ip in rede for rede in REDES_AMP) or int(m.group(2)) > 65535:
+            return None
+        return {"url": "http://%s:%s" % (m.group(1), m.group(2)), "credenciais": cred}
+    except Exception:
+        return None
 
 
 # ------------------------------------------------------------------------ montagem

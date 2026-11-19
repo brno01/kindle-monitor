@@ -1,4 +1,4 @@
-"""Paridade dos catalogos `aparelhos` e `rotinas` (E8) entre o executor root e o servidor web.
+"""Paridade dos catalogos `aparelhos` e `rotinas` (E8) e da chave `amp` entre o executor root e o servidor web.
 
 O executor (deploy/kindle-monitor-executor.py, roda como root) e a referencia; o servidor (ecossistema.py, usuario
 `nobody`) tem de aceitar e recusar exatamente a mesma tabela. A unica divergencia intencional e o icone: o servidor
@@ -277,6 +277,119 @@ class ParidadeRotinasTest(ParidadeBase, unittest.TestCase):
         self.assertEqual(tuple(ex.PREFIXOS_ARQUIVO), tuple(eco.PREFIXOS_ARQUIVO))
         self.assertEqual(ex.ROTINAS_MAX, eco.MAX_ITENS)
         self.assertEqual(ex.APARELHOS_MAX, eco.MAX_ITENS)
+
+
+# ---------------------------------------------------------------- chave `amp` (painel de jogos)
+
+def amp(**k):
+    d = {"url": "http://10.0.0.60:8080", "credenciais": "/etc/kindle-monitor/amp.cred"}
+    d.update(k)
+    return d
+
+
+# (descricao, entrada, aceita?)
+AMP = [
+    ("valido", amp(), True),
+    ("url com barra final", amp(url="http://10.0.0.60:8080/"), True),
+    ("192.168", amp(url="http://192.0.2.10:80"), True),
+    ("tailnet 100.64/10 (inicio)", amp(url="http://100.64.0.1:8080"), True),
+    ("tailnet 100.64/10 (fim)", amp(url="http://100.64.0.254:8080"), True),
+    ("porta 1", amp(url="http://10.0.0.1:1"), True),
+    ("porta 65535", amp(url="http://10.0.0.1:65535"), True),
+    ("credencial com subnome", amp(credenciais="/etc/kindle-monitor/amp-2.cred"), True),
+    ("https", amp(url="https://10.0.0.60:8080"), False),
+    ("esquema em maiusculo", amp(url="HTTP://10.0.0.60:8080"), False),
+    ("sem esquema", amp(url="10.0.0.60:8080"), False),
+    ("ftp", amp(url="ftp://10.0.0.60:8080"), False),
+    ("credenciais na url", amp(url="http://painel:senha@10.0.0.60:8080"), False),
+    ("usuario na url", amp(url="http://painel@10.0.0.60:8080"), False),
+    ("com caminho", amp(url="http://10.0.0.60:8080/API"), False),
+    ("com query", amp(url="http://10.0.0.60:8080?a=1"), False),
+    ("com fragmento", amp(url="http://10.0.0.60:8080#x"), False),
+    ("loopback", amp(url="http://127.0.0.1:8080"), False),
+    ("publico", amp(url="http://8.8.8.8:8080"), False),
+    ("172.16 (fora da lista)", amp(url="http://172.16.0.1:8080"), False),
+    ("100.63 (antes da faixa)", amp(url="http://100.63.255.255:8080"), False),
+    ("100.128 (depois da faixa)", amp(url="http://100.128.0.1:8080"), False),
+    ("192.169", amp(url="http://192.169.0.1:8080"), False),
+    ("nome de host", amp(url="http://localhost:8080"), False),
+    ("ipv6", amp(url="http://[::1]:8080"), False),
+    ("octeto 256", amp(url="http://10.0.0.256:8080"), False),
+    ("octeto com zero a esquerda", amp(url="http://10.10.010.60:8080"), False),
+    ("sem porta", amp(url="http://10.0.0.60"), False),
+    ("porta 0", amp(url="http://10.0.0.60:0"), False),
+    ("porta 65536", amp(url="http://10.0.0.60:65536"), False),
+    ("porta com zero a esquerda", amp(url="http://10.0.0.60:08080"), False),
+    ("porta nao numerica", amp(url="http://10.0.0.60:abc"), False),
+    ("porta de 6 digitos", amp(url="http://10.0.0.60:100000"), False),
+    ("digitos nao ASCII", amp(url="http://10.0.0.60:\u0668\u0660"), False),
+    ("quebra de linha final", amp(url="http://10.0.0.60:8080\n"), False),
+    ("espaco", amp(url="http://10.0.0.60:8080 "), False),
+    ("url nao texto", amp(url=3), False),
+    ("url nula", amp(url=None), False),
+    ("sem url", sem(amp(), "url"), False),
+    ("sem credenciais", sem(amp(), "credenciais"), False),
+    ("chave desconhecida", amp(senha="x"), False),
+    ("credencial fora de /etc/kindle-monitor", amp(credenciais="/etc/passwd"), False),
+    ("credencial em /etc/kindle-monitor-x", amp(credenciais="/etc/kindle-monitor-x/amp.cred"), False),
+    ("credencial relativa", amp(credenciais="amp.cred"), False),
+    ("credencial com ..", amp(credenciais="/etc/kindle-monitor/../shadow"), False),
+    ("credencial e o proprio diretorio", amp(credenciais="/etc/kindle-monitor/"), False),
+    ("credencial e ..", amp(credenciais="/etc/kindle-monitor/.."), False),
+    ("credencial em subdiretorio", amp(credenciais="/etc/kindle-monitor/x/amp.cred"), False),
+    ("credencial oculta", amp(credenciais="/etc/kindle-monitor/.amp"), False),
+    ("credencial com espaco", amp(credenciais="/etc/kindle-monitor/a b"), False),
+    ("credencial com quebra de linha", amp(credenciais="/etc/kindle-monitor/amp.cred\n"), False),
+    ("credencial nao texto", amp(credenciais=["/etc/kindle-monitor/amp.cred"]), False),
+    ("nao e objeto (lista)", [amp()], False),
+    ("nao e objeto (texto)", "http://10.0.0.60:8080", False),
+    ("objeto vazio", {}, False),
+]
+
+
+class ParidadeAmpTest(unittest.TestCase):
+    """A chave e opcional e e um objeto unico: o servidor devolve None quando recusa (feature desligada); o executor
+    levanta ValueError, e `None` (chave ausente) vale como desligado nos dois."""
+
+    def test_tamanho_da_tabela(self):
+        self.assertGreaterEqual(len(AMP), 40)
+
+    def test_executor_e_servidor_decidem_igual(self):
+        for desc, entrada, esperado in AMP:
+            with self.subTest(caso=desc):
+                ok_ex, saida_ex = _executor(ex.validar_amp, entrada)
+                saida_sv = eco.validar_amp(entrada)
+                self.assertEqual(ok_ex, esperado, "executor (referencia): %s" % desc)
+                self.assertEqual(saida_sv is not None, esperado, "servidor: %s" % desc)
+                if esperado:
+                    self.assertEqual(saida_sv, saida_ex, "mesma normalizacao: %s" % desc)
+
+    def test_chave_ausente_e_desligada_nos_dois(self):
+        self.assertIsNone(ex.validar_amp(None))
+        self.assertIsNone(eco.validar_amp(None))
+
+    def test_normaliza_a_barra_final(self):
+        esperado = {"url": "http://10.0.0.60:8080", "credenciais": "/etc/kindle-monitor/amp.cred"}
+        self.assertEqual(ex.validar_amp(amp(url="http://10.0.0.60:8080/")), esperado)
+        self.assertEqual(eco.validar_amp(amp(url="http://10.0.0.60:8080/")), esperado)
+
+    def test_nao_aliasa_a_entrada(self):
+        entrada = amp()
+        self.assertIsNot(ex.validar_amp(entrada), entrada)
+        self.assertIsNot(eco.validar_amp(entrada), entrada)
+
+    def test_diretorio_das_credenciais_igual(self):
+        self.assertEqual(ex.AMP_DIR_CREDENCIAIS, eco.AMP_DIR_CREDENCIAIS)
+
+    def test_config_de_producao_passa_nos_dois(self):
+        import json
+        cam = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                           "deploy", "config.atheron.json")
+        with open(cam, encoding="utf-8") as f:
+            valor = json.load(f).get("amp")
+        self.assertIsNotNone(valor, "deploy/config.atheron.json deve trazer a chave amp")
+        self.assertEqual(ex.validar_amp(valor), eco.validar_amp(valor))
+        self.assertIsNotNone(eco.validar_amp(valor))
 
 
 if __name__ == "__main__":
