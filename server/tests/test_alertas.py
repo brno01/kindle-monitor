@@ -3,8 +3,8 @@ import unittest
 import _caminho  # noqa: F401
 import alertas
 
-PAGINAS = ("resumo", "servicos", "aparelhos", "detalhes", "claude", "comandos")
-SISTEMAS = ("atheron", "nas", "aparelhos", "servicos", "rotinas", "claude", "github", "ragnarok", "kindle")
+PAGINAS = ("resumo", "servicos", "aparelhos", "detalhes", "claude", "comandos", "jogos")
+SISTEMAS = ("atheron", "nas", "aparelhos", "servicos", "rotinas", "claude", "github", "jogos", "amp", "kindle")
 GIB = 2 ** 30
 
 
@@ -365,7 +365,7 @@ class GithubRagnarokTest(unittest.TestCase):
         m = {"portas": [{"rotulo": "LOGIN", "aberto": True}, {"rotulo": "MAP", "aberto": False}]}
         a = alertas.avaliar(m)
         self.assertEqual(len(a), 1)
-        self.assertEqual((a[0]["nivel"], a[0]["sistema"], a[0]["pagina"]), ("aviso", "ragnarok", "servicos"))
+        self.assertEqual((a[0]["nivel"], a[0]["sistema"], a[0]["pagina"]), ("aviso", "jogos", "jogos"))
         self.assertIn("MAP", a[0]["texto"])
 
     def test_portas_com_erro(self):
@@ -500,7 +500,7 @@ class RobustezTest(unittest.TestCase):
 
     def test_tipos_errados_em_cada_chave(self):
         chaves = ("discos", "ram", "swap", "temp_cpu", "servicos_kindle", "servicos", "claude", "s10", "portas",
-                  "ragnarok", "aparelhos", "rotinas", "github", "limiares")
+                  "ragnarok", "aparelhos", "rotinas", "github", "limiares", "amp")
         lixos = (None, 1, True, "x", [], [1, None, "a"], {}, {"a": 1}, float("nan"), [[]], {"itens": 5},
                  {"itens": [None, 1, "x", []]}, {"pct": "x"}, {"pct": None}, {"c": "x"}, {"c": None},
                  {"limites": 1, "tokens": [], "sessoes": "x"}, {"limites": {"cinco_horas": "x", "semanal": 5}},
@@ -515,7 +515,7 @@ class RobustezTest(unittest.TestCase):
 
     def test_tudo_malformado_junto(self):
         m = {k: "x" for k in ("discos", "ram", "swap", "temp_cpu", "servicos_kindle", "claude", "s10", "portas",
-                              "aparelhos", "rotinas", "github")}
+                              "aparelhos", "rotinas", "github", "amp")}
         self.assertEqual(alertas.avaliar(m, "x", "y"), [])
 
     def test_servico_sem_campos(self):

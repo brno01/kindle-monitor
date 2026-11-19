@@ -605,7 +605,7 @@ _LINHAS = (("atheron", "servidor", "ATHERON", ("atheron",)), ("nas", "nas", "NAS
            ("aparelhos", "aparelhos", "APARELHOS", ("aparelhos", "kindle")),
            ("servicos", "servicos", "SERVICOS", ("servicos",)), ("rotinas", "rotinas", "ROTINAS", ("rotinas",)),
            ("claude", "claude", "CLAUDE", ("claude",)), ("github", "github", "GITHUB", ("github",)),
-           ("ragnarok", "jogo", "RAGNAROK", ("ragnarok",)))
+           ("ragnarok", "jogo", "RAGNAROK", ("jogos",)))
 SEM_DADOS = "sem dados"
 SEP = "  \u00b7  "
 GRUPOS_RESUMO = ("host", "docker", "incus", "ragnarok")

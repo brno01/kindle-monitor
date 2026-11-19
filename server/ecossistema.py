@@ -21,6 +21,10 @@ ROTINAS_ARQ = "rotinas.json"
 JOGOS_ARQ = "jogos.json"
 
 MAX_ITENS = 16
+AMP_ESTADOS = ("rodando", "parado", "iniciando", "falha", "outro")
+AMP_VALOR_MAX = 99999
+RE_AMP_ID = re.compile(r"^[0-9a-f]{8}\Z")
+AMP_ERRO_TAM = 40
 CHAVES_APARELHO = frozenset(("id", "nome", "rotulo", "icone", "alerta_offline_min"))
 CHAVES_ROTINA = frozenset(("id", "rotulo", "tipo", "alvo", "max_idade_h"))
 RE_ID = re.compile(r"^[a-z0-9-]{1,24}\Z")
@@ -266,3 +270,75 @@ def montar_rotinas(catalogo, texto, agora):
     except Exception:
         return {"inventario": "ausente", "idade_s": None, "itens": [],
                 "unidades_falhas": {"n": 0, "nomes": []}}
+
+
+def _contagem(v):
+    """Contagem de jogadores/vagas do jogos.json -> int 0..AMP_VALOR_MAX ou None (bool, texto, negativo, NaN, fracao)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if isinstance(v, float):
+        if v != v or abs(v) == float("inf") or v != int(v):
+            return None
+        v = int(v)
+    return v if 0 <= v <= AMP_VALOR_MAX else None
+
+
+def _instancia_amp(it):
+    if not isinstance(it, dict):
+        return None
+    i = it.get("id")
+    if not isinstance(i, str) or not RE_AMP_ID.match(i):
+        return None
+    estado = it.get("estado") if it.get("estado") in AMP_ESTADOS else "outro"
+    jogadores = maximo = None
+    if estado == "rodando":
+        jogadores = _contagem(it.get("jogadores"))
+        maximo = _contagem(it.get("max")) if jogadores is not None else None
+    return {"id": i, "nome": sanear(it.get("nome"), 24) or "?", "modulo": sanear(it.get("modulo"), 16),
+            "estado": estado, "jogadores": jogadores, "max": maximo}
+
+
+def _amp_vazio(situacao, idade=None, ativo=None, erro=None, adiantado=False):
+    r = {"ativo": ativo, "inventario": situacao, "idade_s": idade, "erro": erro, "instancias": []}
+    if adiantado:
+        r["relogio_adiantado"] = True
+    return r
+
+
+def montar_amp(texto, agora):
+    """jogos.json do executor -> {"ativo", "inventario", "idade_s", "erro", "instancias"}. Nunca levanta.
+
+    `ativo` True = o executor tem a credencial do AMP (feature ligada; so entao "sem dados" vale alerta), False = sem
+    credencial (AMP desligado, nada a mostrar), None = nao se sabe (arquivo ausente, ilegivel ou de outra versao).
+    `inventario` e "ok", "velho" (mais de 60 s ou relogio adiantado; sem instancias, o `ativo` do arquivo e mantido) ou
+    "ausente". `erro` (texto curto saneado) nao vazio quer dizer que a coleta falhou: sem instancias, nunca verde.
+    Cada instancia sai so com id (8 hex), nome, modulo, estado, jogadores e max, saneados; ligadas primeiro, depois por
+    nome, no maximo 16."""
+    try:
+        if texto is None:
+            return _amp_vazio("ausente")
+        d = json.loads(texto)
+        gerado, ativo, erro, lista = d["gerado"], d["ativo"], d["erro"], d["instancias"]
+        if (d["versao"] != 1 or isinstance(d["versao"], bool) or not _numero(gerado) or not isinstance(ativo, bool)
+                or not isinstance(lista, list) or not (erro is None or isinstance(erro, str))):
+            raise ValueError("formato")
+        idade = agora - gerado
+        if idade < -FUTURO_TOLERADO_S:
+            return _amp_vazio("velho", int(-idade), ativo, adiantado=True)
+        if idade > INVENTARIO_VALIDADE_S:
+            return _amp_vazio("velho", max(0, int(idade)), ativo)
+        r = _amp_vazio("ok", max(0, int(idade)), ativo)
+        if isinstance(erro, str) and erro.strip():
+            r["erro"] = sanear(erro, AMP_ERRO_TAM) or "erro"
+            return r
+        vistos, itens = set(), []
+        for it in lista:
+            i = _instancia_amp(it)
+            if i is not None and i["id"] not in vistos:
+                vistos.add(i["id"])
+                itens.append(i)
+        itens.sort(key=lambda i: (i["estado"] != "rodando", i["nome"].lower(), i["id"]))
+        r["instancias"] = itens[:MAX_ITENS]
+        return r
+    except Exception:
+        return _amp_vazio("ausente")

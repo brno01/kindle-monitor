@@ -23,9 +23,11 @@ TEXTO_MAX = 48
 NIVEIS = ("critico", "aviso", "leve")
 GIB = 2 ** 30
 
-# aba aberta ao tocar na linha de cada sistema (E3 do plano; o Kindle nao tem linha, vai para Sistema)
+# pagina aberta ao tocar na linha de cada sistema (E3 do plano; o Kindle nao tem linha, vai para Sistema). `jogos` (portas
+# do Ragnarok) e `amp` (servidores do AMP) abrem a pagina Jogos, que nao e aba; so `jogos` conta para a forma da linha
+# JOGOS da tela inicial (o aviso "AMP sem dados" vira o "?" da linha, ver render_png._l_jogos)
 _PAGINA = {"atheron": "detalhes", "nas": "detalhes", "rotinas": "detalhes", "kindle": "detalhes",
-           "aparelhos": "aparelhos", "servicos": "servicos", "ragnarok": "servicos",
+           "aparelhos": "aparelhos", "servicos": "servicos", "jogos": "jogos", "amp": "jogos",
            "claude": "claude", "github": "claude"}
 
 
@@ -215,6 +217,9 @@ def _inventarios_parados(m):
         b = _dict(m.get(nome))
         if b.get("inventario") == "velho":
             out.append(b)
+    amp = _dict(m.get("amp"))
+    if amp.get("inventario") == "velho" and amp.get("ativo") is True:  # sem credencial, o AMP nem esta ligado
+        out.append(amp)
     return out
 
 
@@ -280,7 +285,7 @@ def _r_ci(m, lim, kv):
 
 
 def _r_portas(m, lim, kv):
-    return [_alerta("aviso", _texto("Porta ", p.get("rotulo"), " fechada"), "ragnarok")
+    return [_alerta("aviso", _texto("Porta ", p.get("rotulo"), " fechada"), "jogos")
             for p in _lista(m.get("portas")) if isinstance(p, dict) and p.get("aberto") is False]
 
 
@@ -300,7 +305,7 @@ def _r_bateria_s10(m, lim, kv):
 
 
 _NOME_FONTE = {"limites": "Limites do Claude", "tokens": "Tokens do Claude", "s10": "S10", "github": "GitHub",
-               "aparelhos": "Aparelhos", "rotinas": "Rotinas"}
+               "aparelhos": "Aparelhos", "rotinas": "Rotinas", "amp": "AMP"}
 
 
 def _fonte_velha(nome, sistema, bloco):
@@ -325,10 +330,20 @@ def _r_fontes_velhas(m, lim, kv):
         if _dict(bloco).get("velho") is True:
             out.append(_fonte_velha(nome, sistema, bloco))
     if len(_inventarios_parados(m)) < 2:  # com 2 ou mais, `_r_inventario_servicos` ja deu o aviso unico
-        for nome, bloco in (("aparelhos", m.get("aparelhos")), ("rotinas", m.get("rotinas"))):
-            if _dict(bloco).get("inventario") == "velho":
+        for nome, bloco in (("aparelhos", m.get("aparelhos")), ("rotinas", m.get("rotinas")), ("amp", m.get("amp"))):
+            if _dict(bloco).get("inventario") == "velho" and (nome != "amp" or _dict(bloco).get("ativo") is True):
                 out.append(_fonte_velha(nome, nome, bloco))
     return out
+
+
+def _r_amp_sem_dados(m, lim, kv):
+    """AMP ligado (o executor tem a credencial) mas a coleta falhou: sem numero nenhum nao se pode dizer que esta tudo
+    bem. Leve, porque o aviso do proprio jogo (porta fechada) e outro. Inventario velho tem aviso proprio. Instancia
+    parada ou em falha NAO alerta: desligar um servidor e normal."""
+    b = _dict(m.get("amp"))
+    if b.get("ativo") is True and b.get("inventario") == "ok" and isinstance(b.get("erro"), str) and b["erro"].strip():
+        return [_alerta("leve", "AMP sem dados", "amp")]
+    return []
 
 
 def _r_sessoes(m, lim, kv):
@@ -349,7 +364,7 @@ _REGRAS = (_r_discos, _r_servicos_falha, _r_rotinas_falha, _r_unidades_falhas, _
            _r_servicos_parados, _r_inventario_servicos,
            _r_rotinas_atrasadas, _r_rotinas_sem_dados, _r_claude_limites, _r_ci, _r_portas,
            _r_bateria_kindle, _r_bateria_s10, _r_fontes_velhas,
-           _r_sessoes)
+           _r_sessoes, _r_amp_sem_dados)
 
 
 def avaliar(m, lim=None, kv=None):
