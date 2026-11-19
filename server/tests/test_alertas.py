@@ -361,6 +361,53 @@ class GithubRagnarokTest(unittest.TestCase):
         self.assertEqual((a[0]["nivel"], a[0]["sistema"], a[0]["pagina"]), ("aviso", "github", "claude"))
         self.assertIn("kindle-monitor", a[0]["texto"])
 
+    def _prs(self, *conflitos, **extra):
+        return {"github": dict({"prs": [{"repo": r, "numero": n, "conflito": c} for r, n, c in conflitos],
+                                "ci": [], "velho": False}, **extra)}
+
+    def test_pr_com_conflito_e_um_alerta_por_pr(self):
+        a = alertas.avaliar(self._prs(("dotfiles", 7, True), ("kindle-monitor", 12, False),
+                                      ("cerberus", 3, True)))
+        self.assertEqual([x["texto"] for x in a], ["PR #7 com conflito (dotfiles)", "PR #3 com conflito (cerberus)"])
+        self.assertEqual({(x["nivel"], x["sistema"], x["pagina"]) for x in a}, {("aviso", "github", "claude")})
+
+    def test_conflito_mais_de_tres_agrega(self):
+        a = alertas.avaliar(self._prs(*[("r%d" % i, i, True) for i in range(1, 7)]))
+        self.assertEqual([x["texto"] for x in a], ["PR #1 com conflito (r1)", "PR #2 com conflito (r2)",
+                                                   "PR #3 com conflito (r3)", "+3 PRs com conflito"])
+        a = alertas.avaliar(self._prs(*[("r%d" % i, i, True) for i in range(1, 6)]))
+        self.assertEqual(a[-1]["texto"], "+2 PRs com conflito")
+        a = alertas.avaliar(self._prs(*[("r%d" % i, i, True) for i in range(1, 5)]))
+        self.assertEqual(a[-1]["texto"], "+1 PR com conflito")
+        self.assertEqual(len(alertas.avaliar(self._prs(*[("r%d" % i, i, True) for i in range(1, 4)]))), 3)
+
+    def test_conflito_so_true_estrito_e_formato_antigo(self):
+        m = {"github": {"prs": [{"repo": "a", "numero": 1}, {"repo": "a", "numero": 2, "conflito": 1},
+                                {"repo": "a", "numero": 3, "conflito": "true"}], "ci": []}}
+        self.assertEqual(alertas.avaliar(m), [])
+
+    def test_conflito_texto_cabe_em_48_e_e_ascii(self):
+        a = alertas.avaliar(self._prs(("r" * 40 + "\u00e7", 123456, True)))
+        self.assertLessEqual(len(a[0]["texto"]), alertas.TEXTO_MAX)
+        self.assertTrue(a[0]["texto"].isascii())
+        self.assertEqual(alertas.avaliar(self._prs((None, 5, True)))[0]["texto"], "PR #5 com conflito (?)")
+
+    def test_conflito_e_ci_sao_alertas_distintos_do_mesmo_repo(self):
+        m = self._prs(("dotfiles", 7, True))
+        m["github"]["ci"] = [{"repo": "dotfiles", "branch": "main", "estado": "falha"}]
+        self.assertEqual(sorted(x["texto"] for x in alertas.avaliar(m)),
+                         ["CI falhou em dotfiles", "PR #7 com conflito (dotfiles)"])
+
+    def test_sem_alerta_para_revisao_issues_ou_idade(self):
+        m = {"github": {"prs": [{"repo": "a", "numero": 1, "revisao": "pendente", "conflito": False, "idade_d": 900},
+                                {"repo": "a", "numero": 2, "revisao": "mudancas", "idade_d": 9999}],
+                        "ci": [], "issues": {"n": 400, "itens": []}, "repos": [{"repo": "a", "push_d": 9000}]}}
+        self.assertEqual(alertas.avaliar(m), [])
+
+    def test_conflito_com_bloco_estranho_nao_levanta(self):
+        for g in (None, 3, "x", {"prs": "x"}, {"prs": [None, 3, "x", {"conflito": True}]}):
+            alertas.avaliar({"github": g})
+
     def test_porta_fechada_e_aviso(self):
         m = {"portas": [{"rotulo": "LOGIN", "aberto": True}, {"rotulo": "MAP", "aberto": False}]}
         a = alertas.avaliar(m)

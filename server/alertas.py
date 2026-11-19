@@ -20,6 +20,7 @@ _FAIXAS["temp_cpu_c"] = (40, 120)
 _FAIXAS["sessao_esperando_min"] = (1, 1440)
 
 TEXTO_MAX = 48
+CONFLITOS_MAX = 3  # PRs com conflito com alerta proprio; o resto vira "+N PRs com conflito"
 NIVEIS = ("critico", "aviso", "leve")
 GIB = 2 ** 30
 
@@ -284,6 +285,21 @@ def _r_ci(m, lim, kv):
             if isinstance(c, dict) and c.get("estado") == "falha"]
 
 
+def _r_conflitos(m, lim, kv):
+    """PR com conflito de merge: um aviso por PR (ate 3) e "+N PRs com conflito" para o resto. Revisao pendente, issues
+    e idade nao alertam: sao informacao da pagina Dev, nao excecao."""
+    prs = [p for p in _lista(_dict(m.get("github")).get("prs")) if isinstance(p, dict) and p.get("conflito") is True]
+    out = []
+    for p in prs[:CONFLITOS_MAX]:
+        n = _num(p.get("numero"))
+        out.append(_alerta("aviso", _texto("PR #%s com conflito (" % ("?" if n is None else _pct(n)), p.get("repo"), ")"),
+                           "github"))
+    if len(prs) > CONFLITOS_MAX:
+        resto = len(prs) - CONFLITOS_MAX
+        out.append(_alerta("aviso", "+%d %s com conflito" % (resto, "PR" if resto == 1 else "PRs"), "github"))
+    return out
+
+
 def _r_portas(m, lim, kv):
     return [_alerta("aviso", _texto("Porta ", p.get("rotulo"), " fechada"), "jogos")
             for p in _lista(m.get("portas")) if isinstance(p, dict) and p.get("aberto") is False]
@@ -362,7 +378,7 @@ def _r_sessoes(m, lim, kv):
 _REGRAS = (_r_discos, _r_servicos_falha, _r_rotinas_falha, _r_unidades_falhas, _r_aparelhos_offline,
            _r_ram, _r_swap, _r_temp,
            _r_servicos_parados, _r_inventario_servicos,
-           _r_rotinas_atrasadas, _r_rotinas_sem_dados, _r_claude_limites, _r_ci, _r_portas,
+           _r_rotinas_atrasadas, _r_rotinas_sem_dados, _r_claude_limites, _r_ci, _r_conflitos, _r_portas,
            _r_bateria_kindle, _r_bateria_s10, _r_fontes_velhas,
            _r_sessoes, _r_amp_sem_dados)
 
