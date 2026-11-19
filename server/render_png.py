@@ -1,6 +1,7 @@
 """Tela PNG (retrato, tons de cinza) do kindle-monitor. Funcoes puras: metricas -> bytes PNG.
 
-Seis paginas (resumo, servicos, aparelhos, detalhes, claude, comandos) mais a barra de navegacao fixa no rodape. Os botoes vem
+Sete paginas (resumo, servicos, aparelhos, detalhes, claude, comandos e jogos, que nao e aba) mais a barra de navegacao fixa
+no rodape. Os botoes vem
 sempre de `botoes.layout` (a mesma funcao que serve /botoes.json): aqui so se desenha o que ela devolve.
 Visual e-ink: alto contraste, contornos finos, raios pequenos, sem sombras; so os tamanhos de fonte embutidos
 (26 e 34; negrito tambem 48, 72 e 140). Estado de servico: forma antes da cor (cheia = ativo, vazia = parado,
@@ -50,6 +51,24 @@ def _ajustar(c, texto, fonte, tam, larg_max):
     while texto and c.medir(texto + "...", fonte, tam) > larg_max:
         texto = texto[:-1]
     return (texto + "...") if c.medir(texto + "...", fonte, tam) <= larg_max else ""
+
+
+_SEPARADORES_ITENS = ("  ", ", ")
+
+
+def _ajustar_itens(c, texto, fonte, tam, larg_max):
+    """Como `_ajustar`, mas corta so em fronteira de item (depois de um dos `separadores`) e termina em "...": a linha
+    JOGOS lista nomes de servidores, e "parado: V..." nao diz nada. Sem fronteira que caiba, cai no corte por caractere."""
+    texto = _limpar(texto)
+    if c.medir(texto, fonte, tam) <= larg_max:
+        return texto
+    cortes = sorted({i for sep in _SEPARADORES_ITENS for i in range(1, len(texto)) if texto.startswith(sep, i)},
+                    reverse=True)
+    for i in cortes:
+        cand = texto[:i].rstrip(" ,\u00b7") + "..."
+        if len(cand) > 3 and c.medir(cand, fonte, tam) <= larg_max:
+            return cand
+    return _ajustar(c, texto, fonte, tam, larg_max)
 
 
 def _ok(bloco):
@@ -605,7 +624,7 @@ _LINHAS = (("atheron", "servidor", "ATHERON", ("atheron",)), ("nas", "nas", "NAS
            ("aparelhos", "aparelhos", "APARELHOS", ("aparelhos", "kindle")),
            ("servicos", "servicos", "SERVICOS", ("servicos",)), ("rotinas", "rotinas", "ROTINAS", ("rotinas",)),
            ("claude", "claude", "CLAUDE", ("claude",)), ("github", "github", "GITHUB", ("github",)),
-           ("ragnarok", "jogo", "RAGNAROK", ("ragnarok",)))
+           ("jogos", "jogo", "JOGOS", ("jogos",)))
 SEM_DADOS = "sem dados"
 SEP = "  \u00b7  "
 GRUPOS_RESUMO = ("host", "docker", "incus", "ragnarok")
@@ -815,19 +834,37 @@ def _sessoes_dados(cl):
     return itens, total, esp
 
 
+def _push_txt(dias):
+    """"push hoje" / "push ha 3 d"; "" sem dado."""
+    return "" if dias is None else "push hoje" if dias == 0 else "push ha %d d" % dias
+
+
 def _l_github(m, kv, itens):
+    """GITHUB da tela inicial. Valor: "11 PRs  3 issues" (sem issues no arquivo, so os PRs). Detalhe, por prioridade:
+    CI falhou, conflito, mudancas pedidas, CI pendente (se nao houve falha) ou CI ok, e o push mais recente."""
     d = _github_dados(m.get("github"), PRS_MAX)
     if d is None:
         return "", "", False
-    valor = _plural(d["abertos"], "PR aberto", "PRs abertos")
+    valor = _plural(d["abertos"], "PR", "PRs")
+    if d["issues"] is not None:
+        valor += "  " + _plural(d["issues"]["n"], "issue", "issues")
     falha = next((i for i in d["ci_ruins"] if i.get("estado") == "falha"), None)
+    det = []
     if falha is not None:
-        det = "CI falhou: " + _repo(falha)
-    elif d["ci_ruins"]:
-        det = "CI pendente: " + _repo(d["ci_ruins"][0])
-    else:
-        det = "CI ok" if d["ci_ok"] else ""
-    return valor, det, True
+        det.append("CI falhou: " + _repo(falha))
+    if d["conflitos"]:
+        pr = d["conflitos"][0]
+        n = _num(pr.get("numero"))
+        det.append("conflito: " + _repo(pr) + (" #%d" % n if n is not None and n >= 0 else ""))
+    if d["mudancas"]:
+        det.append("mudancas pedidas: %d" % d["mudancas"])
+    if falha is None:
+        if d["ci_ruins"]:
+            det.append("CI pendente: " + _repo(d["ci_ruins"][0]))
+        elif d["ci_ok"]:
+            det.append("CI ok")
+    det.append(_push_txt(d["push_d"]))
+    return valor, SEP.join(x for x in det if x), True
 
 
 ROTINAS_SEM = "rotinas sem dado"
@@ -892,23 +929,86 @@ def _l_claude(m, kv, itens):
     return valor, det, True
 
 
-def _l_ragnarok(m, kv, itens):
+AMP_ESTADOS = ("rodando", "parado", "iniciando", "falha", "outro")
+AMP_MAX = 16
+
+
+def _portas_lista(m):
+    p = m.get("portas")
+    return [x for x in p if isinstance(x, dict)] if isinstance(p, list) else []
+
+
+def _item_amp(it):
+    """Instancia do bloco `amp` ja normalizada para o desenho (texto limpo, estado conhecido, contagens int)."""
+    nome = _limpar(it.get("nome")).strip()[:24] if isinstance(it.get("nome"), str) else ""
+    modulo = _limpar(it.get("modulo")).strip()[:16] if isinstance(it.get("modulo"), str) else ""
+    estado = it.get("estado") if it.get("estado") in AMP_ESTADOS else "outro"
+    jog, mx = _num(it.get("jogadores")), _num(it.get("max"))
+    jog = int(jog) if estado == "rodando" and jog is not None and jog >= 0 else None
+    mx = int(mx) if jog is not None and mx is not None and mx >= 0 else None
+    return {"nome": nome or "?", "modulo": modulo, "estado": estado, "jogadores": jog, "max": mx}
+
+
+def _amp_dados(m):
+    """(situacao, itens, bloco) do AMP em `m`. situacao: None = AMP fora da tela (sem a chave, credencial ausente/
+    desligado, arquivo ausente: "simplesmente nao aparece"); "sem_dados" = ligado mas sem coleta valida (erro ou
+    inventario velho: nunca verde); "ok". `itens` so existe em "ok": ligadas primeiro, depois por nome."""
+    b = m.get("amp") if isinstance(m, dict) else None
+    if not isinstance(b, dict) or b.get("ativo") is not True:
+        return None, [], b if isinstance(b, dict) else {}
+    erro = b.get("erro")
+    if b.get("inventario") != "ok" or (isinstance(erro, str) and erro.strip()) or not isinstance(b.get("instancias"), list):
+        return "sem_dados", [], b
+    itens = [_item_amp(i) for i in b["instancias"] if isinstance(i, dict)][:AMP_MAX]
+    itens.sort(key=lambda i: (i["estado"] != "rodando", i["nome"].lower()))
+    return "ok", itens, b
+
+
+def _contagem_amp(it):
+    """"2/20", "2" ou "" (sem numero) de uma instancia rodando."""
+    if it["jogadores"] is None:
+        return ""
+    return "%d/%d" % (it["jogadores"], it["max"]) if it["max"] is not None else "%d" % it["jogadores"]
+
+
+def _l_jogos(m, kv, itens):
+    """Linha JOGOS: valor = "Ragnarok 0  Minecraft 2/20" (so o que esta ligado, ligadas primeiro; o desenho corta com
+    "..."); detalhe = estado do Ragnarok ("MAP fechada" ou "login ok char ok map ok") seguido do que nao esta ligado
+    ("iniciando: ...", "falha: ...", "parado: ..."). O AMP so entra se estiver ligado (credencial); ligado sem dado vira
+    "AMP sem dados" e a forma "?", a menos que o Ragnarok tenha porta fechada (a forma e a dele). Instancia parada nao
+    muda a forma da linha."""
     rag = m.get("ragnarok")
-    portas = m.get("portas")
-    portas = [p for p in portas if isinstance(p, dict)] if isinstance(portas, list) else []
-    valor = ""
+    partes = []
     if _ok(rag) and _num(rag.get("jogadores")) is not None:
-        n = int(rag["jogadores"])
-        valor = "%d jogador%s" % (n, "" if n == 1 else "es")
-        if rag.get("parado"):
-            valor += "  parado"
-    det = "  ".join("%s %s" % (_limpar(p.get("rotulo", "?")).lower(), "ok" if p.get("aberto") else "fechada")
-                    for p in portas)
-    return valor, det, bool(valor or det)
+        partes.append("Ragnarok %d%s" % (int(rag["jogadores"]), "  parado" if rag.get("parado") else ""))
+    situacao, amp_itens, _ = _amp_dados(m)
+    for it in amp_itens:
+        if it["estado"] == "rodando":
+            partes.append(("%s %s" % (it["nome"], _contagem_amp(it))).strip())
+    valor = "  ".join(partes)
+    if not valor and situacao == "ok":
+        valor = "nenhum ligado"
+    portas = _portas_lista(m)
+    fechadas = [_limpar(p.get("rotulo", "?")) for p in portas if p.get("aberto") is False]
+    det = []
+    if fechadas:
+        det.append("%s %s" % (", ".join(fechadas), "fechada" if len(fechadas) == 1 else "fechadas"))
+    elif any(p.get("aberto") is True for p in portas):
+        det.append(" ".join("%s ok" % _limpar(p.get("rotulo", "?")).lower() for p in portas if p.get("aberto") is True))
+    if situacao == "sem_dados":
+        det.append("AMP sem dados")
+    for estado in ("iniciando", "falha", "outro", "parado"):
+        nomes = [it["nome"] for it in amp_itens if it["estado"] == estado]
+        if nomes:
+            det.append("%s: %s" % (estado, ", ".join(nomes)))
+    detalhe = SEP.join(det)
+    if situacao == "sem_dados" and not fechadas:
+        return valor, detalhe, None  # "?": o aviso leve "AMP sem dados" do motor nao troca a forma (so uma porta fechada)
+    return valor, detalhe, bool(valor or detalhe)
 
 
 _CONSTRUTORES = {"atheron": _l_atheron, "nas": _l_nas, "aparelhos": _l_aparelhos, "servicos": _l_servicos,
-                 "rotinas": _l_rotinas, "claude": _l_claude, "github": _l_github, "ragnarok": _l_ragnarok}
+                 "rotinas": _l_rotinas, "claude": _l_claude, "github": _l_github, "jogos": _l_jogos}
 
 
 _LINHAS_AVISADAS = set()  # (linha, tipo do erro) ja registrados: a tela redesenha a cada segundo
@@ -959,11 +1059,13 @@ def _linha_sistema(c, caixa, linha):
     cap_v, cap_d = _cap(NEG, 34), _cap(REG, 26)
     topo = y + (h - (cap_v + 16 + cap_d)) // 2
     base1 = topo + cap_v
+    # JOGOS e GITHUB listam itens: so cortam entre itens
+    ajustar = _ajustar_itens if linha.get("id") in ("jogos", "github") else _ajustar
     c.texto(xt, base1, _ajustar(c, linha.get("titulo", ""), NEG, 26, xv - xt - 8), NEG, 26, ESCURO)
-    c.texto(xv, base1, _ajustar(c, linha.get("valor", ""), NEG, 34, fim - xv), NEG, 34, MEDIO if sem else PRETO)
+    c.texto(xv, base1, ajustar(c, linha.get("valor", ""), NEG, 34, fim - xv), NEG, 34, MEDIO if sem else PRETO)
     det = linha.get("detalhe") or ""
     if det:
-        c.texto(xv, base1 + 16 + cap_d, _ajustar(c, det, REG, 26, fim - xv), REG, 26, ESCURO)
+        c.texto(xv, base1 + 16 + cap_d, ajustar(c, det, REG, 26, fim - xv), REG, 26, ESCURO)
 
 
 FAIXA_MIN = 150  # sobra minima (px) entre o fim do ATENCAO e o fim da caixa para desenhar o HISTORICO
@@ -1710,22 +1812,73 @@ def _estado_pr(pr):
     return {"ok": "ativo", "falha": "falha", "pendente": "parado"}.get(pr.get("ci")), ""
 
 
+ISSUES_MAX = 5
+REPOS_MAX = 6
+
+
+def _dias(v):
+    """Dias 0..9999 de um campo opcional do GitHub, ou None (ausente, bool, fora da faixa)."""
+    n = _num(v)
+    return int(n) if n is not None and not isinstance(v, bool) and float(n).is_integer() and 0 <= n <= 9999 else None
+
+
+def _revisao_pr(pr):
+    r = pr.get("revisao")
+    return r if r in ("aprovado", "mudancas", "pendente") else None
+
+
+def _grav_pr(pr):
+    """Gravidade de um PR para decidir quem fica no corte: CI em falha ou conflito primeiro, depois CI pendente ou
+    mudancas pedidas, depois o resto (mesma escala de `_GRAVIDADE`)."""
+    g = _GRAVIDADE.get(_estado_pr(pr)[0], 1)
+    if pr.get("conflito") is True:
+        g = max(g, 3)
+    if _revisao_pr(pr) == "mudancas":
+        g = max(g, 2)
+    return g
+
+
+def _issues_dados(g):
+    """{"n", "itens"} (ate ISSUES_MAX itens validos) de g["issues"], ou None se falta ou tem forma errada."""
+    b = g.get("issues")
+    if not isinstance(b, dict) or not isinstance(b.get("itens"), list):
+        return None
+    itens = [i for i in b["itens"] if isinstance(i, dict)][:ISSUES_MAX]
+    n = _dias(b.get("n"))
+    return {"n": n if n is not None and n >= len(itens) else len(itens), "itens": itens}
+
+
+def _repos_dados(g):
+    """Repos com push (ate REPOS_MAX, mais recente primeiro) de g["repos"]; sem `push_d` valido o repo some."""
+    if not isinstance(g.get("repos"), list):
+        return []
+    itens = [r for r in g["repos"] if isinstance(r, dict) and _dias(r.get("push_d")) is not None]
+    return sorted(itens[:REPOS_MAX], key=lambda r: _dias(r.get("push_d")))
+
+
 def _github_dados(g, max_prs):
     """Resumo de m["github"] para o cartao e as linhas, ou None se a chave falta, e "n/d" ou o bloco e invalido:
-    {"prs": ate `max_prs` PRs (os com CI em falha primeiro quando precisa cortar), "resto": PRs que ficaram de fora,
-     "abertos", "ci_ruins": entradas de CI com falha e depois pendentes, "ci_ok": quantas ok, "velho", "idade_s"}."""
+    {"prs": ate `max_prs` PRs (os de maior gravidade primeiro quando precisa cortar), "resto": PRs que ficaram de
+     fora, "abertos", "ci_ruins": entradas de CI com falha e depois pendentes, "ci_ok": quantas ok, "velho",
+     "idade_s", "conflitos": todos os PRs com conflito, "mudancas": PRs com mudancas pedidas, "issues": None ou
+     {"n","itens"}, "repos": repos com push e "push_d": dias desde o push mais recente (None sem repos)}.
+    Os campos de revisao, conflito, idade, issues e repos sao opcionais (arquivos antigos): faltando, ficam neutros."""
     if not _ok(g) or not isinstance(g.get("prs"), list):
         return None
     prs = [p for p in g["prs"] if isinstance(p, dict)][:20]
     ci = [i for i in g.get("ci", []) if isinstance(i, dict)][:30] if isinstance(g.get("ci"), list) else []
     abertos = _num(g.get("abertos"))
     abertos = int(abertos) if abertos is not None and abertos >= len(prs) else len(prs)
+    conflitos = [p for p in prs if p.get("conflito") is True]
+    mudancas = sum(1 for p in prs if _revisao_pr(p) == "mudancas")
     if len(prs) > max_prs:
-        prs = sorted(prs, key=lambda p: -_GRAVIDADE.get(_estado_pr(p)[0], 1))[:max(0, max_prs)]
+        prs = sorted(prs, key=lambda p: -_grav_pr(p))[:max(0, max_prs)]
     ruins = [i for i in ci if i.get("estado") == "falha"] + [i for i in ci if i.get("estado") == "pendente"]
+    repos = _repos_dados(g)
     return {"prs": prs, "resto": abertos - len(prs), "abertos": abertos, "ci_ruins": ruins,
             "ci_ok": sum(1 for i in ci if i.get("estado") == "ok"), "velho": g.get("velho") is True,
-            "idade_s": g.get("idade_s")}
+            "idade_s": g.get("idade_s"), "conflitos": conflitos, "mudancas": mudancas,
+            "issues": _issues_dados(g), "repos": repos, "push_d": _dias(repos[0].get("push_d")) if repos else None}
 
 
 def _ci_linhas(d):
@@ -1742,20 +1895,132 @@ def _ci_txt(it):
                             " (%s)" % branch if branch else "")
 
 
-def _h_github(g, max_prs):
+ISSUES_LINHAS = ISSUES_MAX       # linhas de itens da secao ISSUES (o "+N" vai no titulo da secao)
+SECAO_TITULO = 42                # titulo de secao do cartao GITHUB (ISSUES, ATIVIDADE)
+SECAO_GAP = 14                   # fio e respiro antes de cada faixa (CI, ISSUES, ATIVIDADE)
+ESQUERDA_MIN = 380               # px que "repo#n titulo" precisa na linha do PR; as marcas cedem antes disso
+
+
+def _dias_txt(dias):
+    """"12d" para a idade de um PR ou issue; "" sem dado."""
+    return "" if dias is None else "%dd" % dias
+
+
+def _push_curto(dias):
+    """"hoje" / "ha 3 d" da secao ATIVIDADE."""
+    return "hoje" if dias == 0 else "ha %d d" % dias
+
+
+def _secoes_github(d, max_iss, max_rep):
+    """(issues, repos) visiveis do cartao GITHUB, cada um (linhas, "+N" resto) ou None se a secao nao aparece (sem o
+    bloco, sem repos ou `max_*` < 0). `max_*` e o numero de linhas de itens; o "+N" nao gasta linha (vai no titulo da
+    secao). O `n` de issues pode ser maior que os itens listados: a diferenca tambem entra no "+N"."""
+    iss = None
+    if d["issues"] is not None and max_iss > 0:
+        vis = d["issues"]["itens"][:max_iss]
+        iss = (vis, d["issues"]["n"] - len(vis))
+    rep = None
+    if d["repos"] and max_rep > 0:
+        vis = d["repos"][:max_rep]
+        rep = (vis, len(d["repos"]) - len(vis))
+    return iss, rep
+
+
+def _h_secao(secao):
+    return 0 if secao is None else SECAO_GAP + SECAO_TITULO + len(secao[0]) * CI_LINHA
+
+
+def _h_github(g, max_prs, max_iss=ISSUES_LINHAS, max_rep=REPOS_MAX):
     d = _github_dados(g, max_prs)
     if d is None:
         return H_SEM_DADOS
     linhas_pr = len(d["prs"]) + (1 if d["resto"] else 0)
     ruins, resto_ci, ok = _ci_linhas(d)
     linhas_ci = len(ruins) + (1 if resto_ci else 0) + (1 if ok else 0)
-    return (CARTAO_BASE + max(1, linhas_pr) * PR_LINHA + (14 + linhas_ci * CI_LINHA if linhas_ci else 0)
-            + CARTAO_FIM)
+    iss, rep = _secoes_github(d, max_iss, max_rep)
+    return (CARTAO_BASE + max(1, linhas_pr) * PR_LINHA + (SECAO_GAP + linhas_ci * CI_LINHA if linhas_ci else 0)
+            + _h_secao(iss) + _h_secao(rep) + CARTAO_FIM)
 
 
-def _card_github(c, g, x, y, w, h, max_prs=PRS_MAX):
-    """Cartao GITHUB: PRs abertos como "repo#n titulo" (forma do CI a direita, "(rascunho)" quando e o caso) e, abaixo,
-    o CI das branches padrao (o que nao esta ok primeiro, depois "N ok"). Os dados velhos mostram a idade no titulo."""
+def _marcas_pr(c, pr, largura):
+    """Marcas do PR, da esquerda para a direita: [(texto, fonte, cor)] ("conflito", "mudancas"/"aprovado", "rascunho",
+    "12d"). So as que deixam `ESQUERDA_MIN` px para "repo#n titulo" em `largura`; cedem primeiro a idade e o rascunho."""
+    marcas = []  # (prioridade: menor fica mais, texto, fonte, cor)
+    if pr.get("conflito") is True:
+        marcas.append((0, "conflito", NEG, PRETO))
+    rev = _revisao_pr(pr)
+    if rev in ("mudancas", "aprovado"):
+        marcas.append((1, rev, NEG if rev == "mudancas" else REG, PRETO if rev == "mudancas" else ESCURO))
+    if pr.get("rascunho") is True:
+        marcas.append((3, "rascunho", REG, ESCURO))
+    idade = _dias_txt(_dias(pr.get("idade_d")))
+    if idade:
+        marcas.append((2, idade, REG, ESCURO))
+
+    def total(ms):
+        return sum(int(c.medir(t, f, 26)) + 14 for _, t, f, _ in ms)
+    while marcas and largura - total(marcas) < ESQUERDA_MIN:
+        marcas.remove(max(marcas, key=lambda m: m[0]))
+    ordem = {0: 0, 1: 1, 3: 2, 2: 3}  # na tela: conflito, revisao, rascunho, idade
+    return [(t, f, cor) for _, t, f, cor in sorted(marcas, key=lambda m: ordem[m[0]])]
+
+
+def _linha_secao(c, x, w, yc, ref, texto, direita, ref_larg_max):
+    """Linha de ISSUES/ATIVIDADE: `ref` em negrito, `texto` em cinza logo depois e `direita` alinhado a direita."""
+    xr = x + w - PAD
+    if direita:
+        _texto_c(c, xr, yc, direita, REG, 26, ESCURO, "dir")
+        xr -= int(c.medir(direita, REG, 26)) + 16
+    tx = x + PAD
+    ref = _ajustar(c, ref, NEG, 26, max(80, min(ref_larg_max, xr - tx)))
+    _texto_c(c, tx, yc, ref, NEG, 26, PRETO)
+    tx += int(c.medir(ref, NEG, 26)) + 14
+    texto = _ajustar(c, texto, REG, 26, xr - tx - 8) if texto and xr - tx > 60 else ""
+    if texto:
+        _texto_c(c, tx, yc, texto, REG, 26, ESCURO)
+
+
+def _secao_titulo(c, x, w, y0, titulo, detalhe, resto):
+    """Fio e titulo da secao (`detalhe` em cinza depois do titulo e o "+N" dos itens que nao couberam a direita)."""
+    c.retangulo(x + PAD, y0 - 8, w - 2 * PAD, 2, TRILHO)
+    yc = y0 + SECAO_TITULO // 2
+    _texto_c(c, x + PAD, yc, titulo, NEG, 26, PRETO)
+    if detalhe:
+        _texto_c(c, x + PAD + int(c.medir(titulo, NEG, 26)) + 14, yc, detalhe, REG, 26, ESCURO)
+    if resto:
+        _texto_c(c, x + w - PAD, yc, "+%d" % resto, NEG, 26, ESCURO, "dir")
+
+
+def _desenhar_issues(c, x, w, y0, secao, n):
+    """Secao ISSUES a partir de `y0` (depois do fio); devolve o y logo abaixo dela."""
+    vis, resto = secao
+    _secao_titulo(c, x, w, y0, "ISSUES", str(n), resto)
+    yy = y0 + SECAO_TITULO
+    for i, it in enumerate(vis):
+        yc = yy + i * CI_LINHA + CI_LINHA // 2
+        n_it = _num(it.get("numero"))
+        ref = _repo(it) + (" #%d" % n_it if n_it is not None and n_it >= 0 else "")
+        titulo = _limpar(it.get("titulo")).strip() if isinstance(it.get("titulo"), str) else ""
+        _linha_secao(c, x, w, yc, ref, titulo, _dias_txt(_dias(it.get("idade_d"))), (w - 2 * PAD) * 45 // 100)
+    return yy + len(vis) * CI_LINHA
+
+
+def _desenhar_atividade(c, x, w, y0, secao):
+    """Secao ATIVIDADE: um repo por linha com o push mais recente primeiro ("hoje" ou "ha N d" a direita)."""
+    vis, resto = secao
+    _secao_titulo(c, x, w, y0, "ATIVIDADE", None, resto)
+    yy = y0 + SECAO_TITULO
+    for i, r in enumerate(vis):
+        yc = yy + i * CI_LINHA + CI_LINHA // 2
+        _linha_secao(c, x, w, yc, _repo(r), "", _push_curto(_dias(r.get("push_d"))), w - 2 * PAD)
+    return yy + len(vis) * CI_LINHA
+
+
+def _card_github(c, g, x, y, w, h, max_prs=PRS_MAX, max_iss=ISSUES_LINHAS, max_rep=REPOS_MAX):
+    """Cartao GITHUB: PRs abertos como "repo#n titulo" com a forma do CI a direita e, antes dela, marcas em texto
+    ("conflito", "mudancas"/"aprovado", "rascunho", idade "12d"); abaixo, o CI das branches padrao (o que nao esta ok
+    primeiro, depois "N ok"), ISSUES (n total e ate 5 linhas) e ATIVIDADE (repos com push recente). O que nao cabe vira
+    "+N". Os dados velhos mostram a idade no titulo."""
     d = _github_dados(g, max_prs)
     if d is None:
         return _card_sem_dados(c, x, y, w, h, "GitHub", "github")
@@ -1771,45 +2036,73 @@ def _card_github(c, g, x, y, w, h, max_prs=PRS_MAX):
     for i, pr in enumerate(d["prs"]):
         yc = yy + i * PR_LINHA + PR_LINHA // 2
         forma = _estado_pr(pr)[0]
-        falha = forma == "falha"
-        if falha:
+        destaque = forma == "falha" or pr.get("conflito") is True
+        if destaque:
             c.retangulo_arredondado(x + 8, yc - PR_LINHA // 2 + 2, w - 16, PR_LINHA - 4, 8, TRILHO)
         if forma is not None:
             _forma(c, xf, yc - 14, 28, forma)
         xr = xf - 16
-        if pr.get("rascunho") is True:
-            _texto_c(c, xr, yc, "(rascunho)", REG, 26, ESCURO, "dir")
-            xr -= int(c.medir("(rascunho)", REG, 26)) + 16
+        for texto, fonte, cor in reversed(_marcas_pr(c, pr, xr - (x + PAD))):
+            _texto_c(c, xr, yc, texto, fonte, 26, cor, "dir")
+            xr -= int(c.medir(texto, fonte, 26)) + 14
         tx = x + PAD
-        ref = _ajustar(c, _pr_ref(pr), NEG, 26, max(80, (xr - tx) * 45 // 100))
+        livre = xr - tx
+        ref = _ajustar(c, _pr_ref(pr), NEG, 26, max(80, livre * 45 // 100,
+                                                    min(int(c.medir(_pr_ref(pr), NEG, 26)) + 1, livre - 40)))
         _texto_c(c, tx, yc, ref, NEG, 26, PRETO)
         tx += int(c.medir(ref, NEG, 26)) + 14
         titulo = _limpar(pr.get("titulo")).strip() if isinstance(pr.get("titulo"), str) else ""
         titulo = _ajustar(c, titulo, REG, 26, xr - tx - 8) if xr - tx > 60 else ""
         if titulo:
             _texto_c(c, tx, yc, titulo, REG, 26, ESCURO)
-        if i != n_pr - 1 and not falha:
+        if i != n_pr - 1 and not destaque:
             c.retangulo(x + PAD, yc + PR_LINHA // 2 - 1, w - 2 * PAD, 2, TRILHO)
     if d["resto"]:
         _texto_c(c, x + PAD, yy + len(d["prs"]) * PR_LINHA + PR_LINHA // 2, "+%d" % d["resto"], NEG, 26, ESCURO)
+    fim = yy + n_pr * PR_LINHA
     ruins, resto_ci, ok = _ci_linhas(d)
-    if not (ruins or resto_ci or ok):
-        return
-    yc0 = yy + n_pr * PR_LINHA + 14
-    c.retangulo(x + PAD, yc0 - 8, w - 2 * PAD, 2, TRILHO)
-    for i, it in enumerate(ruins):
-        yc = yc0 + i * CI_LINHA + CI_LINHA // 2
-        _forma(c, x + PAD, yc - 14, 28, "falha" if it.get("estado") == "falha" else "parado")
-        _texto_c(c, x + PAD + 44, yc, _ajustar(c, _ci_txt(it), NEG, 26, w - 2 * PAD - 44), NEG, 26, PRETO)
-    linha = len(ruins)
-    if resto_ci:
-        _texto_c(c, x + PAD + 44, yc0 + linha * CI_LINHA + CI_LINHA // 2, "+%d" % resto_ci, NEG, 26, ESCURO)
-        linha += 1
-    if ok:
-        yc = yc0 + linha * CI_LINHA + CI_LINHA // 2
-        _forma(c, x + PAD, yc - 14, 28, "ativo")
-        _texto_c(c, x + PAD + 44, yc, "CI", NEG, 26, ESCURO)
-        _texto_c(c, x + PAD + 44 + int(c.medir("CI", NEG, 26)) + 12, yc, "%d ok" % ok, REG, 26, ESCURO)
+    if ruins or resto_ci or ok:
+        yc0 = fim + SECAO_GAP
+        c.retangulo(x + PAD, yc0 - 8, w - 2 * PAD, 2, TRILHO)
+        for i, it in enumerate(ruins):
+            yc = yc0 + i * CI_LINHA + CI_LINHA // 2
+            _forma(c, x + PAD, yc - 14, 28, "falha" if it.get("estado") == "falha" else "parado")
+            _texto_c(c, x + PAD + 44, yc, _ajustar(c, _ci_txt(it), NEG, 26, w - 2 * PAD - 44), NEG, 26, PRETO)
+        linha = len(ruins)
+        if resto_ci:
+            _texto_c(c, x + PAD + 44, yc0 + linha * CI_LINHA + CI_LINHA // 2, "+%d" % resto_ci, NEG, 26, ESCURO)
+            linha += 1
+        if ok:
+            yc = yc0 + linha * CI_LINHA + CI_LINHA // 2
+            _forma(c, x + PAD, yc - 14, 28, "ativo")
+            _texto_c(c, x + PAD + 44, yc, "CI", NEG, 26, ESCURO)
+            _texto_c(c, x + PAD + 44 + int(c.medir("CI", NEG, 26)) + 12, yc, "%d ok" % ok, REG, 26, ESCURO)
+            linha += 1
+        fim = yc0 + linha * CI_LINHA
+    iss, rep = _secoes_github(d, max_iss, max_rep)
+    if iss is not None:
+        fim = _desenhar_issues(c, x, w, fim + SECAO_GAP, iss, d["issues"]["n"])
+    if rep is not None:
+        _desenhar_atividade(c, x, w, fim + SECAO_GAP, rep)
+
+
+# incrementos do plano do cartao GITHUB, na ordem em que valem a pena: (campo, valor) com campo 0 = PRs, 1 = linhas de
+# ISSUES (ate 5), 2 = linhas de ATIVIDADE (ate 6). Primeiro 3 PRs, depois um pouco de cada secao, depois os PRs ate 6 e por fim as
+# secoes inteiras: o que pede atencao nunca some de vez e nenhuma secao toma a pagina sozinha.
+_INCREMENTOS_GITHUB = ((0, 2), (0, 3), (1, 1), (2, 1), (0, 4), (1, 2), (2, 2), (0, 5), (1, 3), (2, 3), (0, 6), (1, 4),
+                       (2, 4), (1, 5), (2, 5), (2, 6))
+
+
+def _plano_github(g, disp):
+    """(max_prs, max_iss, max_rep) mais rico que cabe em `disp` px. Cada incremento so vale se o cartao ainda cabe; o
+    piso e 1 PR sem secoes. Sem issues ou repos no arquivo, as secoes nao custam altura e so os PRs crescem, como antes."""
+    plano = [1, 0, 0]
+    for campo, valor in _INCREMENTOS_GITHUB:
+        cand = list(plano)
+        cand[campo] = valor
+        if _h_github(g, *cand) <= disp:
+            plano = cand
+    return tuple(plano)
 
 
 def _desenhar_claude(c, m):
@@ -1827,14 +2120,15 @@ def _desenhar_claude(c, m):
         cl = m["claude"]
         blocos.append((CLAUDE_H, lambda c, x, y, h: _card_claude(c, cl, x, y, w, h, agora)))
         disp -= CLAUDE_H + GAP
-        # SESSOES leva o que o GITHUB nao precisa no minimo (2 PRs); depois o GITHUB leva o que sobrar
-        linhas = (disp - GAP - _h_github(g, 2) - CARTAO_BASE - CARTAO_FIM) // SESSAO_LINHA
+        # SESSOES leva o que o GITHUB nao precisa no minimo (2 PRs e 1 linha de ISSUES e de ATIVIDADE); depois o GITHUB leva o
+        # que sobrar
+        linhas = (disp - GAP - _h_github(g, 2, 1, 1) - CARTAO_BASE - CARTAO_FIM) // SESSAO_LINHA
         max_s = max(2, min(SESSOES_MAX, linhas))
         h_s = _h_sessoes(cl, max_s, limite_s)
         blocos.append((h_s, lambda c, x, y, h: _card_sessoes(c, cl, x, y, w, h, limite_s, max_s)))
         disp -= h_s + GAP
-    max_g = next((k for k in range(PRS_MAX, 0, -1) if _h_github(g, k) <= disp), 1)
-    blocos.append((_h_github(g, max_g), lambda c, x, y, h: _card_github(c, g, x, y, w, h, max_g)))
+    k = _plano_github(g, disp)
+    blocos.append((_h_github(g, *k), lambda c, x, y, h: _card_github(c, g, x, y, w, h, *k)))
     _empilhar(c, blocos)
 
 
@@ -1914,6 +2208,132 @@ def _desenhar_aparelhos(c, m, kv=None):
     _empilhar(c, blocos)
 
 
+# ----------------------------------------------------------------------- jogos
+
+JOGO_LINHA = 56
+# forma de cada estado do AMP: ligado = cheia; parado e iniciando = vazia; falha = X; outro = ? (o texto diz qual)
+_FORMA_AMP = {"rodando": "ativo", "parado": "parado", "iniciando": "parado", "falha": "falha", "outro": None}
+_TEXTO_AMP = {"parado": "parado", "iniciando": "iniciando", "falha": "FALHA", "outro": "outro"}
+
+
+def _ragnarok_dados(m):
+    """(jogadores|None, parado, portas) do Ragnarok, ou None sem nenhuma fonte (nem contagem nem portas)."""
+    rag = m.get("ragnarok")
+    n = int(rag["jogadores"]) if _ok(rag) and _num(rag.get("jogadores")) is not None else None
+    portas = [p for p in _portas_lista(m) if p.get("aberto") in (True, False)]
+    if n is None and not portas:
+        return None
+    return n, bool(_ok(rag) and rag.get("parado")), portas
+
+
+def _h_ragnarok(m):
+    d = _ragnarok_dados(m)
+    if d is None:
+        return H_SEM_DADOS
+    return 64 + 4 + (1 + min(len(d[2]), 8)) * JOGO_LINHA + 8
+
+
+def _card_ragnarok(c, m, x, y, w, h):
+    """Cartao RAGNAROK: jogadores (e "parado" se o balanceador parou de atualizar) e uma linha por porta com a forma de
+    estado (cheia = aberta, X = fechada)."""
+    d = _ragnarok_dados(m)
+    if d is None:
+        return _card_sem_dados(c, x, y, w, h, "RAGNAROK", "jogo")
+    n, parado, portas = d
+    _card(c, x, y, w, h)
+    yy = _cabecalho_card(c, x, y, w, "RAGNAROK", icone="jogo") + 4
+    yc = yy + JOGO_LINHA // 2
+    _texto_c(c, x + PAD, yc, "JOGADORES", NEG, 26, ESCURO)
+    xv = x + PAD + int(c.medir("JOGADORES", NEG, 26)) + 24
+    if n is None:
+        _texto_c(c, xv, yc, "n/d", NEG, 34, MEDIO)
+    else:
+        _texto_c(c, xv, yc, "%d" % n, NEG, 34, PRETO)
+        if parado:
+            _texto_c(c, x + w - PAD, yc, "parado", REG, 26, ESCURO, "dir")
+    for i, p in enumerate(portas[:8]):
+        yp = yy + (i + 1) * JOGO_LINHA + JOGO_LINHA // 2
+        aberta = p.get("aberto") is True
+        if not aberta:
+            c.retangulo_arredondado(x + 8, yp - JOGO_LINHA // 2 + 2, w - 16, JOGO_LINHA - 4, 8, TRILHO)
+        _forma(c, x + PAD, yp - 14, 28, "ativo" if aberta else "falha")
+        _texto_c(c, x + PAD + 28 + 16, yp, _ajustar(c, _limpar(p.get("rotulo", "?")), NEG, 34, w // 2), NEG, 34, PRETO)
+        _texto_c(c, x + w - PAD, yp, "aberta" if aberta else "FECHADA", REG if aberta else NEG, 26,
+                 ESCURO if aberta else PRETO, "dir")
+
+
+def _amp_visiveis(itens, max_linhas):
+    """(visiveis, resto): ate `max_linhas - 1` instancias mais a linha "+N" quando nao cabem todas; a ordem (ligadas
+    primeiro, depois por nome) vale tambem para o corte."""
+    if len(itens) <= max_linhas:
+        return itens, 0
+    vis = itens[:max(0, max_linhas - 1)]
+    return vis, len(itens) - len(vis)
+
+
+def _h_amp(m, max_linhas=AMP_MAX):
+    situacao, itens, _ = _amp_dados(m)
+    if situacao != "ok" or not itens:
+        return H_SEM_DADOS if situacao == "sem_dados" else 64 + 4 + JOGO_LINHA + 8
+    vis, resto = _amp_visiveis(itens, max_linhas)
+    return 64 + 4 + (len(vis) + (1 if resto else 0)) * JOGO_LINHA + 8
+
+
+def _card_amp(c, m, x, y, w, h, max_linhas=AMP_MAX):
+    """Cartao AMP: uma linha por instancia (forma, nome, modulo e, a direita, "N/MAX" jogadores se esta rodando, ou o
+    estado). Ligado sem dado: "sem dados" cinza com o motivo curto. Instancia parada nao e problema: nao ganha destaque."""
+    situacao, itens, b = _amp_dados(m)
+    if situacao != "ok":
+        velho = b.get("inventario") == "velho"
+        erro = _limpar(b.get("erro")).strip()[:40] if isinstance(b.get("erro"), str) else ""
+        return _card_sem_dados(c, x, y, w, h, "AMP", "servidor", INVENTARIO_SEM if velho else (erro or None),
+                               _num(b.get("idade_s")) if velho else None)
+    _card(c, x, y, w, h)
+    yy = _cabecalho_card(c, x, y, w, "AMP", icone="servidor") + 4
+    if not itens:
+        _texto_c(c, x + PAD, yy + JOGO_LINHA // 2, "nenhum servidor", REG, 26, ESCURO)
+        return
+    vis, resto = _amp_visiveis(itens, max_linhas)
+    ultima = len(vis) - 1 + (1 if resto else 0)
+    for i, it in enumerate(vis):
+        yc = yy + i * JOGO_LINHA + JOGO_LINHA // 2
+        estado = it["estado"]
+        if estado == "falha":
+            c.retangulo_arredondado(x + 8, yc - JOGO_LINHA // 2 + 2, w - 16, JOGO_LINHA - 4, 8, TRILHO)
+        _forma(c, x + PAD, yc - 14, 28, _FORMA_AMP[estado])
+        if estado == "rodando":
+            dir_txt, dir_fonte, dir_cor = _contagem_amp(it) or "ligado", NEG, PRETO
+            dir_tam = 34 if _contagem_amp(it) else 26
+        else:
+            dir_txt, dir_fonte, dir_cor, dir_tam = _TEXTO_AMP[estado], NEG if estado == "falha" else REG, ESCURO, 26
+        _texto_c(c, x + w - PAD, yc, dir_txt, dir_fonte, dir_tam, dir_cor, "dir")
+        xr = x + w - PAD - int(c.medir(dir_txt, dir_fonte, dir_tam)) - 24
+        tx = x + PAD + 28 + 16
+        cor = PRETO if estado == "rodando" or estado == "falha" else ESCURO
+        nome = _ajustar(c, it["nome"], NEG, 34, max(60, (xr - tx) * 3 // 5))
+        _texto_c(c, tx, yc, nome, NEG, 34, cor)
+        xm = tx + int(c.medir(nome, NEG, 34)) + 18
+        if it["modulo"] and it["modulo"].lower() != it["nome"].lower() and xr - xm > 80:  # "Minecraft Minecraft" nao diz nada
+            _texto_c(c, xm, yc, _ajustar(c, it["modulo"], REG, 26, xr - xm), REG, 26, MEDIO)
+        if i != ultima and estado != "falha":
+            c.retangulo(x + PAD, yc + JOGO_LINHA // 2 - 1, w - 2 * PAD, 2, TRILHO)
+    if resto:
+        yc = yy + len(vis) * JOGO_LINHA + JOGO_LINHA // 2
+        _texto_c(c, x + PAD + 44, yc, "+%d" % resto, NEG, 26, ESCURO)
+
+
+def _desenhar_jogos(c, m):
+    """Pagina Jogos (sem aba): cartao RAGNAROK e, se o AMP estiver ligado, o cartao AMP com todas as instancias."""
+    w = c.largura - 2 * MARGEM
+    h_rag = _h_ragnarok(m)
+    blocos = [(h_rag, lambda c, x, y, h: _card_ragnarok(c, m, x, y, w, h))]
+    if _amp_dados(m)[0] is not None:
+        disp = botoes.limite(c.altura) - botoes.TOPO - h_rag - GAP
+        max_linhas = max(2, min(AMP_MAX, (disp - 64 - 4 - 8) // JOGO_LINHA))
+        blocos.append((_h_amp(m, max_linhas), lambda c, x, y, h: _card_amp(c, m, x, y, w, h, max_linhas)))
+    _empilhar(c, blocos)
+
+
 # --------------------------------------------------------------------- entrada
 
 def desenhar(c, metricas, historico=None, pagina="resumo", armado=None, p=1, modo=None, kindle=None):
@@ -1937,6 +2357,8 @@ def desenhar(c, metricas, historico=None, pagina="resumo", armado=None, p=1, mod
         _desenhar_claude(c, m)
     elif pagina == "aparelhos":
         _desenhar_aparelhos(c, m, kv)
+    elif pagina == "jogos":
+        _desenhar_jogos(c, m)
     else:
         _desenhar_comandos(c, m, modo)
     _desenhar_botoes(c, pagina, armado, p, itens, modo)

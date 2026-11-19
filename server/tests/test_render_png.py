@@ -425,7 +425,7 @@ if __name__ == "__main__":
 
 # ------------------------------------------------------------- tela inicial (linhas por sistema)
 
-IDS_LINHAS = ["atheron", "nas", "aparelhos", "servicos", "rotinas", "claude", "github", "ragnarok"]
+IDS_LINHAS = ["atheron", "nas", "aparelhos", "servicos", "rotinas", "claude", "github", "jogos"]
 SERV = [{"id": "a", "rotulo": "a", "grupo": "host", "estado": "ativo"},
         {"id": "b", "rotulo": "b", "grupo": "host", "estado": "falha"},
         {"id": "c", "rotulo": "c", "grupo": "docker", "estado": "ativo"}]
@@ -457,8 +457,8 @@ class LinhasResumoTest(unittest.TestCase):
         self.assertEqual((l["rotinas"]["valor"], l["github"]["valor"]), ("sem dados", "sem dados"))
         self.assertEqual(l["claude"]["valor"], "5h 14%  sem 2%")
         self.assertTrue(l["claude"]["detalhe"].startswith("5h volta "))
-        self.assertEqual((l["ragnarok"]["valor"], l["ragnarok"]["detalhe"]), ("3 jogadores", "login ok  char ok  map fechada"))
-        for i in ("atheron", "nas", "servicos", "claude", "ragnarok"):
+        self.assertEqual((l["jogos"]["valor"], l["jogos"]["detalhe"]), ("Ragnarok 3", "MAP fechada"))
+        for i in ("atheron", "nas", "servicos", "claude", "jogos"):
             self.assertEqual(l[i]["estado"], "ok", i)
 
     def test_inventario_velho_ou_ausente_vira_sem_dados_e_o_estado_vem_do_alerta(self):
@@ -1101,13 +1101,24 @@ def sx(projeto, estado="trabalhando", desde_s=120):
     return {"projeto": projeto, "estado": estado, "desde_s": desde_s}
 
 
-def prx(repo, numero, titulo="Titulo", rascunho=False, ci="ok"):
-    return {"repo": repo, "numero": numero, "titulo": titulo, "rascunho": rascunho, "ci": ci}
+def prx(repo, numero, titulo="Titulo", rascunho=False, ci="ok", **novos):
+    """PR no formato antigo; `novos` acrescenta revisao, conflito, idade_d e atualizado_d (aditivos)."""
+    return dict({"repo": repo, "numero": numero, "titulo": titulo, "rascunho": rascunho, "ci": ci}, **novos)
 
 
-def gh(prs=(), ci=(), abertos=None, velho=False, idade_s=30):
-    return {"prs": list(prs), "ci": list(ci), "abertos": len(prs) if abertos is None else abertos,
-            "ci_falhas": sum(1 for i in ci if isinstance(i, dict) and i.get("estado") == "falha"), "idade_s": idade_s, "velho": velho}
+def gh(prs=(), ci=(), abertos=None, velho=False, idade_s=30, **novos):
+    """github no formato do coletor; `novos` acrescenta issues e repos (aditivos)."""
+    return dict({"prs": list(prs), "ci": list(ci), "abertos": len(prs) if abertos is None else abertos,
+                 "ci_falhas": sum(1 for i in ci if isinstance(i, dict) and i.get("estado") == "falha"),
+                 "idade_s": idade_s, "velho": velho}, **novos)
+
+
+def isx(repo, numero, titulo="Titulo da issue", idade_d=3):
+    return {"repo": repo, "numero": numero, "titulo": titulo, "idade_d": idade_d}
+
+
+def rpx(repo, push_d=0):
+    return {"repo": repo, "push_d": push_d}
 
 
 def cix(repo, estado="ok", branch="main"):
@@ -1260,7 +1271,7 @@ class CartaoGithubTest(unittest.TestCase):
         self.assertEqual(len(cortado), 1)
         self.assertTrue(cortado[0].endswith("..."))
         self.assertIn("Titulo curto", tx)
-        self.assertEqual(tx.count("(rascunho)"), 1)
+        self.assertEqual(tx.count("rascunho"), 1)
 
     def test_formas_do_ci_do_pr(self):
         calls = []
@@ -1333,6 +1344,203 @@ class CartaoGithubTest(unittest.TestCase):
             self.assertEqual(fora_da_caixa(c, 48, 200, 1140, h), 255, k)
 
 
+def _espiar_caixas(fn):
+    """Executa `fn()` e devolve [(x0, x1, y0, y1, texto, tam)] de cada texto desenhado (caixa do texto)."""
+    caixas = []
+    orig = cv.Canvas.texto
+
+    def espia(self, x, y, t, fonte, tam, cor, alinhar="esq"):
+        w = cv.Canvas.medir(t, fonte, tam)
+        x0 = x - w if alinhar == "dir" else x - w / 2.0 if alinhar == "centro" else x
+        caixas.append((x0, x0 + w, y - cv.altura_capital(fonte, tam), y, t, tam))
+        return orig(self, x, y, t, fonte, tam, cor, alinhar)
+    cv.Canvas.texto = espia
+    try:
+        fn()
+    finally:
+        cv.Canvas.texto = orig
+    return caixas
+
+
+def _sobrepostos(caixas):
+    """Pares de textos cujas caixas se cruzam (0,5 px de folga: o mesmo texto nao se sobrepoe a si)."""
+    ruins = []
+    for i, a in enumerate(caixas):
+        for b in caixas[i + 1:]:
+            if a[0] + 0.5 < b[1] and b[0] + 0.5 < a[1] and a[2] + 0.5 < b[3] and b[2] + 0.5 < a[3]:
+                ruins.append((a[4], b[4]))
+    return ruins
+
+
+PLANOS = [(p, i, r) for p in (1, 3, 6) for i in (0, 2, 6) for r in (0, 2, 6)]
+REVISOES = (None, "aprovado", "mudancas", "pendente", "nenhuma")
+
+
+def prs_cheios(n=20, titulo="T" * 80):
+    return [prx("repo-com-nome-longo-%d" % i if i % 3 == 0 else "r%d" % i, 1000 + i, titulo, rascunho=i % 4 == 1,
+                ci=(None, "ok", "falha", "pendente")[i % 4], revisao=REVISOES[i % 5] or "nenhuma",
+                conflito=i % 3 == 0, idade_d=9999 - i, atualizado_d=i) for i in range(n)]
+
+
+def github_cheio(titulo="T" * 80, n_issues=9999):
+    ci = [cix("repo%d" % i, ("falha", "pendente", "ok")[i % 3], "feat/branch-%d" % i) for i in range(30)]
+    issues = {"n": n_issues, "itens": [isx("repo-issue-%d" % i, 40 + i, titulo, 9999 - i) for i in range(5)]}
+    repos = [rpx("repositorio-com-nome-bem-comprido-%d" % i, i * 3) for i in range(6)]
+    return gh(prs_cheios(20, titulo), ci, issues=issues, repos=repos)
+
+
+class CartaoGithubNovoTest(unittest.TestCase):
+    def _forma_e_marcas(self, prs, k=6, w=1140):
+        c = cv.Canvas(1236, 1648, estrito=True)
+        g = gh(prs)
+        return _espiar_caixas(lambda: render_png._card_github(c, g, 48, 200, w, render_png._h_github(g, k), k))
+
+    def test_marcas_do_pr(self):
+        prs = [prx("a", 1, conflito=True, revisao="mudancas", idade_d=12, rascunho=True),
+               prx("b", 2, revisao="aprovado", idade_d=0), prx("c", 3, revisao="pendente"), prx("d", 4)]
+        tx = [t for *_, t, _ in self._forma_e_marcas(prs)]
+        for esperado in ("conflito", "mudancas", "rascunho", "12d", "aprovado", "0d"):
+            self.assertIn(esperado, tx)
+        self.assertEqual(tx.count("conflito"), 1)
+        self.assertEqual(tx.count("aprovado"), 1)
+        self.assertNotIn("pendente", tx)  # revisao pendente nao tem marca
+
+    def test_marcas_na_ordem_conflito_revisao_rascunho_idade(self):
+        prs = [prx("a", 1, conflito=True, revisao="mudancas", idade_d=12, rascunho=True)]
+        caixas = {t: x0 for x0, _, _, _, t, _ in self._forma_e_marcas(prs)}
+        self.assertLess(caixas["conflito"], caixas["mudancas"])
+        self.assertLess(caixas["mudancas"], caixas["rascunho"])
+        self.assertLess(caixas["rascunho"], caixas["12d"])
+
+    def test_marcas_nunca_menores_que_26_px(self):
+        prs = prs_cheios(6)
+        for *_, t, tam in self._forma_e_marcas(prs):
+            self.assertGreaterEqual(tam, 26, t)
+
+    def test_formato_antigo_sem_marcas(self):
+        tx = [t for *_, t, _ in self._forma_e_marcas([prx("a", 1), prx("b", 2, rascunho=True)])]
+        for marca in ("conflito", "mudancas", "aprovado"):
+            self.assertNotIn(marca, tx)
+        self.assertIn("rascunho", tx)
+        self.assertFalse([t for t in tx if len(t) > 1 and t[-1] == "d" and t[:-1].isdigit()])
+
+    def test_marcas_cedem_ao_titulo_em_cartao_estreito(self):
+        prs = [prx("kindle-monitor", 14, "Titulo", conflito=True, revisao="mudancas", idade_d=9999, rascunho=True)]
+        largo = [t for *_, t, _ in self._forma_e_marcas(prs, w=1140)]
+        estreito = [t for *_, t, _ in self._forma_e_marcas(prs, w=640)]
+        self.assertIn("9999d", largo)
+        self.assertIn("conflito", estreito)
+        self.assertNotIn("rascunho", estreito)
+        self.assertNotIn("9999d", estreito)
+        self.assertIn("kindle-monitor#14", estreito)
+
+    def test_pr_com_conflito_nao_fica_fora_do_corte(self):
+        prs = [prx("repo", i) for i in range(20)]
+        prs[18]["conflito"] = True
+        prs[15]["revisao"] = "mudancas"
+        tx, _ = espiar(dev(ses(), gh(prs)), "claude")
+        self.assertIn("repo#18", tx)
+        self.assertIn("repo#15", tx)
+
+    def test_issues_e_atividade(self):
+        g = gh([prx("a", 1)], [cix("a")], issues={"n": 4, "itens": [isx("dotfiles", 9, "Algo quebrou", 12),
+                                                                    isx("cerberus", 3, "Outra", 0)]},
+               repos=[rpx("dotfiles", 0), rpx("cerberus", 5)])
+        tx, _ = espiar(dev(ses(), g), "claude")
+        for esperado in ("ISSUES", "4", "dotfiles #9", "Algo quebrou", "12d", "cerberus #3", "0d", "ATIVIDADE", "dotfiles",
+                         "hoje", "cerberus", "ha 5 d"):
+            self.assertIn(esperado, tx)
+        self.assertIn("+2", tx)  # 4 issues no total, 2 listadas
+        self.assertLess(tx.index("ISSUES"), tx.index("ATIVIDADE"))
+
+    def test_issues_zero_mostra_so_o_titulo(self):
+        tx, _ = espiar(dev(ses(), gh([prx("a", 1)], issues={"n": 0, "itens": []})), "claude")
+        self.assertIn("ISSUES", tx)
+        self.assertIn("0", tx)
+        self.assertNotIn("ATIVIDADE", tx)
+
+    def test_sem_os_campos_novos_nao_aparecem_secoes(self):
+        tx, _ = espiar(dev(ses(), gh([prx("a", 1)], [cix("a")])), "claude")
+        self.assertNotIn("ISSUES", tx)
+        self.assertNotIn("ATIVIDADE", tx)
+
+    def test_secoes_cortam_com_mais_n(self):
+        g = gh([prx("a", 1)], issues={"n": 9999, "itens": [isx("r", i) for i in range(5)]},
+               repos=[rpx("r%d" % i, i) for i in range(6)])
+        sec = render_png._secoes_github(render_png._github_dados(g, 6), 3, 3)
+        self.assertEqual((len(sec[0][0]), sec[0][1]), (3, 9996))
+        self.assertEqual((len(sec[1][0]), sec[1][1]), (3, 3))
+        self.assertEqual(render_png._secoes_github(render_png._github_dados(g, 6), 0, 0), (None, None))
+        tx = [t for *_, t, _ in _espiar_caixas(lambda: render_png._card_github(
+            cv.Canvas(1236, 1648, estrito=True), g, 48, 200, 1140, render_png._h_github(g, 6, 3, 3), 6, 3, 3))]
+        self.assertIn("+9996", tx)
+        self.assertIn("+3", tx)
+
+    def test_altura_calculada_bate_com_o_desenho(self):
+        g = github_cheio()
+        for passo in PLANOS:
+            h = render_png._h_github(g, *passo)
+            c = cv.Canvas(1236, 1648, estrito=True)
+            caixas = _espiar_caixas(lambda: render_png._card_github(c, g, 48, 200, 1140, h, *passo))
+            self.assertEqual(fora_da_caixa(c, 48, 200, 1140, h), 255, passo)
+            self.assertLessEqual(max(b[3] for b in caixas), 200 + h, passo)
+            self.assertEqual(_sobrepostos(caixas), [], passo)
+
+    def test_campos_novos_hostis_nao_levantam_nem_saem_da_caixa(self):
+        hostis = ["W" * 80, "\u00e7\u00e3\u00f5\u0301\u4e2d\u6587" * 10, "\x00\x1b[31mX\n\r", "", None, 7]
+        prs = [prx(h if isinstance(h, str) else "r", 10 ** 9 + i, h, conflito=(True, "x", 1)[i % 3],
+                   revisao=(h, "mudancas", "aprovado")[i % 3], idade_d=(10 ** 400, True, -1, 9999, "3")[i % 5])
+               for i, h in enumerate(hostis * 3)]
+        issues = {"n": 10 ** 400, "itens": [None, 3] + [{"repo": h, "numero": 10 ** 9 + i, "titulo": h, "idade_d": h}
+                                                       for i, h in enumerate(hostis)]}
+        repos = [{"repo": h, "push_d": (0, 9999, True, -1, "x", None)[i % 6]} for i, h in enumerate(hostis * 2)]
+        for velho in (False, True):
+            for passo in PLANOS:
+                c = cv.Canvas(1236, 1648, estrito=True)
+                g = gh(prs, [cix(x if isinstance(x, str) else "r", "falha", x if isinstance(x, str) else "b")
+                             for x in hostis], velho=velho, issues=issues, repos=repos)
+                h = render_png._h_github(g, *passo)
+                render_png._card_github(c, g, 48, 200, 1140, h, *passo)
+                self.assertEqual(fora_da_caixa(c, 48, 200, 1140, h), 255, passo)
+        for ruim in TIPOS_ERRADOS:
+            render_png._card_github(cv.Canvas(1236, 1648, estrito=True), gh(prs, issues=ruim, repos=ruim),
+                                    48, 200, 1140, 900)
+
+    def test_conteudo_cheio_em_duas_resolucoes_sem_corte_nem_sobreposicao(self):
+        for titulo in ("T" * 80, "W" * 80, "i" * 80, "Corrigir o bug do painel que quebra no Kindle quando o PR e grande 1234"):
+            m = dev(ses(sx("a"), sx("b", "esperando", 5000), sx("c")), github_cheio(titulo))
+            for w, h in ((1236, 1648), (800, 1100)):
+                c = cv.Canvas(w, h, estrito=True)
+                caixas = _espiar_caixas(lambda: render_png.desenhar(c, m, historico(), pagina="claude"))
+                import botoes
+                conteudo = [b for b in caixas if botoes.TOPO <= b[2] and b[3] <= botoes.limite(h)]
+                self.assertEqual(_sobrepostos(conteudo), [], (w, h, titulo))
+                for x0, x1, y0, y1, t, tam in conteudo:
+                    self.assertGreaterEqual(x0, 0, t)
+                    self.assertLessEqual(x1, w, t)
+                abaixo = [b for b in caixas if botoes.TOPO <= b[2] < botoes.limite(h) < b[3]]
+                self.assertEqual(abaixo, [], (w, h))  # nenhum texto cruza o limite da navegacao
+
+    def test_pagina_cheia_1236x1648_mostra_prs_e_issues(self):
+        tx, _ = espiar(dev(ses(sx("a"), sx("b"), sx("c")), github_cheio()), "claude", None, 1236, 1648)
+        self.assertIn("ISSUES", tx)
+        self.assertTrue([t for t in tx if t.startswith("r") and "#" in t])
+
+    def test_so_github_sem_claude_cabe_tudo_em_1648(self):
+        m = completo()
+        m["github"] = github_cheio()
+        tx, _ = espiar(m, "claude", None, 1236, 1648)
+        self.assertIn("ISSUES", tx)
+        self.assertIn("ATIVIDADE", tx)
+        self.assertEqual(len([t for t in tx if t.startswith("repo-issue-")]), 5)
+
+    def test_plano_formato_antigo_igual_ao_de_antes(self):
+        g = gh([prx("r", i) for i in range(20)], [cix("a", "falha")] * 30)
+        for disp in range(100, 1400, 7):
+            antigo = next((k for k in range(6, 0, -1) if render_png._h_github(g, k, 0, 0) <= disp), 1)
+            self.assertEqual(render_png._plano_github(g, disp)[0], antigo, disp)
+
+
 class PaginaDevCompostaTest(unittest.TestCase):
     def test_ordem_claude_sessoes_github(self):
         tx, _ = espiar(dev(ses(sx("p")), gh([prx("r", 1)])), "claude")
@@ -1386,23 +1594,73 @@ class LinhasClaudeGithubTest(unittest.TestCase):
 
     def test_github_com_ci_ok(self):
         l = self._ls(dev(ses(), gh([prx("a", 1), prx("b", 2)], [cix("a"), cix("b")])))["github"]
-        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("2 PRs abertos", "CI ok", "ok"))
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("2 PRs", "CI ok", "ok"))
 
     def test_github_ci_falhou_nomeia_o_primeiro(self):
         ci = [cix("a"), cix("cerberus", "falha"), cix("dotfiles", "falha")]
         l = self._ls(dev(ses(), gh([prx("a", 1)], ci)), [{"nivel": "aviso", "sistema": "github"}])["github"]
-        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("1 PR aberto", "CI falhou: cerberus", "aviso"))
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("1 PR", "CI falhou: cerberus", "aviso"))
 
     def test_github_zero_prs_e_pendente(self):
         l = self._ls(dev(ses(), gh([], [cix("a", "pendente")])))["github"]
-        self.assertEqual((l["valor"], l["detalhe"]), ("0 PRs abertos", "CI pendente: a"))
+        self.assertEqual((l["valor"], l["detalhe"]), ("0 PRs", "CI pendente: a"))
         l = self._ls(dev(ses(), gh()))["github"]
-        self.assertEqual((l["valor"], l["detalhe"]), ("0 PRs abertos", ""))
+        self.assertEqual((l["valor"], l["detalhe"]), ("0 PRs", ""))
 
     def test_github_velho_usa_o_estado_dos_alertas(self):
         g = gh([prx("a", 1)], [cix("a")], velho=True)
         l = self._ls(dev(ses(), g), [{"nivel": "aviso", "sistema": "github"}])["github"]
-        self.assertEqual((l["valor"], l["estado"]), ("1 PR aberto", "aviso"))
+        self.assertEqual((l["valor"], l["estado"]), ("1 PR", "aviso"))
+
+    def test_github_valor_com_issues(self):
+        g = gh([prx("a", i) for i in range(11)], [cix("a")], issues={"n": 3, "itens": [isx("a", 1)]})
+        l = self._ls(dev(ses(), g))["github"]
+        self.assertEqual((l["valor"], l["estado"]), ("11 PRs  3 issues", "ok"))
+        l = self._ls(dev(ses(), gh([prx("a", 1)], issues={"n": 1, "itens": []})))["github"]
+        self.assertEqual(l["valor"], "1 PR  1 issue")
+        l = self._ls(dev(ses(), gh([prx("a", 1)], issues={"n": 0, "itens": []})))["github"]
+        self.assertEqual(l["valor"], "1 PR  0 issues")
+
+    def test_github_formato_antigo_so_mostra_o_que_existe(self):
+        g = gh([prx("a", 1), prx("b", 2)], [cix("a")])  # sem revisao, conflito, idade, issues, repos
+        l = self._ls(dev(ses(), g))["github"]
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("2 PRs", "CI ok", "ok"))
+
+    def test_github_detalhe_prioridade_e_push(self):
+        prs = [prx("a", 1), prx("kindle", 12, conflito=True), prx("b", 3, conflito=True, revisao="mudancas"),
+               prx("c", 4, revisao="mudancas"), prx("d", 5, revisao="aprovado"), prx("e", 6, revisao="pendente")]
+        g = gh(prs, [cix("a"), cix("cerberus", "falha")], repos=[rpx("a", 0), rpx("b", 3)])
+        l = self._ls(dev(ses(), g))["github"]
+        self.assertEqual(l["detalhe"], "CI falhou: cerberus  \u00b7  conflito: kindle #12  \u00b7  mudancas pedidas: 2"
+                                       "  \u00b7  push hoje")
+        g = gh(prs, [cix("a")], repos=[rpx("b", 3), rpx("a", 9)])
+        l = self._ls(dev(ses(), g))["github"]
+        self.assertEqual(l["detalhe"], "conflito: kindle #12  \u00b7  mudancas pedidas: 2  \u00b7  CI ok  \u00b7  push ha 3 d")
+
+    def test_github_detalhe_so_push_ou_so_ci(self):
+        l = self._ls(dev(ses(), gh([prx("a", 1)], repos=[rpx("a", 0)])))["github"]
+        self.assertEqual(l["detalhe"], "push hoje")
+        l = self._ls(dev(ses(), gh([prx("a", 1)], [cix("a", "pendente")], repos=[rpx("a", 1)])))["github"]
+        self.assertEqual(l["detalhe"], "CI pendente: a  \u00b7  push ha 1 d")
+
+    def test_github_conflito_vira_aviso_pelo_alerta_do_motor(self):
+        import alertas
+        m = dev(ses(), gh([prx("a", 7, conflito=True)], [cix("a")]))
+        l = {x["id"]: x for x in render_png._linhas_resumo(m, [], None, alertas.avaliar(m))}["github"]
+        self.assertEqual(l["estado"], "aviso")
+        m = dev(ses(), gh([prx("a", 7, revisao="mudancas", idade_d=400)], [cix("a")], issues={"n": 50, "itens": []}))
+        l = {x["id"]: x for x in render_png._linhas_resumo(m, [], None, alertas.avaliar(m))}["github"]
+        self.assertEqual(l["estado"], "ok")
+
+    def test_github_campos_novos_hostis_nao_levantam_nem_quebram_a_linha(self):
+        ruins = [gh([prx("a", 1, conflito="x", revisao=7, idade_d=True)], issues="x", repos=5),
+                 gh([prx("a", 1)], issues={"n": "x", "itens": "y"}, repos=[None, 3, {"push_d": True}]),
+                 gh([prx("a", 1)], issues={"n": -5, "itens": [None, 3]}, repos=[{"repo": 3, "push_d": -1}]),
+                 gh([prx("a", 1)], issues={"n": 10 ** 400, "itens": []}, repos=[{"repo": "r", "push_d": 10 ** 400}])]
+        for g in ruins:
+            l = self._ls(dev(ses(), g))["github"]
+            self.assertTrue(l["valor"].startswith("1 PR"), l)
+            self.assertNotIn("push", l["detalhe"])
 
     def test_github_sem_dados_cinza(self):
         for g in ({"erro": "n/d"}, None, 5, {"prs": "x"}):

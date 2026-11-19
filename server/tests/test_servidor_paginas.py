@@ -60,6 +60,22 @@ class PaginasServidorTest(unittest.TestCase):
         self.assertEqual((d["largura"], d["altura"], d["pagina"]), (1236, 1648, "resumo"))
         self.assertEqual(d["botoes"], botoes.layout("resumo", None, 1236, 1648))
 
+    def test_pagina_jogos_nao_e_aba_mas_responde_nos_tres_endpoints(self):
+        st, _, corpo = self.req("GET", "/botoes.json?pagina=jogos")
+        d = json.loads(corpo)
+        self.assertEqual((st, d["pagina"]), (200, "jogos"))
+        self.assertEqual(d["botoes"], botoes.layout("jogos", None, 1236, 1648))
+        st, h, png = self.req("GET", "/tela.png?pagina=jogos")
+        self.assertEqual((st, h["Content-Type"], png[:8]), (200, "image/png", b"\x89PNG\r\n\x1a\n"))
+        self.assertNotEqual(png, self.req("GET", "/tela.png")[2])
+        st, _, txt = self.req("GET", "/tela.txt?pagina=jogos")
+        self.assertEqual(st, 200)
+        self.assertIn(b"RAGNAROK", txt)
+        st, _, bt = self.req("GET", "/botoes.txt?pagina=jogos")
+        self.assertEqual(st, 200)
+        self.assertIn(b"pagina:resumo", bt)
+        self.assertNotIn(b"pagina:jogos", bt)  # a pagina jogos nao tem aba nem botao para si mesma
+
     def test_botoes_json_comandos_armado(self):
         st, _, corpo = self.req("GET", "/botoes.json?pagina=comandos&armado=bots-pausar")
         d = json.loads(corpo)

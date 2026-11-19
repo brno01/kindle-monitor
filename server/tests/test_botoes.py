@@ -93,7 +93,9 @@ class LayoutTest(unittest.TestCase):
             self.assertTrue(all(b["tipo"] == "local" and b["h"] == 96 for b in nav))
 
     def test_paginas_do_desenho(self):
-        self.assertEqual(botoes.PAGINAS, ("resumo", "servicos", "aparelhos", "detalhes", "claude", "comandos"))
+        self.assertEqual(botoes.PAGINAS, ("resumo", "servicos", "aparelhos", "detalhes", "claude", "comandos", "jogos"))
+        # `jogos` abre pela linha JOGOS da tela inicial e nao e aba
+        self.assertNotIn("jogos", [b[len("pagina:"):] for b, _, _ in botoes.NAV])
 
     def test_atualizar_invisivel_sobre_o_relogio_em_todas_as_paginas(self):
         for pagina in botoes.PAGINAS:
@@ -258,9 +260,9 @@ class ResumoGeometriaTest(unittest.TestCase):
     def test_oito_linhas_fixas_ancoradas_acima_da_navegacao(self):
         g = botoes.geometria_resumo(1236, 1648)
         self.assertEqual([l["id"] for l in g["linhas"]],
-                         ["atheron", "nas", "aparelhos", "servicos", "rotinas", "claude", "github", "ragnarok"])
+                         ["atheron", "nas", "aparelhos", "servicos", "rotinas", "claude", "github", "jogos"])
         self.assertEqual([l["destino"] for l in g["linhas"]],
-                         ["detalhes", "detalhes", "aparelhos", "servicos", "detalhes", "claude", "claude", "servicos"])
+                         ["detalhes", "detalhes", "aparelhos", "servicos", "detalhes", "claude", "claude", "jogos"])
         self.assertEqual(g["linhas"][0]["y"], 532)
         for a, b in zip(g["linhas"], g["linhas"][1:]):
             self.assertEqual(b["y"] - (a["y"] + a["h"]), 12)

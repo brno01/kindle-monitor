@@ -178,9 +178,9 @@ class ConteudoTest(unittest.TestCase):
         tx = self.textos(m, "resumo")
         self.assertNotIn(servicos.texto_resumo(servicos.itens_de(m)), tx)  # saiu do cabecalho
         self.assertEqual([t for t in tx if t in ("ATHERON", "NAS", "APARELHOS", "SERVICOS", "ROTINAS", "CLAUDE",
-                                                  "GITHUB", "RAGNAROK")],
-                         ["ATHERON", "NAS", "APARELHOS", "SERVICOS", "ROTINAS", "CLAUDE", "GITHUB", "RAGNAROK"])
-        self.assertTrue(any(t.endswith("jogadores") for t in tx))
+                                                  "GITHUB", "JOGOS")],
+                         ["ATHERON", "NAS", "APARELHOS", "SERVICOS", "ROTINAS", "CLAUDE", "GITHUB", "JOGOS"])
+        self.assertTrue(any(t.startswith("Ragnarok ") for t in tx))
         self.assertTrue(any(t.startswith("CPU ") for t in tx))
         self.assertTrue(any(t.startswith("ATENCAO (") for t in tx))
         for velho in ("TODOS OS SERVICOS", "SERVICOS POR GRUPO"):  # chips e grupos so existem em outras paginas

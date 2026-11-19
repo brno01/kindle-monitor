@@ -8,7 +8,8 @@ Uso (so biblioteca padrao):
     python3 -I tools/preview.py --saida /tmp/cheia.png --cheia                 # 52 servicos, varios em falha, 8 comandos
     python3 -I tools/preview.py --saida /tmp/a.png --estado alertas            # disco 91 %, 2 servicos em falha, bateria 12 %
     python3 -I tools/preview.py --saida /tmp/v.png --estado velho              # inventario e limites do Claude velhos
-    python3 -I tools/preview.py --todas /tmp/prev                               # <pagina>-<estado>.png, 6 paginas x 3 estados
+    python3 -I tools/preview.py --saida /tmp/j.png --pagina jogos              # pagina Jogos (sem aba): Ragnarok + 4 instancias do AMP
+    python3 -I tools/preview.py --todas /tmp/prev                               # <pagina>-<estado>.png, 7 paginas x 3 estados
     python3 -I tools/preview.py --saida /tmp/x.png --porta 8765 --pagina servicos --p 2   # baixa de um servidor
 """
 import argparse
@@ -133,7 +134,20 @@ def exemplo(cheia=False, estado="ok"):
         m["gpu"] = {"util_pct": 61, "mem_usada_mb": 5300, "mem_total_mb": 8192, "temp_c": 71}
         hist["gpu"] = [(i * 13) % 80 for i in range(n)]
     m["comandos"] = cmds
+    # painel de jogos: o AMP com 4 instancias (2 rodando, 1 iniciando, 1 parada); em `alertas` a porta MAP do Ragnarok
+    # fecha; em `velho` o AMP esta ligado mas sem dados (inventario velho)
+    if estado == "velho":
+        m["amp"] = {"ativo": True, "inventario": "velho", "idade_s": 300, "erro": None, "instancias": []}
+    else:
+        m["amp"] = {"ativo": True, "inventario": "ok", "idade_s": 6, "erro": None, "instancias": [
+            {"id": "5e1f0a21", "nome": "Minecraft", "modulo": "Minecraft", "estado": "rodando", "jogadores": 2, "max": 20},
+            {"id": "b7c3d9e4", "nome": "Terraria", "modulo": "Terraria", "estado": "rodando", "jogadores": 0, "max": 8},
+            {"id": "09a8f6c2", "nome": "Palworld", "modulo": "Palworld", "estado": "iniciando", "jogadores": None,
+             "max": None},
+            {"id": "c4d2e7b1", "nome": "Valheim", "modulo": "Valheim", "estado": "parado", "jogadores": None, "max": None},
+        ]}
     if estado == "alertas":
+        m["portas"][2]["aberto"] = False
         total = 63 * 1024 ** 3
         m["discos"][0].update({"total_b": total, "usado_b": total - int(5.7 * 1024 ** 3), "pct": 91.0})  # 5,7 GB livres
     elif estado == "velho":
@@ -177,14 +191,32 @@ def exemplo(cheia=False, estado="ok"):
         {"projeto": "dotfiles", "estado": "trabalhando", "desde_s": 60},
         {"projeto": "cerberus", "estado": "aberta", "desde_s": 7200},
     ], "total": 3, "esperando": 1 if em_alerta else 0, "idade_s": 12}
+    def pr(repo, n, titulo, ci, revisao="nenhuma", conflito=False, idade=1, atualizado=0, rascunho=False):
+        return {"repo": repo, "numero": n, "titulo": titulo, "rascunho": rascunho, "ci": ci, "revisao": revisao,
+                "conflito": conflito, "idade_d": idade, "atualizado_d": atualizado}
     m["github"] = {"prs": [
-        {"repo": "kindle-monitor", "numero": 14, "titulo": "Painel do ecossistema", "rascunho": False, "ci": "ok"},
-        {"repo": "dotfiles", "numero": 7, "titulo": "Roteamento de modelos", "rascunho": True, "ci": "pendente"},
+        pr("kindle-monitor", 14, "Painel do ecossistema", "ok", "aprovado", False, 4, 0),
+        pr("dotfiles", 7, "Roteamento de modelos", "pendente", rascunho=True, idade=9, atualizado=2),
+        pr("cerberus", 31, "Chatter dos bots com banco de frases", "falha" if em_alerta else "ok", "mudancas",
+           False, 12, 3),
+        pr("dotfiles", 8, "Seleção do ECC por máquina", "ok", "pendente", em_alerta, 2, 1),
+        pr("galaxy-s10", 3, "Vigia do S10 sem tela", "ok", "nenhuma", False, 21, 9),
+        pr("kindle-monitor", 15, "Painel de jogos e AMP", "ok", "pendente", False, 1, 0),
+        pr("vaultwarden", 2, "Backup às 03:10 com verificação", None, "aprovado", False, 45, 30),
     ], "ci": [
         {"repo": "kindle-monitor", "branch": "feat/painel-ecossistema", "estado": "ok"},
         {"repo": "dotfiles", "branch": "main", "estado": "ok"},
         {"repo": "cerberus", "branch": "main", "estado": "falha" if em_alerta else "ok"},
-    ], "abertos": 2, "ci_falhas": 1 if em_alerta else 0, "idade_s": 30, "velho": False}
+    ], "issues": {"n": 6, "itens": [
+        {"repo": "kindle-monitor", "numero": 9, "titulo": "Tela branca depois de parar a interface", "idade_d": 2},
+        {"repo": "cerberus", "numero": 22, "titulo": "Bot trava no mapa de Prontera", "idade_d": 11},
+        {"repo": "dotfiles", "numero": 5, "titulo": "claude-uso-painel sem timer", "idade_d": 30},
+        {"repo": "galaxy-s10", "numero": 1, "titulo": "Tailscale SSH ignora authorized_keys", "idade_d": 120},
+    ]}, "repos": [
+        {"repo": "kindle-monitor", "push_d": 0}, {"repo": "dotfiles", "push_d": 0}, {"repo": "cerberus", "push_d": 2},
+        {"repo": "galaxy-s10", "push_d": 9}, {"repo": "vaultwarden", "push_d": 30},
+        {"repo": "obsidian-cofre", "push_d": 61},
+    ], "abertos": 7, "ci_falhas": 1 if em_alerta else 0, "idade_s": 30, "velho": False}
     return m, hist
 
 

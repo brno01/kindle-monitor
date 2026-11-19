@@ -233,7 +233,7 @@ HOSTIS = (
 )
 
 LIM = {"rotulo_aparelho": 16, "rotulo_rotina": 20, "nome_unidade": 40, "projeto": 40, "repo": 40, "branch": 40,
-       "titulo": 60}
+       "titulo": 80}
 
 
 def ascii_imprimivel(s):
@@ -254,9 +254,13 @@ def montar_hostil():
     d = tdf.com(*sessoes)
     arquivos[tdf.GH] = json.dumps({
         "versao": 1, "gerado_em": tdf.AGORA - 10, "dono": "brno01",
-        "prs": [{"repo": h, "numero": i + 1, "titulo": h, "rascunho": i % 2 == 0, "ci": "falha"}
+        "prs": [{"repo": h, "numero": i + 1, "titulo": h, "rascunho": i % 2 == 0, "ci": "falha",
+                 "revisao": h if i % 2 else "mudancas", "conflito": True, "idade_d": 7, "atualizado_d": 1}
                 for i, h in enumerate(HOSTIS)],
-        "ci": [{"repo": h, "branch": h, "estado": "falha"} for h in HOSTIS]})
+        "ci": [{"repo": h, "branch": h, "estado": "falha"} for h in HOSTIS],
+        "issues": {"n": 99, "itens": [{"repo": h, "numero": i + 1, "titulo": h, "idade_d": 5}
+                                      for i, h in enumerate(HOSTIS)]},
+        "repos": [{"repo": h, "push_d": i} for i, h in enumerate(HOSTIS)]})
     cfg = {"host": "t", "claude": {"limites": "/x/l.json", "tokens": "/x/t.json", "sessoes": tdf.DIR},
            "github": {"resumo": tdf.GH}}
     m = tdf.coletor(cfg, arquivos, d).coletar(com_pares=False)
@@ -300,6 +304,8 @@ class TextoHostilTest(unittest.TestCase):
         self.assertGreaterEqual(len(m["claude"]["sessoes"]["itens"]), len(HOSTIS) - 1)
         self.assertGreaterEqual(len(m["github"]["prs"]), len(HOSTIS) - 1)
         self.assertGreaterEqual(len(m["github"]["ci"]), len(HOSTIS) - 1)
+        self.assertEqual(len(m["github"]["issues"]["itens"]), 5)
+        self.assertEqual(len(m["github"]["repos"]), 6)
         self.assertEqual(len(m["rotinas"]["unidades_falhas"]["nomes"]), eco.NOMES_FALHAS_MAX)
         niveis = {(a["nivel"], a["sistema"]) for a in alertas.avaliar(m)}
         for esperado in (("critico", "aparelhos"), ("critico", "rotinas"), ("aviso", "github"),
@@ -324,6 +330,9 @@ class TextoHostilTest(unittest.TestCase):
         self.conferir_campo((p["titulo"] for p in m["github"]["prs"]), LIM["titulo"], "pr.titulo")
         self.conferir_campo((c["repo"] for c in m["github"]["ci"]), LIM["repo"], "ci.repo")
         self.conferir_campo((c["branch"] for c in m["github"]["ci"]), LIM["branch"], "ci.branch")
+        self.conferir_campo((i["repo"] for i in m["github"]["issues"]["itens"]), LIM["repo"], "issue.repo")
+        self.conferir_campo((i["titulo"] for i in m["github"]["issues"]["itens"]), LIM["titulo"], "issue.titulo")
+        self.conferir_campo((r["repo"] for r in m["github"]["repos"]), LIM["repo"], "repo.repo")
 
     def test_nenhuma_string_das_fontes_novas_foge_do_ascii(self):
         m = self.m
@@ -331,7 +340,7 @@ class TextoHostilTest(unittest.TestCase):
             for s in strings(m[fonte]):
                 with self.subTest(fonte=fonte, s=s[:30]):
                     self.assertTrue(ascii_imprimivel(s), repr(s))
-                    self.assertLessEqual(len(s), 60)
+                    self.assertLessEqual(len(s), 80)
         for s in strings(m["claude"]["sessoes"]):
             with self.subTest(fonte="sessoes", s=s[:30]):
                 self.assertTrue(ascii_imprimivel(s), repr(s))

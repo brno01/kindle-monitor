@@ -321,6 +321,11 @@ def gh(**kw):
     return d
 
 
+def neutro(p):
+    """O PR do formato antigo como o leitor o devolve: campos novos ausentes viram valores neutros."""
+    return dict(p, revisao="nenhuma", conflito=False, idade_d=None, atualizado_d=None)
+
+
 def coletar_gh(dados, agora=AGORA):
     texto = dados if isinstance(dados, str) else json.dumps(dados)
     return df.coletar_github(GH, lambda c: texto, agora)
@@ -329,8 +334,9 @@ def coletar_gh(dados, agora=AGORA):
 class GithubTest(unittest.TestCase):
     def test_formato(self):
         r = coletar_gh(gh(prs=[pr(1), pr(2, rascunho=True, ci="falha")], ci=[ci(), ci("x", "falha"), ci("y", "pendente")]))
-        self.assertEqual(r, {"prs": [pr(1), pr(2, rascunho=True, ci="falha")],
+        self.assertEqual(r, {"prs": [neutro(pr(1)), neutro(pr(2, rascunho=True, ci="falha"))],
                              "ci": [ci(), ci("x", "falha"), ci("y", "pendente")],
+                             "issues": None, "repos": [],
                              "abertos": 2, "ci_falhas": 1, "idade_s": 120, "velho": False})
 
     def test_velho_acima_de_1200(self):
@@ -362,11 +368,11 @@ class GithubTest(unittest.TestCase):
         for hostil in ("\U0001F600 fix \x1b[31mvermelho\x1b[0m", "t" * 500, "café ‮\u0000", "\x1b]0;x\x07"):
             r = coletar_gh(gh(prs=[pr(titulo=hostil)]))
             t = r["prs"][0]["titulo"]
-            self.assertLessEqual(len(t), 60)
+            self.assertLessEqual(len(t), 80)
             self.assertTrue(t.isascii() and t.isprintable(), repr(t))
 
-    def test_titulo_500_cortado_em_60(self):
-        self.assertEqual(len(coletar_gh(gh(prs=[pr(titulo="a" * 500)]))["prs"][0]["titulo"]), 60)
+    def test_titulo_500_cortado_em_80(self):
+        self.assertEqual(len(coletar_gh(gh(prs=[pr(titulo="a" * 500)]))["prs"][0]["titulo"]), 80)
 
     def test_repo_e_branch_saneados(self):
         r = coletar_gh(gh(prs=[pr(repo="\U0001F600" + "r" * 100)], ci=[ci(repo="a\x1bb" * 30, branch="b" * 200)]))
@@ -391,6 +397,125 @@ class GithubTest(unittest.TestCase):
 
     def test_titulo_nao_texto(self):
         self.assertEqual(coletar_gh(gh(prs=[pr(titulo=["a"])]))["prs"][0]["titulo"], "")
+
+
+def pr2(n=1, **kw):
+    """PR no formato novo (campos aditivos do claude-github)."""
+    d = {"revisao": "pendente", "conflito": False, "idade_d": 3, "atualizado_d": 1}
+    d.update(kw)
+    return pr(n, **d)
+
+
+def issue(n=5, **kw):
+    d = {"repo": "dotfiles", "numero": n, "titulo": "Algo quebrou", "idade_d": 12}
+    d.update(kw)
+    return d
+
+
+def rep(nome="dotfiles", push_d=0):
+    return {"repo": nome, "push_d": push_d}
+
+
+class GithubNovosCamposTest(unittest.TestCase):
+    def test_formato_novo_completo(self):
+        r = coletar_gh(gh(prs=[pr2(1, ), pr2(2)], issues={"n": 7, "itens": [issue(5), issue(6, idade_d=0)]},
+                          repos=[rep("a", 0), rep("b", 4)]))
+        self.assertEqual(r["prs"][0], dict(pr(1), revisao="pendente", conflito=False, idade_d=3, atualizado_d=1))
+        self.assertEqual(r["issues"], {"n": 7, "itens": [issue(5), issue(6, idade_d=0)]})
+        self.assertEqual(r["repos"], [rep("a", 0), rep("b", 4)])
+
+    def test_formato_antigo_e_neutro(self):
+        r = coletar_gh(gh())
+        self.assertEqual(r["prs"][0]["revisao"], "nenhuma")
+        self.assertIs(r["prs"][0]["conflito"], False)
+        self.assertIsNone(r["prs"][0]["idade_d"])
+        self.assertIsNone(r["prs"][0]["atualizado_d"])
+        self.assertIsNone(r["issues"])
+        self.assertEqual(r["repos"], [])
+
+    def test_revisao_valores(self):
+        for v in ("aprovado", "mudancas", "pendente", "nenhuma"):
+            self.assertEqual(coletar_gh(gh(prs=[pr2(1, revisao=v)]))["prs"][0]["revisao"], v)
+        for v in ("APROVADO", "x", None, 1, True, ["aprovado"], {}):
+            self.assertEqual(coletar_gh(gh(prs=[pr2(1, revisao=v)]))["prs"][0]["revisao"], "nenhuma", repr(v))
+
+    def test_conflito_so_true_estrito(self):
+        self.assertIs(coletar_gh(gh(prs=[pr2(1, conflito=True)]))["prs"][0]["conflito"], True)
+        for v in (1, "true", "sim", None, [True], 0):
+            self.assertIs(coletar_gh(gh(prs=[pr2(1, conflito=v)]))["prs"][0]["conflito"], False, repr(v))
+
+    def test_dias_do_pr_estritos(self):
+        for campo in ("idade_d", "atualizado_d"):
+            for v, esperado in ((0, 0), (9999, 9999), (10000, None), (-1, None), (True, None), (False, None),
+                                (1.0, None), ("3", None), (None, None), ([3], None)):
+                p = coletar_gh(gh(prs=[pr2(1, **{campo: v})]))["prs"][0]
+                self.assertEqual(p[campo], esperado, (campo, v))
+
+    def test_campo_novo_ruim_nao_derruba_o_pr(self):
+        r = coletar_gh(gh(prs=[pr2(1, revisao="x", conflito="x", idade_d="x"), pr2(2)]))
+        self.assertEqual([p["numero"] for p in r["prs"]], [1, 2])
+
+    def test_issues_formato_e_limites(self):
+        r = coletar_gh(gh(issues={"n": 9999, "itens": [issue(i) for i in range(1, 9)]}))
+        self.assertEqual(r["issues"]["n"], 9999)
+        self.assertEqual([i["numero"] for i in r["issues"]["itens"]], [1, 2, 3, 4, 5])
+
+    def test_issues_n_zero_e_n_menor_que_a_lista(self):
+        self.assertEqual(coletar_gh(gh(issues={"n": 0, "itens": []}))["issues"], {"n": 0, "itens": []})
+        # n menor que os itens validos e incoerente: vale o numero de itens
+        self.assertEqual(coletar_gh(gh(issues={"n": 1, "itens": [issue(1), issue(2)]}))["issues"]["n"], 2)
+
+    def test_issues_forma_errada_vira_none(self):
+        for v in ("x", [], 3, None, {"itens": []}, {"n": "3", "itens": []}, {"n": True, "itens": []},
+                  {"n": -1, "itens": []}, {"n": 10000, "itens": []}, {"n": 2.0, "itens": []},
+                  {"n": 2, "itens": "x"}, {"n": 2}):
+            self.assertIsNone(coletar_gh(gh(issues=v))["issues"], repr(v))
+
+    def test_issues_item_invalido_descartado_sem_derrubar_o_resto(self):
+        itens = ["x", None, 3, issue(0, numero=-1), issue(numero=True), issue(numero="4"), issue(numero=None),
+                 issue(7, idade_d=10000), issue(8, idade_d=True), issue(9)]
+        r = coletar_gh(gh(issues={"n": 10, "itens": itens}))["issues"]
+        self.assertEqual([i["numero"] for i in r["itens"]], [7, 8, 9])
+        self.assertEqual([i["idade_d"] for i in r["itens"]], [None, None, 12])
+        self.assertEqual(r["n"], 10)
+
+    def test_issues_texto_hostil(self):
+        r = coletar_gh(gh(issues={"n": 1, "itens": [issue(1, repo="\U0001F600" + "r" * 99, titulo="t\x1b[31m" + "y" * 200)]}))
+        i = r["issues"]["itens"][0]
+        self.assertLessEqual(len(i["repo"]), 40)
+        self.assertLessEqual(len(i["titulo"]), 80)
+        self.assertTrue(i["repo"].isascii() and i["repo"].isprintable())
+        self.assertTrue(i["titulo"].isascii() and i["titulo"].isprintable())
+
+    def test_repos_formato_limite_e_ordem_recebida(self):
+        r = coletar_gh(gh(repos=[rep("r%d" % i, i) for i in range(9)]))["repos"]
+        self.assertEqual([x["repo"] for x in r], ["r0", "r1", "r2", "r3", "r4", "r5"])
+
+    def test_repos_item_invalido_descartado(self):
+        lista = ["x", None, rep("a", -1), rep("b", True), rep("c", 10000), rep("d", "2"), {"repo": "e"},
+                 {"push_d": 3}, {"repo": 5, "push_d": 1}, {"repo": "", "push_d": 1}, rep("ok", 9999)]
+        self.assertEqual(coletar_gh(gh(repos=lista))["repos"], [rep("ok", 9999)])
+
+    def test_repos_nao_lista(self):
+        for v in ("x", {}, 3, None):
+            self.assertEqual(coletar_gh(gh(repos=v))["repos"], [], repr(v))
+
+    def test_novos_campos_ruins_nao_derrubam_o_arquivo(self):
+        r = coletar_gh(gh(issues=object.__class__.__name__, repos=5))
+        self.assertEqual(r["abertos"], 1)
+
+    def test_empresa-x_nunca_passa_em_nenhum_item(self):
+        suja = ["empresa-x-api", "x-empresa-x", "club\u200bpetro", "empresa-x"]
+        prs = [pr2(i + 1, repo=s) for i, s in enumerate(suja)] + [pr2(9, titulo="ver empresa-x"), pr2(10)]
+        r = coletar_gh(gh(prs=prs, ci=[ci(s) for s in suja] + [ci("ok")],
+                          issues={"n": 6, "itens": [issue(i + 1, repo=s) for i, s in enumerate(suja)]
+                                  + [issue(8, titulo="falha no empresa-x"), issue(9)]},
+                          repos=[rep(s) for s in suja] + [rep("limpo", 1)]))
+        self.assertEqual([p["numero"] for p in r["prs"]], [10])
+        self.assertEqual([c["repo"] for c in r["ci"]], ["ok"])
+        self.assertEqual([i["numero"] for i in r["issues"]["itens"]], [9])
+        self.assertEqual([x["repo"] for x in r["repos"]], ["limpo"])
+        self.assertNotIn("empresa-x", json.dumps(r).lower())
 
 
 # ----------------------------------------------------------------------------- Coletor e alertas

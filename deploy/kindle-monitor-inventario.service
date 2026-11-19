@@ -13,8 +13,10 @@ NoNewPrivileges=yes
 # incus reads its client config under /root/.config: read-only keeps /root unwritable but readable
 ProtectHome=read-only
 PrivateTmp=yes
-# worst case: 4 batched service calls + tailscale status + 2 routine calls, 10 s timeout each (70 s), plus margin
-TimeoutStartSec=120
+# worst case: 4 batched service calls + tailscale status + 2 routine calls, 10 s timeout each (70 s), plus the AMP
+# collector (login, instance list and logout: 8 s each, plus up to one more socket wait per call when a reply trickles
+# in: 48 s) = 118 s, plus margin. The AMP is only queried when jogos.json is 30 s old or more.
+TimeoutStartSec=150
 # Same hardening as the executor. VALIDATE ON THE HOST (see server/README.md): systemctl needs D-Bus, incus its unix socket.
 ProtectSystem=strict
 # the inventory only writes status/*.json (created by tmpfiles.d before any unit starts); the spool and the parent

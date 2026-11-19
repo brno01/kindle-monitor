@@ -772,6 +772,8 @@ class Coletor:
         self._rotinas = ecossistema.validar_rotinas(config.get("rotinas"))
         self._aparelhos_caminho = os.path.join(estado, ecossistema.APARELHOS_ARQ)
         self._rotinas_caminho = os.path.join(estado, ecossistema.ROTINAS_ARQ)
+        self._amp = ecossistema.validar_amp(config.get("amp"))  # so liga o painel; o executor root fala com o AMP
+        self._amp_caminho = os.path.join(estado, ecossistema.JOGOS_ARQ)
         self._offline_desde = {}  # {id do aparelho: 1o instante visto offline sem `visto_em`}; ver montar_aparelhos
         self._lock_pares = threading.Lock()
         self._pares_t = None
@@ -823,6 +825,12 @@ class Coletor:
             return None
         return ecossistema.montar_rotinas(self._rotinas, self._ler_inventario(self._rotinas_caminho),
                                           self._agora())
+
+    def amp_inventario(self):
+        """Instancias do AMP lidas do jogos.json do executor root; None se a chave `amp` nao esta (valida) na config."""
+        if not self._amp:
+            return None
+        return ecossistema.montar_amp(self._ler_inventario(self._amp_caminho), self._agora())
 
     def servicos_itens(self):
         """Itens da tela Servicos, na ordem de exibicao (mesma lista que o render usa).
@@ -1012,7 +1020,8 @@ class Coletor:
         sk = self.servicos_kindle()
         if sk is not None:
             m["servicos_kindle"] = sk
-        for chave, valor in (("aparelhos", self.aparelhos_inventario()), ("rotinas", self.rotinas_inventario())):
+        for chave, valor in (("aparelhos", self.aparelhos_inventario()), ("rotinas", self.rotinas_inventario()),
+                             ("amp", self.amp_inventario())):
             if valor is not None:
                 m[chave] = valor
         if cfg.get("portas"):

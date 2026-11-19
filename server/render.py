@@ -224,9 +224,9 @@ def _secao(m, cols, compacto, nome=None, kindle=None):
         linhas += _linhas_catalogo(m, cols)
         linhas += _linhas_rotinas(m, cols)
         atencao = _linhas_atencao(m, cols, kindle)
-        dev = _linhas_dev_resumo(m)
+        dev = _linha_jogos(m) + _linhas_dev_resumo(m)
         while dev and 2 + len(linhas) + len(dev) + len(atencao) > MAX_LINHAS:
-            dev.pop()  # o ATENCAO tem prioridade sobre as linhas de resumo do Dev (GitHub sai primeiro)
+            dev.pop()  # o ATENCAO tem prioridade sobre as linhas de resumo de Jogos e do Dev (GitHub sai primeiro)
         linhas += dev + atencao
     return linhas
 
@@ -241,6 +241,53 @@ def _linhas_catalogo(m, cols):
     aviso = {"velho": "estados desatualizados", "ausente": "sem inventario"}.get(sk.get("inventario"))
     if aviso:
         linhas.append("! " + aviso)
+    return linhas
+
+
+def _linha_jogos(m):
+    """"Jogos: Ragnarok 0  Minecraft 2/20; MAP fechada  .  parado: Valheim": a mesma linha JOGOS da tela inicial (so o
+    que esta ligado, depois o detalhe). Vazia (sem linha) se nao ha Ragnarok nem AMP ligado."""
+    try:
+        valor, detalhe, _ = render_png._l_jogos(m, None, [])
+    except Exception:
+        return ["Jogos: n/d"]
+    texto = "; ".join(x for x in (valor, detalhe) if x)
+    return ["Jogos: " + texto] if texto else []
+
+
+def _linhas_jogos(m, cols):
+    """Pagina jogos em texto: RAGNAROK (jogadores e portas) e, se o AMP estiver ligado, uma linha por instancia."""
+    ok, num = render_png._ok, render_png._num
+    linhas = []
+    d = render_png._ragnarok_dados(m)
+    if d is None:
+        linhas += ["RAGNAROK", "  sem dados"]
+    else:
+        n, parado, portas = d
+        linhas.append("RAGNAROK  " + ("n/d" if n is None else render_png._plural(n, "jogador", "jogadores"))
+                      + (" (parado)" if parado else ""))
+        for p in portas[:8]:
+            aberta = p.get("aberto") is True
+            linhas.append("  %s %s %s" % ("[#]" if aberta else "[X]", render_png._limpar(p.get("rotulo", "?")),
+                                          "aberta" if aberta else "FECHADA"))
+    situacao, itens, b = render_png._amp_dados(m)
+    if situacao is None:
+        return linhas
+    linhas.append("")
+    if situacao == "sem_dados":
+        motivo = "inventario sem atualizar" if b.get("inventario") == "velho" else (
+            render_png._limpar(b.get("erro")).strip()[:40] if isinstance(b.get("erro"), str) else "")
+        linhas.append("AMP sem dados" + (" (%s)" % motivo if motivo else ""))
+        return linhas
+    linhas.append("AMP")
+    if not itens:
+        linhas.append("  nenhum servidor")
+    forma = {"rodando": "[#]", "parado": "[ ]", "iniciando": "[ ]", "falha": "[X]", "outro": "[?]"}
+    for it in itens:
+        direita = (render_png._contagem_amp(it) or "ligado") if it["estado"] == "rodando" else \
+            {"falha": "FALHA"}.get(it["estado"], it["estado"])
+        linhas.append("  %s %s %s%s" % (forma[it["estado"]], it["nome"], direita,
+                                         " (%s)" % it["modulo"] if it["modulo"] else ""))
     return linhas
 
 
@@ -464,7 +511,7 @@ def _linhas_github(m, cols):
 
 
 def _linhas_dev_resumo(m):
-    """Tela principal: no maximo uma linha por fonte nova ("Claude: N sessoes, M esperando", "GitHub: N PRs, CI ok");
+    """Tela principal: no maximo uma linha por fonte nova ("Claude: N sessoes, M esperando", "GitHub: N PRs, M issues, CI ok");
     os detalhes e o que pede atencao saem na pagina Dev e no ATENCAO."""
     linhas = []
     ses = render_png._sessoes_dados(m.get("claude") if isinstance(m.get("claude"), dict) else {})
@@ -477,7 +524,12 @@ def _linhas_dev_resumo(m):
         else:
             ci = ("falhou" if any(i.get("estado") == "falha" for i in d["ci_ruins"])
                   else "pendente" if d["ci_ruins"] else "ok" if d["ci_ok"] else "sem dados")
-            linhas.append("GitHub: %s, CI %s" % (render_png._plural(d["abertos"], "PR", "PRs"), ci))
+            partes = [render_png._plural(d["abertos"], "PR", "PRs")]
+            if d["issues"] is not None:
+                partes.append(render_png._plural(d["issues"]["n"], "issue", "issues"))
+            if d["conflitos"]:
+                partes.append(render_png._plural(len(d["conflitos"]), "conflito", "conflitos"))
+            linhas.append("GitHub: %s, CI %s" % (", ".join(partes), ci))
     return linhas
 
 
@@ -542,7 +594,7 @@ def render_texto(metricas, colunas, pagina="resumo", p=1, kindle=None):
     """Monta a tela: lista de linhas ASCII, cada uma com no maximo `colunas` caracteres.
 
     `pagina`: "resumo" e "detalhes" mostram a tela completa (o texto ja e um resumo denso); "servicos", "aparelhos",
-    "claude" e "comandos" tem texto proprio (ver `botoes.PAGINAS`); `p` pagina a lista de "servicos".
+    "claude", "comandos" e "jogos" tem texto proprio (ver `botoes.PAGINAS`); `p` pagina a lista de "servicos".
     """
     cols = max(1, int(colunas))
     m = metricas if isinstance(metricas, dict) else {}
@@ -555,6 +607,9 @@ def render_texto(metricas, colunas, pagina="resumo", p=1, kindle=None):
         return [ascii_seguro(l)[:cols] for l in linhas][:MAX_LINHAS]
     if pagina == "aparelhos":
         linhas += _linhas_aparelhos(m, cols, kindle)
+        return [ascii_seguro(l)[:cols] for l in linhas][:MAX_LINHAS]
+    if pagina == "jogos":
+        linhas += _linhas_jogos(m, cols)
         return [ascii_seguro(l)[:cols] for l in linhas][:MAX_LINHAS]
     if pagina == "comandos":
         linhas += _linhas_comandos(m, cols)

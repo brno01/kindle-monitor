@@ -6,6 +6,7 @@ executor (deploy/kindle-monitor-executor.py), que e a referencia (roda como root
 `nome` repetido tambem descartam a lista; a unica diferenca intencional e o icone (aqui confere `icones_dados.ICONES`).
 `tests/test_paridade_catalogos.py` confere a paridade. Nada aqui levanta com entrada ruim.
 """
+import ipaddress
 import json
 import os
 import re
@@ -17,8 +18,13 @@ INVENTARIO_VALIDADE_S = 60
 FUTURO_TOLERADO_S = 5
 APARELHOS_ARQ = "aparelhos.json"
 ROTINAS_ARQ = "rotinas.json"
+JOGOS_ARQ = "jogos.json"
 
 MAX_ITENS = 16
+AMP_ESTADOS = ("rodando", "parado", "iniciando", "falha", "outro")
+AMP_VALOR_MAX = 99999
+RE_AMP_ID = re.compile(r"^[0-9a-f]{8}\Z")
+AMP_ERRO_TAM = 40
 CHAVES_APARELHO = frozenset(("id", "nome", "rotulo", "icone", "alerta_offline_min"))
 CHAVES_ROTINA = frozenset(("id", "rotulo", "tipo", "alvo", "max_idade_h"))
 RE_ID = re.compile(r"^[a-z0-9-]{1,24}\Z")
@@ -28,6 +34,11 @@ RE_ROTULO_ROTINA = re.compile(r"^[\x20-\x7e]{1,20}\Z")
 RE_ALVO_TIMER = re.compile(r"^[A-Za-z0-9_.@-]{1,64}\.service\Z")
 PREFIXOS_ARQUIVO = ("/srv/", "/var/lib/", "/var/backups/")
 NEGADOS_ARQUIVO = ("/var/lib/claude-uso",)  # igual ao executor (paridade)
+# chave `amp` da config (painel de jogos); igual ao executor, que e a referencia
+AMP_DIR_CREDENCIAIS = "/etc/kindle-monitor/"
+RE_AMP_URL = re.compile(r"^http://([0-9]{1,3}(?:\.[0-9]{1,3}){3}):([1-9][0-9]{0,4})/?\Z")
+RE_AMP_CREDENCIAIS = re.compile(r"^/etc/kindle-monitor/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+REDES_AMP = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "192.168.0.0/16", "100.64.0.0/10"))
 CONEXOES = ("direto", "relay")
 RESULTADOS = ("ok", "falha", "desconhecido")
 NOMES_FALHAS_MAX = 5
@@ -126,6 +137,25 @@ def validar_rotinas(lista):
         return saida
     except Exception:
         return []
+
+
+def validar_amp(valor):
+    """Chave `amp` normalizada (`{"url", "credenciais"}`), ou None se ausente ou invalida: feature desligada. Nunca
+    levanta. O web so usa a chave para saber que o painel de jogos esta configurado; quem fala com o AMP e le a
+    credencial e o executor root, com as mesmas regras (`tests/test_paridade_catalogos.py` confere)."""
+    try:
+        if not isinstance(valor, dict) or set(valor) != {"url", "credenciais"}:
+            return None
+        url, cred = valor["url"], valor["credenciais"]
+        m = RE_AMP_URL.match(url) if isinstance(url, str) else None
+        if not m or not isinstance(cred, str) or not RE_AMP_CREDENCIAIS.match(cred):
+            return None
+        ip = ipaddress.IPv4Address(m.group(1))
+        if not any(ip in rede for rede in REDES_AMP) or int(m.group(2)) > 65535:
+            return None
+        return {"url": "http://%s:%s" % (m.group(1), m.group(2)), "credenciais": cred}
+    except Exception:
+        return None
 
 
 # ------------------------------------------------------------------------ montagem
@@ -240,3 +270,75 @@ def montar_rotinas(catalogo, texto, agora):
     except Exception:
         return {"inventario": "ausente", "idade_s": None, "itens": [],
                 "unidades_falhas": {"n": 0, "nomes": []}}
+
+
+def _contagem(v):
+    """Contagem de jogadores/vagas do jogos.json -> int 0..AMP_VALOR_MAX ou None (bool, texto, negativo, NaN, fracao)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if isinstance(v, float):
+        if v != v or abs(v) == float("inf") or v != int(v):
+            return None
+        v = int(v)
+    return v if 0 <= v <= AMP_VALOR_MAX else None
+
+
+def _instancia_amp(it):
+    if not isinstance(it, dict):
+        return None
+    i = it.get("id")
+    if not isinstance(i, str) or not RE_AMP_ID.match(i):
+        return None
+    estado = it.get("estado") if it.get("estado") in AMP_ESTADOS else "outro"
+    jogadores = maximo = None
+    if estado == "rodando":
+        jogadores = _contagem(it.get("jogadores"))
+        maximo = _contagem(it.get("max")) if jogadores is not None else None
+    return {"id": i, "nome": sanear(it.get("nome"), 24) or "?", "modulo": sanear(it.get("modulo"), 16),
+            "estado": estado, "jogadores": jogadores, "max": maximo}
+
+
+def _amp_vazio(situacao, idade=None, ativo=None, erro=None, adiantado=False):
+    r = {"ativo": ativo, "inventario": situacao, "idade_s": idade, "erro": erro, "instancias": []}
+    if adiantado:
+        r["relogio_adiantado"] = True
+    return r
+
+
+def montar_amp(texto, agora):
+    """jogos.json do executor -> {"ativo", "inventario", "idade_s", "erro", "instancias"}. Nunca levanta.
+
+    `ativo` True = o executor tem a credencial do AMP (feature ligada; so entao "sem dados" vale alerta), False = sem
+    credencial (AMP desligado, nada a mostrar), None = nao se sabe (arquivo ausente, ilegivel ou de outra versao).
+    `inventario` e "ok", "velho" (mais de 60 s ou relogio adiantado; sem instancias, o `ativo` do arquivo e mantido) ou
+    "ausente". `erro` (texto curto saneado) nao vazio quer dizer que a coleta falhou: sem instancias, nunca verde.
+    Cada instancia sai so com id (8 hex), nome, modulo, estado, jogadores e max, saneados; ligadas primeiro, depois por
+    nome, no maximo 16."""
+    try:
+        if texto is None:
+            return _amp_vazio("ausente")
+        d = json.loads(texto)
+        gerado, ativo, erro, lista = d["gerado"], d["ativo"], d["erro"], d["instancias"]
+        if (d["versao"] != 1 or isinstance(d["versao"], bool) or not _numero(gerado) or not isinstance(ativo, bool)
+                or not isinstance(lista, list) or not (erro is None or isinstance(erro, str))):
+            raise ValueError("formato")
+        idade = agora - gerado
+        if idade < -FUTURO_TOLERADO_S:
+            return _amp_vazio("velho", int(-idade), ativo, adiantado=True)
+        if idade > INVENTARIO_VALIDADE_S:
+            return _amp_vazio("velho", max(0, int(idade)), ativo)
+        r = _amp_vazio("ok", max(0, int(idade)), ativo)
+        if isinstance(erro, str) and erro.strip():
+            r["erro"] = sanear(erro, AMP_ERRO_TAM) or "erro"
+            return r
+        vistos, itens = set(), []
+        for it in lista:
+            i = _instancia_amp(it)
+            if i is not None and i["id"] not in vistos:
+                vistos.add(i["id"])
+                itens.append(i)
+        itens.sort(key=lambda i: (i["estado"] != "rodando", i["nome"].lower(), i["id"]))
+        r["instancias"] = itens[:MAX_ITENS]
+        return r
+    except Exception:
+        return _amp_vazio("ausente")
