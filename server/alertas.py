@@ -162,8 +162,14 @@ def _r_unidades_falhas(m, lim, kv):
         return []
     nomes = [_ascii(x) for x in _lista(u.get("nomes")) if isinstance(x, str)]
     nomes = [x for x in nomes if x][:2]
-    depois = ": " + ", ".join(x[:16] for x in nomes) if nomes else ""
-    return [_alerta("critico", _texto("%s unidades em falha" % _pct(n), _SEM_ROTULO, depois), "rotinas")]
+    antes = "%s %s em falha" % (_pct(n), "unidade" if round(n) == 1 else "unidades")
+    if not nomes:
+        return [_alerta("critico", _texto(antes), "rotinas")]
+    lista = ", ".join(nomes)
+    sobra = TEXTO_MAX - len(antes) - 2
+    if len(lista) > sobra:  # nao cabe: corta a lista (nao o texto final) e avisa com reticencias
+        lista = lista[:max(1, sobra - 3)].rstrip(", ") + "..."
+    return [_alerta("critico", _texto(antes + ": " + lista), "rotinas")]
 
 
 def _r_aparelhos_offline(m, lim, kv):

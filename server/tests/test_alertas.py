@@ -174,6 +174,42 @@ class RotinasTest(unittest.TestCase):
         self.assertNotIn("c.service", a[0]["texto"])
         self.assertIn("4", a[0]["texto"])
 
+    def unidades(self, n, nomes):
+        a = alertas.avaliar(self.rot(falhas={"n": n, "nomes": nomes}))
+        self.assertEqual(len(a), 1)
+        self.assertEqual((a[0]["nivel"], a[0]["sistema"]), ("critico", "rotinas"))
+        self.assertLessEqual(len(a[0]["texto"]), 48)
+        self.assertTrue(a[0]["texto"].isascii())
+        return a[0]["texto"]
+
+    def test_unidades_falhas_singular_e_plural(self):
+        self.assertEqual(self.unidades(1, ["a.service"]), "1 unidade em falha: a.service")
+        self.assertEqual(self.unidades(1, []), "1 unidade em falha")
+        self.assertEqual(self.unidades(2, ["a.service", "b.service"]), "2 unidades em falha: a.service, b.service")
+        self.assertEqual(self.unidades(7, []), "7 unidades em falha")
+        self.assertNotIn("1 unidades", self.unidades(1, ["x.service"]))
+
+    def test_unidades_falhas_nome_que_cabe_nao_e_cortado(self):
+        # regressao: antes o nome era cortado em 16 caracteres ("1 unidades em falha: rclone-nas-sync.")
+        self.assertEqual(self.unidades(1, ["rclone-nas-sync.service"]), "1 unidade em falha: rclone-nas-sync.service")
+
+    def test_unidades_falhas_nome_longo_termina_em_reticencias(self):
+        t = self.unidades(1, ["a" * 40])
+        self.assertTrue(t.startswith("1 unidade em falha: a"))
+        self.assertTrue(t.endswith("..."))
+        self.assertEqual(len(t), 48)
+        t = self.unidades(3, ["rclone-nas-sync.service", "kindle-monitor-x.service"])
+        self.assertTrue(t.endswith("..."))
+        self.assertTrue(t.startswith("3 unidades em falha: rclone-nas-sync.service"))
+        self.assertNotIn(",...", t)
+        self.assertTrue(self.unidades(9999, ["x" * 40]).endswith("..."))
+
+    def test_unidades_falhas_nome_exato_no_limite_nao_ganha_reticencias(self):
+        nome = "a" * (48 - len("1 unidade em falha: "))
+        t = self.unidades(1, [nome])
+        self.assertEqual(t, "1 unidade em falha: " + nome)
+        self.assertFalse(t.endswith("..."))
+
     def test_unidades_falhas_zero(self):
         self.assertEqual(alertas.avaliar(self.rot(falhas={"n": 0, "nomes": ["x"]})), [])
 
