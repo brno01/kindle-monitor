@@ -13,8 +13,9 @@ usa dir_fd, nunca caminho, entao trocar um diretorio por symlink nao leva o root
 bater, recusa tudo (excecao Recusa, saida 1). Se os diretorios nao existem, sai 0 sem criar nada.
 Com --inventario, em vez de processar o spool, coleta o estado de todos os servicos do catalogo (em lote, sem
 shell) e grava status/servicos.json para o web ler; com o catalogo "aparelhos" tambem le `tailscale status --json`
-(saida tratada como dado nao confiavel; so id/online/visto_em/conexao sai) e grava status/aparelhos.json.
-Biblioteca padrao apenas.
+(saida tratada como dado nao confiavel; so id/online/visto_em/conexao sai) e grava status/aparelhos.json; com o
+catalogo "rotinas" le `systemctl show` dos timers, o mtime dos arquivos (sem seguir symlink, sem ler conteudo) e
+`systemctl list-units --failed`, e grava status/rotinas.json. Biblioteca padrao apenas.
 """
 import argparse
 import grp
@@ -29,6 +30,8 @@ import datetime
 import time
 import urllib.request
 
+_stat = stat  # `stat` e nome de parametro em coletar_rotinas (injetavel)
+
 ACOES = ("gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar")
 GRUPOS = ("host", "incus", "docker", "ragnarok")
 TIPOS = ("systemd", "incus", "docker", "rathena")
@@ -39,6 +42,13 @@ APARELHOS_ARQ = "aparelhos.json"
 TIMEOUT_TAILSCALE = 10
 TAILSCALE_MAX = 4 << 20   # bytes lidos de `tailscale status --json`; acima disso e erro
 APARELHOS_MAX = 16
+ROTINAS_ARQ = "rotinas.json"
+ROTINAS_MAX = 16
+TIMEOUT_ROTINAS = 10      # por comando (systemctl show; systemctl list-units)
+ARQUIVO_ENTRADAS_MAX = 2000   # entradas diretas de um diretorio lidas para achar o maior mtime
+FALHAS_NOMES_MAX = 5
+FALHAS_N_MAX = 9999
+SAIDA_ROTINAS_MAX = 1 << 20   # bytes de saida do systemctl considerados; o resto e ignorado
 TIMEOUT_INVENTARIO = 10
 TIMEOUT_INCUS = 90
 TIMEOUT_EXEC = 60
@@ -67,11 +77,22 @@ RE_APARELHO_ID = re.compile(r"^[a-z0-9-]{1,24}\Z")
 RE_APARELHO_NOME = re.compile(r"^[a-z0-9-]{1,63}\Z")
 RE_APARELHO_ICONE = re.compile(r"^[a-z]{2,16}\Z")
 CHAVES_APARELHO = {"id", "nome", "rotulo", "icone", "alerta_offline_min"}
+RE_ROTINA_ID = re.compile(r"^[a-z0-9-]{1,24}\Z")
+RE_ROTINA_ALVO_TIMER = re.compile(r"^[A-Za-z0-9_.@-]{1,64}\.service\Z")
+RE_UNIDADE_FALHA = re.compile(r"^[A-Za-z0-9_.@:-]{1,40}\Z")
+RE_RESULTADO_UNIT = re.compile(r"^[a-z-]{1,24}\Z")
+PREFIXOS_ARQUIVO = ("/srv/", "/var/lib/", "/var/backups/")
+CHAVES_ROTINA = {"id", "rotulo", "tipo", "alvo", "max_idade_h"}
 RE_PROJETO = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}\Z")
 CHAVES_CATALOGO = {"id", "rotulo", "grupo", "tipo", "alvo", "projeto", "prefixo", "verbos", "protegido", "opcional"}
 RE_BOT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}\Z")  # nunca comeca com "-" (viraria opcao)
 PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+# `--` antes dos alvos: nome do catalogo que comece com "-" nunca vira opcao. LoadState distingue unit inexistente
+# (o systemd devolve Result=success para ela); ExecMainStatus da o "exit N". --timestamp=unix da "@epoch".
+SHOW_ROTINAS = ["systemctl", "show", "-p", "Id", "-p", "Result", "-p", "LoadState", "-p", "ExecMainStatus",
+                "-p", "ExecMainExitTimestamp", "--timestamp=unix", "--"]
+LISTA_FALHAS = ["systemctl", "list-units", "--failed", "--plain", "--no-legend", "--no-pager"]
 TAILSCALE = ["tailscale", "status", "--json"]  # PATH fixo (PATH do executar_padrao), como systemctl/incus
 INCUS = ["incus", "exec", "games", "--project", "core", "--"]
 TIMER = "ro-bot-scheduler.timer"
@@ -224,6 +245,46 @@ def validar_aparelhos(lista):
     return saida
 
 
+def validar_rotinas(lista):
+    """Valida `rotinas` (E8; mesmas regras do web). ValueError com a causa; devolve copias novas."""
+    if lista is None:
+        return []
+    if not isinstance(lista, list):
+        raise ValueError("rotinas deve ser uma lista")
+    if len(lista) > ROTINAS_MAX:
+        raise ValueError("rotinas: no maximo %d itens" % ROTINAS_MAX)
+    ids, saida = set(), []
+    for i, it in enumerate(lista):
+        r = "rotinas[%d]" % i
+        if not isinstance(it, dict):
+            raise ValueError("%s deve ser um objeto" % r)
+        if set(it) - CHAVES_ROTINA:
+            raise ValueError("%s: chave desconhecida" % r)
+        rid, rot, tipo, alvo, idade = (it.get("id"), it.get("rotulo"), it.get("tipo"), it.get("alvo"),
+                                       it.get("max_idade_h"))
+        if not isinstance(rid, str) or not RE_ROTINA_ID.match(rid):
+            raise ValueError("%s: id invalido" % r)
+        if not isinstance(rot, str) or not 1 <= len(rot) <= 20 or not rot.isascii() or not rot.isprintable():
+            raise ValueError("%s: rotulo invalido" % r)
+        if tipo == "timer":
+            if not isinstance(alvo, str) or not RE_ROTINA_ALVO_TIMER.match(alvo):
+                raise ValueError("%s: alvo invalido" % r)
+        elif tipo == "arquivo":
+            if (not isinstance(alvo, str) or not os.path.isabs(alvo) or os.path.normpath(alvo) != alvo
+                    or not alvo.startswith(PREFIXOS_ARQUIVO)):
+                raise ValueError("%s: alvo invalido" % r)
+        else:
+            raise ValueError("%s: tipo invalido" % r)
+        if (isinstance(idade, bool) or not isinstance(idade, (int, float)) or idade != idade
+                or not 0.1 <= idade <= 720):
+            raise ValueError("%s: max_idade_h invalido" % r)
+        if rid in ids:
+            raise ValueError("%s: id repetido" % r)
+        ids.add(rid)
+        saida.append({"id": rid, "rotulo": rot, "tipo": tipo, "alvo": alvo, "max_idade_h": idade})
+    return saida
+
+
 def acao_valida(acao):
     return acao in ACOES or bool(RE_SVC_ACAO.match(acao))
 
@@ -240,10 +301,11 @@ def validar_cfg(c):
     """Valida a secao "comandos" da config. ValueError com a causa."""
     if not isinstance(c, dict):
         raise ValueError("comandos deve ser um objeto")
-    r = {"spool": SPOOL_PADRAO, "estado": ESTADO_PADRAO, "acoes": list(ACOES), "catalogo": [], "aparelhos": []}
+    r = {"spool": SPOOL_PADRAO, "estado": ESTADO_PADRAO, "acoes": list(ACOES), "catalogo": [], "aparelhos": [], "rotinas": []}
     r.update({k: v for k, v in c.items() if k in r})
     r["catalogo"] = validar_catalogo(r["catalogo"])
     r["aparelhos"] = validar_aparelhos(r["aparelhos"])
+    r["rotinas"] = validar_rotinas(r["rotinas"])
     for k in ("spool", "estado"):
         if not isinstance(r[k], str) or not os.path.isabs(r[k]):
             raise ValueError("comandos.%s deve ser um caminho absoluto (texto)" % k)
@@ -301,6 +363,7 @@ class Executor:
         self.habilitadas = list(cfg["acoes"])
         self.catalogo = {i["id"]: i for i in cfg["catalogo"]}
         self.aparelhos = list(cfg["aparelhos"])
+        self.rotinas = list(cfg["rotinas"])
         self.agora_inv = time.time
         self.executar = executar
         self.http = http
@@ -401,13 +464,32 @@ class Executor:
             dados = coletar_inventario(list(self.catalogo.values()), self.executar)
             doc = {"gerado": int(self.agora_inv()), "servicos": dados}
             self._gravar_arquivo(INVENTARIO_ARQ, json.dumps(doc, separators=(",", ":")).encode("utf-8"))
-            if self.aparelhos:  # depois dos servicos: um tailscale lento nunca atrasa nem derruba servicos.json
-                self._inventariar_aparelhos()
+            # depois dos servicos; um nao quebra o outro (cada um grava o seu arquivo, e falha vira log)
+            if self.aparelhos:
+                self._isolado("aparelhos", self._inventariar_aparelhos)
+            if self.rotinas:
+                self._isolado("rotinas", self._inventariar_rotinas)
             return 1
         finally:
             self._fechar(self._pai_fds)
             self._pai_fds = []
             self.fd_spool = self.fd_estado = None
+
+    def _isolado(self, nome, fn):
+        try:
+            fn()
+        except Exception as e:  # BaseException (SIGTERM) continua subindo
+            self.log("inventario de %s falhou: %s" % (nome, _curto(type(e).__name__, 40)))
+
+    def _inventariar_rotinas(self):
+        """Coleta timers, arquivos e unidades em falha e grava status/rotinas.json. Comando que falha, estoura o
+        tempo ou qualquer excecao: todas as rotinas `desconhecido` e `unidades_falhas` zerado. Nunca levanta."""
+        try:
+            doc = coletar_rotinas(self.rotinas, self.executar, agora=self.agora_inv)
+        except Exception as e:
+            self.log("rotinas: coleta falhou (%s)" % _curto(type(e).__name__, 40))
+            doc = rotinas_desconhecidas(self.rotinas, agora=self.agora_inv)
+        self._gravar_arquivo(ROTINAS_ARQ, json.dumps(doc, separators=(",", ":")).encode("utf-8"))
 
     def _inventariar_aparelhos(self):
         """Roda `tailscale status --json` (argv fixo, sem shell) e grava status/aparelhos.json. Nunca levanta."""
@@ -944,6 +1026,170 @@ def parse_tailscale(texto, catalogo, agora=None):
     return doc(None, {i: dict(achados.get(nome, vazio[i])) for i, nome in ids})
 
 
+def _agora_int(agora):
+    try:
+        return int(agora())
+    except Exception:
+        return 0
+
+
+def rotinas_desconhecidas(catalogo, agora=time.time):
+    """rotinas.json de quando nada pode ser lido: todas `desconhecido`, sem unidades em falha."""
+    return {"versao": 1, "gerado": _agora_int(agora),
+            "rotinas": {r["id"]: {"resultado": "desconhecido", "ultima_em": None, "detalhe": "sem dados"}
+                        for r in catalogo},
+            "unidades_falhas": {"n": 0, "nomes": []}}
+
+
+_SHOW_CHAVES = ("Id", "Result", "LoadState", "ExecMainStatus", "ExecMainExitTimestamp")
+
+
+def parse_show(texto):
+    """Saida de `systemctl show -p ...` (blocos `Chave=valor` separados por linha em branco) -> {Id: {chave: valor}}.
+
+    Pura; so as chaves pedidas; texto nao confiavel (limitado, nunca levanta)."""
+    saida = {}
+    if not isinstance(texto, str):
+        return saida
+    bloco = {}
+
+    def fecha():
+        i = bloco.get("Id")
+        if i and i not in saida:
+            saida[i] = dict(bloco)
+        bloco.clear()
+
+    for linha in texto[:SAIDA_ROTINAS_MAX].splitlines():
+        if not linha.strip():
+            fecha()
+            continue
+        k, sep, v = linha.partition("=")
+        if sep and k in _SHOW_CHAVES:
+            bloco[k] = v.strip()[:80]
+    fecha()
+    return saida
+
+
+def _epoch_unix(valor):
+    """`@1795054082` (--timestamp=unix) -> int; None se vazio, zero, antes de 2000 ou invalido."""
+    if not isinstance(valor, str) or not re.match(r"^@\d{1,12}\Z", valor):
+        return None
+    n = int(valor[1:])
+    return n if n > 946684800 else None
+
+
+def _resultado_timer(info):
+    """info do `show` de uma unit (ou None) -> {"resultado", "ultima_em", "detalhe"}."""
+    def r(res, ultima, det):
+        return {"resultado": res, "ultima_em": ultima, "detalhe": _curto(det, 24)}
+    if info is None or info.get("LoadState") == "not-found":
+        return r("desconhecido", None, "sem unidade")
+    if info.get("LoadState") != "loaded":
+        return r("desconhecido", None, "nao carregada")
+    ultima = _epoch_unix(info.get("ExecMainExitTimestamp"))
+    res = info.get("Result")
+    if not isinstance(res, str) or not RE_RESULTADO_UNIT.match(res):
+        return r("desconhecido", ultima, "sem resultado")
+    if res == "success":
+        return r("ok", ultima, "ok") if ultima is not None else r("desconhecido", None, "nunca rodou")
+    status = info.get("ExecMainStatus")
+    if res == "exit-code" and isinstance(status, str) and re.match(r"^\d{1,3}\Z", status):
+        return r("falha", ultima, "exit %s" % status)
+    return r("falha", ultima, res)
+
+
+def _mtime_arquivo(alvo, stat, listar):
+    """(ultima_em|None, detalhe). Sem seguir symlink, sem ler conteudo, sem recursao."""
+    try:
+        st = stat(alvo, follow_symlinks=False)
+    except FileNotFoundError:
+        return None, "sem arquivo"
+    except OSError:
+        return None, "erro de leitura"
+    modo = st.st_mode
+    if _stat.S_ISLNK(modo):
+        return None, "link ignorado"
+    if _stat.S_ISREG(modo):
+        return _mtime_valido(st.st_mtime)
+    if not _stat.S_ISDIR(modo):
+        return None, "tipo inesperado"
+    melhor, vistas = None, 0
+    try:
+        with listar(alvo) as it:
+            for e in it:
+                vistas += 1
+                if vistas > ARQUIVO_ENTRADAS_MAX:
+                    break
+                try:
+                    if e.is_symlink():
+                        continue
+                    m = e.stat(follow_symlinks=False).st_mtime
+                except OSError:
+                    continue
+                if melhor is None or m > melhor:
+                    melhor = m
+    except OSError:
+        return None, "erro de leitura"
+    if melhor is None:
+        return None, "vazio"
+    return _mtime_valido(melhor)
+
+
+def _mtime_valido(m):
+    try:
+        n = int(m)
+    except (TypeError, ValueError, OverflowError):
+        return None, "data invalida"
+    return (n, "ok") if 946684800 < n < 4102444800 else (None, "data invalida")  # 2000 .. 2100
+
+
+def parse_falhas(texto):
+    """Saida de `systemctl list-units --failed --plain --no-legend` -> {"n", "nomes"}.
+
+    1a coluna de cada linha; `n` conta as linhas (limitado a 9999); `nomes` so tem as que passam em
+    ^[A-Za-z0-9_.@:-]{1,40}$ (ate 5). Pura; nunca levanta."""
+    n, nomes = 0, []
+    if not isinstance(texto, str):
+        return {"n": 0, "nomes": []}
+    for linha in texto[:SAIDA_ROTINAS_MAX].splitlines():
+        col = linha.split(None, 1)
+        if not col:
+            continue
+        n += 1
+        if len(nomes) < FALHAS_NOMES_MAX and RE_UNIDADE_FALHA.match(col[0]):
+            nomes.append(col[0])
+    return {"n": min(n, FALHAS_N_MAX), "nomes": nomes}
+
+
+def coletar_rotinas(catalogo, executar, stat=os.stat, listar=os.scandir, agora=time.time):
+    """Catalogo validado -> rotinas.json (E7). Dependencias injetadas; so o argv fixo e os alvos ja validados
+    (argumentos separados, depois de `--`) chegam ao systemctl. Comando com saida != 0 ou que levanta: a excecao
+    sobe e o chamador grava tudo `desconhecido`. Erro em arquivo vira `desconhecido` so naquela rotina."""
+    timers = []
+    for r in catalogo:
+        if r["tipo"] == "timer" and r["alvo"] not in timers:
+            timers.append(r["alvo"])
+    infos = {}
+    if timers:
+        rc, out, _ = executar(SHOW_ROTINAS + timers, TIMEOUT_ROTINAS)
+        if rc != 0:
+            raise RuntimeError("systemctl show rc=%s" % rc)
+        infos = parse_show(out)
+    rc, out, _ = executar(list(LISTA_FALHAS), TIMEOUT_ROTINAS)
+    if rc != 0:
+        raise RuntimeError("systemctl list-units rc=%s" % rc)
+    falhas = parse_falhas(out)
+    rotinas = {}
+    for r in catalogo:
+        if r["tipo"] == "timer":
+            rotinas[r["id"]] = _resultado_timer(infos.get(r["alvo"]))
+        else:
+            ultima, det = _mtime_arquivo(r["alvo"], stat, listar)
+            rotinas[r["id"]] = {"resultado": "ok" if ultima is not None else "desconhecido",
+                                "ultima_em": ultima, "detalhe": _curto(det, 24)}
+    return {"versao": 1, "gerado": _agora_int(agora), "rotinas": rotinas, "unidades_falhas": falhas}
+
+
 def carregar_cfg(caminho):
     """Le e valida a secao "comandos". OSError/ValueError com a causa."""
     with open(caminho, "r", encoding="utf-8") as f:
@@ -959,6 +1205,11 @@ def carregar_cfg(caminho):
     except ValueError as e:
         cfg["aparelhos"] = []
         cfg["aparelhos_erro"] = str(e)
+    try:
+        cfg["rotinas"] = validar_rotinas(dados.get("rotinas", []))
+    except ValueError as e:
+        cfg["rotinas"] = []
+        cfg["rotinas_erro"] = str(e)
     return cfg
 
 
@@ -976,6 +1227,8 @@ def main(argv=None, log=_log_padrao):
         return 0
     if args.inventario and cfg.get("aparelhos_erro"):
         log("aparelhos invalidos, aparelhos.json nao gravado: %s" % _curto(cfg["aparelhos_erro"], 120))
+    if args.inventario and cfg.get("rotinas_erro"):
+        log("rotinas invalidas, rotinas.json nao gravado: %s" % _curto(cfg["rotinas_erro"], 120))
     signal.signal(signal.SIGTERM, _sigterm)
     try:
         ex = Executor(cfg, log=log)
