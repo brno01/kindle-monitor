@@ -140,6 +140,51 @@ def exemplo(cheia=False, estado="ok"):
         for k in ("limites", "tokens"):
             m["claude"][k]["idade_s"] = 900
             m["claude"][k]["velho"] = True
+    em_alerta, velho = estado == "alertas", estado == "velho"
+    m["aparelhos"] = {"inventario": "velho" if velho else "ok", "idade_s": 120 if velho else 4, "itens": [
+        {"id": "notebook", "rotulo": "Notebook", "icone": "notebook", "online": True, "offline_min": None,
+         "conexao": "direto", "alerta_offline_min": None},
+        {"id": "s22", "rotulo": "S22", "icone": "celular", "online": True, "offline_min": None,
+         "conexao": "relay", "alerta_offline_min": None},
+        {"id": "s10", "rotulo": "S10", "icone": "celular", "online": True, "offline_min": None,
+         "conexao": "direto", "alerta_offline_min": None},
+        {"id": "iphone", "rotulo": "iPhone", "icone": "celular", "online": True, "offline_min": None,
+         "conexao": "relay", "alerta_offline_min": None},
+        {"id": "kindle", "rotulo": "Kindle", "icone": "leitor", "online": True, "offline_min": None,
+         "conexao": "direto", "alerta_offline_min": None},
+        {"id": "gateway", "rotulo": "Gateway", "icone": "rede", "online": not em_alerta,
+         "offline_min": 95 if em_alerta else None, "conexao": None if em_alerta else "direto",
+         "alerta_offline_min": 10},
+        {"id": "games", "rotulo": "Games", "icone": "jogo", "online": False, "offline_min": 95,
+         "conexao": None, "alerta_offline_min": None},
+    ]}
+    ult_cerebro = 112320 if em_alerta else 32400  # 31,2 h (atrasada, max 24 h) ou 9 h
+    m["rotinas"] = {"inventario": "velho" if velho else "ok", "idade_s": 120 if velho else 4, "itens": [
+        {"id": "backup-senhas", "rotulo": "Backup senhas", "resultado": "ok", "ultima_em": int(AGORA) - 19800,
+         "idade_h": 5.5, "max_idade_h": 26, "atrasada": False},
+        {"id": "sync-cofre", "rotulo": "Sync cofre", "resultado": "ok", "ultima_em": int(AGORA) - 1440,
+         "idade_h": 0.4, "max_idade_h": 2, "atrasada": False},
+        {"id": "segundo-cerebro", "rotulo": "Segundo cerebro", "resultado": "ok",
+         "ultima_em": int(AGORA) - ult_cerebro, "idade_h": ult_cerebro / 3600, "max_idade_h": 24,
+         "atrasada": em_alerta},
+        {"id": "tokens-claude", "rotulo": "Tokens Claude", "resultado": "ok", "ultima_em": int(AGORA) - 720,
+         "idade_h": 0.2, "max_idade_h": 1, "atrasada": False},
+    ], "unidades_falhas": {"n": 1 if em_alerta else 0,
+                           "nomes": ["rclone-nas-sync.service"] if em_alerta else []}}
+    m["claude"]["sessoes"] = {"itens": [
+        {"projeto": "kindle-monitor", "estado": "esperando" if em_alerta else "trabalhando",
+         "desde_s": 1500 if em_alerta else 240},
+        {"projeto": "dotfiles", "estado": "trabalhando", "desde_s": 60},
+        {"projeto": "cerberus", "estado": "aberta", "desde_s": 7200},
+    ], "total": 3, "esperando": 1 if em_alerta else 0, "idade_s": 12}
+    m["github"] = {"prs": [
+        {"repo": "kindle-monitor", "numero": 14, "titulo": "Painel do ecossistema", "rascunho": False, "ci": "ok"},
+        {"repo": "dotfiles", "numero": 7, "titulo": "Roteamento de modelos", "rascunho": True, "ci": "pendente"},
+    ], "ci": [
+        {"repo": "kindle-monitor", "branch": "feat/painel-ecossistema", "estado": "ok"},
+        {"repo": "dotfiles", "branch": "main", "estado": "ok"},
+        {"repo": "cerberus", "branch": "main", "estado": "falha" if em_alerta else "ok"},
+    ], "abertos": 2, "ci_falhas": 1 if em_alerta else 0, "idade_s": 30, "velho": False}
     return m, hist
 
 
