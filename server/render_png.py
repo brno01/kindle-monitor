@@ -15,6 +15,7 @@ import alertas
 import botoes
 import coletores
 import formato
+import icones_dados
 import kindle_status
 import perfis
 import servicos
@@ -678,16 +679,101 @@ def _l_nas(m, kv, itens):
     return valor, det, bool(infos)
 
 
+INVENTARIO_SEM = "inventario sem atualizar"
+_ICONE_APARELHO_PADRAO = "aparelhos"
+
+
+def _fonte_itens(m, chave):
+    """(inventario_ok, itens) de m[chave] ("aparelhos" ou "rotinas"); None se a chave falta ou o bloco e invalido.
+    Itens que nao sao dict somem. Com inventario velho/ausente o chamador mostra "sem dados"."""
+    b = m.get(chave) if isinstance(m, dict) else None
+    if not isinstance(b, dict) or not isinstance(b.get("itens"), list):
+        return None
+    return b.get("inventario") == "ok", [i for i in b["itens"] if isinstance(i, dict)]
+
+
+def _ha_txt(minutos):
+    """"ha 5 min" (< 90 min), "ha 3 h" (< 48 h) ou "ha 2 d"; "" se nao for numero valido (>= 0)."""
+    n = _num(minutos)
+    if n is None or n < 0 or n > 10 ** 8:
+        return ""
+    n = int(n)
+    if n < 90:
+        return "ha %d min" % max(1, n)
+    return "ha %d h" % (n // 60) if n < 48 * 60 else "ha %d d" % (n // 1440)
+
+
+def _estado_aparelho(it):
+    """(estado da forma, texto secundario) de um aparelho: online -> direto/relay; offline -> "offline ha N min"
+    (falha se passou de `alerta_offline_min`); sem dado -> ?."""
+    online = it.get("online")
+    if online is True:
+        con = it.get("conexao")
+        return "ativo", con if con in ("direto", "relay") else "online"
+    if online is False:
+        off, alvo = _num(it.get("offline_min")), _num(it.get("alerta_offline_min"))
+        ha = _ha_txt(off)
+        txt = "offline " + ha if ha else "offline"
+        if alvo is not None and alvo > 0 and off is not None and off >= alvo:
+            return "falha", txt
+        return "parado", txt
+    return None, "sem dado"
+
+
+def _estado_rotina(it):
+    """(estado da forma, texto secundario) de uma rotina: ok -> "ha N h"; falha; atrasada (aviso); desconhecida (?)."""
+    r = it.get("resultado")
+    if r == "falha":
+        return "falha", "falhou"
+    if r != "ok":
+        return None, "sem dado"
+    if it.get("atrasada") is True:
+        return "aviso", "atrasada"
+    horas = _num(it.get("idade_h"))
+    return "ativo", _ha_txt(None if horas is None else horas * 60)
+
+
+_GRAVIDADE = {"falha": 3, "aviso": 2, "parado": 2, None: 1, "ativo": 0}
+
+
+def _cortar(itens, n_max, estado):
+    """(visiveis, resto): ate `n_max - 1` itens mais a linha "+N" quando nao cabem todos; no corte os piores primeiro
+    (estavel), para o que pede atencao nunca ficar de fora."""
+    if len(itens) <= n_max:
+        return itens, 0
+    ordem = sorted(itens, key=lambda i: -_GRAVIDADE.get(estado(i)[0], 1))
+    vis = ordem[:max(0, n_max - 1)]
+    return vis, len(itens) - len(vis)
+
+
+def _rotulo(it, tam=40):
+    r = _limpar(it.get("rotulo")) if isinstance(it.get("rotulo"), str) else ""
+    return r.strip()[:tam] or "?"
+
+
 def _l_aparelhos(m, kv, itens):
-    det = []
+    baterias = []
     bat = _p(_d(kv).get("bateria"))
     if bat:
-        det.append("Kindle " + bat)
+        baterias.append("Kindle " + bat)
     s10 = _d(m.get("s10"))
     nivel = _p(_d(s10.get("bateria")).get("nivel")) if _ok(s10) else None
     if nivel:
-        det.append("S10 " + nivel)
-    return "", "  ".join(det), False  # a tailnet ainda nao tem dados (Entrega 2)
+        baterias.append("S10 " + nivel)
+    baterias = "  ".join(baterias)
+    fonte = _fonte_itens(m, "aparelhos")
+    if fonte is None or (fonte[0] and not fonte[1]):
+        return "", baterias, False
+    ok, its = fonte
+    if not ok:
+        return SEM_DADOS, INVENTARIO_SEM, True  # contagem de um inventario parado parece tudo caido
+    off = [_rotulo(i) for i in its if i.get("online") is False]
+    sem = sum(1 for i in its if i.get("online") not in (True, False))
+    if off:
+        det = "offline: " + ", ".join(off)
+    else:
+        det = "  ".join(x for x in (("%d sem dado" % sem) if sem else "", baterias) if x)
+    return "%d de %d online" % (sum(1 for i in its if i.get("online") is True), len(its)), det, True
 
 
 def _l_servicos(m, kv, itens):
@@ -706,8 +792,42 @@ def _l_servicos(m, kv, itens):
     return "%d de %d ok" % (r["ok"], r["total"]), det, True
 
 
-def _l_nada(m, kv, itens):  # ROTINAS e GITHUB: o formato em `m` chega nas Tarefas 17 e 23
+def _l_nada(m, kv, itens):  # GITHUB: o formato em `m` chega na Tarefa 23
     return "", "", False
+
+
+def _rotina_ok(it):
+    return it.get("resultado") == "ok" and it.get("atrasada") is not True
+
+
+def _unidades_falhas(m):
+    """(n, nomes) das unidades systemd em falha de m["rotinas"]; (0, []) se ausente ou invalido."""
+    u = _d(_d(m.get("rotinas")).get("unidades_falhas"))
+    n = _num(u.get("n"))
+    nomes = u.get("nomes")
+    nomes = [_limpar(x).strip() for x in nomes if isinstance(x, str)] if isinstance(nomes, list) else []
+    return (int(n) if n is not None and n > 0 else 0), [x for x in nomes if x][:5]
+
+
+def _l_rotinas(m, kv, itens):
+    fonte = _fonte_itens(m, "rotinas")
+    if fonte is None or (fonte[0] and not fonte[1]):
+        return "", "", False
+    ok, its = fonte
+    if not ok:
+        return SEM_DADOS, INVENTARIO_SEM, True
+    valor = "%d de %d ok" % (sum(1 for i in its if _rotina_ok(i)), len(its))
+    prob = next((i for i in its if not _rotina_ok(i)), None)
+    if prob is not None:
+        return valor, "%s %s" % (_rotulo(prob), _estado_rotina(prob)[1]), True
+    n, _ = _unidades_falhas(m)
+    if n:
+        return valor, "%d unidades em falha" % n, True
+    datadas = [i for i in its if _num(i.get("ultima_em")) is not None]
+    rec = max(datadas, key=lambda i: _num(i["ultima_em"]), default=None)
+    if rec is None:
+        return valor, "", True
+    return valor, ("%s %s" % (_rotulo(rec), _estado_rotina(rec)[1])).strip(), True
 
 
 def _l_claude(m, kv, itens):
@@ -741,7 +861,7 @@ def _l_ragnarok(m, kv, itens):
 
 
 _CONSTRUTORES = {"atheron": _l_atheron, "nas": _l_nas, "aparelhos": _l_aparelhos, "servicos": _l_servicos,
-                 "rotinas": _l_nada, "claude": _l_claude, "github": _l_nada, "ragnarok": _l_ragnarok}
+                 "rotinas": _l_rotinas, "claude": _l_claude, "github": _l_nada, "ragnarok": _l_ragnarok}
 
 
 _LINHAS_AVISADAS = set()  # (linha, tipo do erro) ja registrados: a tela redesenha a cada segundo
@@ -889,14 +1009,63 @@ def _kv(c, x, yc, w, chave, valor, tam=34):
     _texto_c(c, x + kw, yc, _ajustar(c, valor, NEG, tam, w - kw), NEG, tam, PRETO)
 
 
-H_ROTINAS = 44 + 60
+H_ROTINAS = 44 + 60  # sem dados: titulo + uma linha
+ROTINA_LINHA = 46
+ROTINA_TOPO = 50  # do alto do cartao ate a 1a linha (o titulo ocupa 44 e sobra um respiro)
+ROTINAS_MAX = 8  # linhas de rotina no cartao; acima disso, as piores primeiro e "+N"
 
 
-def _card_rotinas(c, x, y, w, h):
-    """Cartao ROTINAS da pagina Sistema. Ainda sem fonte em `m` (chega na Entrega 2): mostra "sem dados"."""
+def _rotinas_visiveis(rot):
+    """(visiveis, resto, unidades_n, nomes) do cartao ROTINAS, ou None se for "sem dados" (sem bloco, lista vazia ou
+    inventario velho/ausente)."""
+    fonte = _fonte_itens({"rotinas": rot}, "rotinas")
+    if fonte is None or not fonte[0] or not fonte[1]:
+        return None
+    n, nomes = _unidades_falhas({"rotinas": rot})
+    vis, resto = _cortar(fonte[1], ROTINAS_MAX - (1 if n else 0), _estado_rotina)
+    return vis, resto, n, nomes
+
+
+def _h_rotinas(rot):
+    d = _rotinas_visiveis(rot)
+    if d is None:
+        return H_ROTINAS
+    vis, resto, n, _ = d
+    return ROTINA_TOPO + (len(vis) + (1 if resto else 0) + (1 if n else 0)) * ROTINA_LINHA + 20
+
+
+def _card_rotinas(c, rot, x, y, w, h):
+    """Cartao ROTINAS da pagina Sistema: forma, rotulo e "ha N h"/"falhou"/"atrasada" por rotina, mais a linha das
+    unidades systemd em falha. Sem dados (ou inventario velho): "sem dados" cinza."""
     _card(c, x, y, w, h)
     c.texto(x + PAD, y + 14 + _cap(NEG, 26), "ROTINAS", NEG, 26, ESCURO)
-    _texto_c(c, x + PAD, y + 44 + 30, SEM_DADOS, NEG, 34, MEDIO)
+    d = _rotinas_visiveis(rot)
+    if d is None:
+        _texto_c(c, x + PAD, y + 44 + 30, SEM_DADOS, NEG, 34, MEDIO)
+        if _fonte_itens({"rotinas": rot}, "rotinas") not in (None, (True, [])):
+            _texto_c(c, x + w - PAD, y + 44 + 30, INVENTARIO_SEM, REG, 26, ESCURO, "dir")
+        return
+    vis, resto, n, nomes = d
+    for i, it in enumerate(vis):
+        yc = y + ROTINA_TOPO + i * ROTINA_LINHA + ROTINA_LINHA // 2
+        forma, txt = _estado_rotina(it)
+        if forma in ("falha", "aviso"):
+            c.retangulo_arredondado(x + 8, yc - ROTINA_LINHA // 2 + 2, w - 16, ROTINA_LINHA - 4, 8, TRILHO)
+        _forma(c, x + PAD, yc - 14, 28, forma)
+        sem = forma is None
+        _texto_c(c, x + w - PAD, yc, txt, NEG if forma in ("falha", "aviso") else REG, 26, MEDIO if sem else ESCURO, "dir")
+        tw = int(c.medir(txt, NEG, 26)) + 24
+        _texto_c(c, x + PAD + 44, yc, _ajustar(c, _rotulo(it), NEG, 34, w - 2 * PAD - 44 - tw), NEG, 34,
+                 ESCURO if sem else PRETO)
+    linha = len(vis)
+    if resto:
+        _texto_c(c, x + PAD + 44, y + ROTINA_TOPO + linha * ROTINA_LINHA + ROTINA_LINHA // 2, "+%d" % resto, NEG, 26, ESCURO)
+        linha += 1
+    if n:
+        yc = y + ROTINA_TOPO + linha * ROTINA_LINHA + ROTINA_LINHA // 2
+        _forma(c, x + PAD, yc - 14, 28, "falha")
+        txt = "%d unidades em falha" % n + (": " + ", ".join(nomes) if nomes else "")
+        _texto_c(c, x + PAD + 44, yc, _ajustar(c, txt, NEG, 26, w - 2 * PAD - 44), NEG, 26, PRETO)
 
 
 def _series_historico(hist, pares):
@@ -989,10 +1158,12 @@ def _blocos_detalhes(c, m, itens, w, hist):
     # historico (sparklines de ~15 min)
     series = _series_historico(hist, (("CPU", "cpu"), ("RAM", "ram"), ("GPU", "gpu")))
     if series:
-        blocos.append((52 + len(series) * 76 + 8,
-                       lambda c, x, y, h: _card_historico(c, hist, series, x, y, w, h)))
-    # rotinas (o formato em `m` chega na Entrega 2)
-    blocos.append((H_ROTINAS, lambda c, x, y, h: _card_rotinas(c, x, y, w, h)))
+        def historico(c, x, y, h):
+            _card_historico(c, hist, series, x, y, w, h)
+        historico.descartavel = True  # sem espaco, sai primeiro (antes do ROTINAS, que pode trazer falha)
+        blocos.append((52 + len(series) * 76 + 8, historico))
+    rot = m.get("rotinas")
+    blocos.append((_h_rotinas(rot), lambda c, x, y, h: _card_rotinas(c, rot, x, y, w, h)))
     return blocos
 
 
@@ -1039,11 +1210,14 @@ def _campos_kindle(kv):
     return kv.get("bateria"), " · ".join(det), pares
 
 
-def _card_sem_dados(c, x, y, w, h, titulo, icone):
-    """Cartao de titulo com icone e a linha "sem dados" (fontes que chegam na Entrega 2, ou ausentes)."""
+def _card_sem_dados(c, x, y, w, h, titulo, icone, detalhe=None, idade_s=None):
+    """Cartao de titulo com icone e a linha "sem dados" em cinza (fonte ausente ou parada). `detalhe` fica a direita
+    e `idade_s` (fonte velha) vira a idade no titulo."""
     _card(c, x, y, w, h)
-    yy = _cabecalho_card(c, x, y, w, titulo, icone=icone)
+    yy = _cabecalho_card(c, x, y, w, titulo, idade_s is not None, idade_s, icone=icone)
     _texto_c(c, x + PAD, yy + 30, SEM_DADOS, NEG, 34, MEDIO)
+    if detalhe:
+        _texto_c(c, x + w - PAD, yy + 30, detalhe, REG, 26, ESCURO, "dir")
 
 
 def _card_kindle(c, kv, x, y, w, h):
@@ -1092,9 +1266,10 @@ def _desenhar_detalhes(c, m, itens, hist):
     w = c.largura - 2 * MARGEM
     topo, limite = botoes.TOPO, botoes.limite(c.altura)
     blocos = _blocos_detalhes(c, m, itens, w, hist)
-    # se nao couber, descarta do fim em vez de sair da imagem
+    # se nao couber, descarta o HISTORICO e depois do fim, em vez de sair da imagem
     while blocos and sum(b[0] for b in blocos) + GAP * (len(blocos) - 1) > limite - topo:
-        blocos.pop()
+        k = next((i for i, b in enumerate(blocos) if getattr(b[1], "descartavel", False)), len(blocos) - 1)
+        blocos.pop(k)
     if not blocos:
         return
     folga = limite - topo - sum(b[0] for b in blocos) - GAP * (len(blocos) - 1)
@@ -1380,11 +1555,74 @@ def _desenhar_claude(c, m):
         (H_SEM_DADOS, lambda c, x, y, h: _card_sem_dados(c, x, y, w, h, "GitHub", "github"))])
 
 
+APARELHO_LINHA = 56
+APARELHOS_MAX = 16
+
+
+def _icone_aparelho(it):
+    nome = it.get("icone")
+    return nome if isinstance(nome, str) and nome in icones_dados.ICONES else _ICONE_APARELHO_PADRAO
+
+
+def _tailnet_visiveis(ap, max_linhas=APARELHOS_MAX):
+    """(visiveis, resto) do cartao TAILNET, ou None se for "sem dados" (sem bloco, lista vazia, inventario velho)."""
+    fonte = _fonte_itens({"aparelhos": ap}, "aparelhos")
+    if fonte is None or not fonte[0] or not fonte[1]:
+        return None
+    return _cortar(fonte[1][:APARELHOS_MAX], max_linhas, _estado_aparelho)
+
+
+def _h_tailnet(ap, max_linhas=APARELHOS_MAX):
+    d = _tailnet_visiveis(ap, max_linhas)
+    if d is None:
+        return H_SEM_DADOS
+    return 64 + 4 + (len(d[0]) + (1 if d[1] else 0)) * APARELHO_LINHA + 8
+
+
+def _card_tailnet(c, ap, x, y, w, h, max_linhas=APARELHOS_MAX):
+    """Cartao TAILNET: uma linha por aparelho (icone de 40 px, rotulo, texto secundario e a forma de estado a direita).
+    Sem o bloco, ou com inventario velho/ausente: "sem dados" cinza."""
+    d = _tailnet_visiveis(ap, max_linhas)
+    if d is None:
+        fonte = _fonte_itens({"aparelhos": ap}, "aparelhos")
+        velho = fonte is not None and not fonte[0]
+        idade = _num(_d(ap).get("idade_s")) if velho and _d(ap).get("inventario") == "velho" else None
+        return _card_sem_dados(c, x, y, w, h, "Tailnet", "tailscale", INVENTARIO_SEM if velho else None, idade)
+    vis, resto = d
+    _card(c, x, y, w, h)
+    yy = _cabecalho_card(c, x, y, w, "Tailnet", icone="tailscale") + 4
+    ultima = len(vis) - 1 + (1 if resto else 0)
+    for i, it in enumerate(vis):
+        yc = yy + i * APARELHO_LINHA + APARELHO_LINHA // 2
+        forma, txt = _estado_aparelho(it)
+        falha = forma == "falha"
+        if falha:
+            c.retangulo_arredondado(x + 8, yc - APARELHO_LINHA // 2 + 2, w - 16, APARELHO_LINHA - 4, 8, TRILHO)
+        c.icone(x + PAD, yc - 20, _icone_aparelho(it), 40, PRETO)
+        _forma(c, x + w - PAD - 28, yc - 14, 28, forma)
+        xr = x + w - PAD - 28 - 16
+        _texto_c(c, xr, yc, txt, NEG if falha else REG, 26, MEDIO if forma is None else ESCURO, "dir")
+        tx = x + PAD + 40 + 16
+        tw = int(c.medir(txt, NEG, 26)) + 24
+        _texto_c(c, tx, yc, _ajustar(c, _rotulo(it), NEG, 26, xr - tw - tx), NEG, 26,
+                 ESCURO if forma is None else PRETO)
+        if i != ultima and not falha:
+            c.retangulo(x + PAD, yc + APARELHO_LINHA // 2 - 1, w - 2 * PAD, 2, TRILHO)
+    if resto:
+        yc = yy + len(vis) * APARELHO_LINHA + APARELHO_LINHA // 2
+        _texto_c(c, x + PAD + 56, yc, "+%d" % resto, NEG, 26, ESCURO)
+
+
 def _desenhar_aparelhos(c, m, kv=None):
-    """Aparelhos: TAILNET (sem dados ate a Entrega 2), o proprio Kindle, o S10 (se houver na config) e os pares."""
+    """Aparelhos: TAILNET (um aparelho por linha), o proprio Kindle, o S10 (se houver na config) e os pares."""
     w = c.largura - 2 * MARGEM
-    blocos = [(H_SEM_DADOS, lambda c, x, y, h: _card_sem_dados(c, x, y, w, h, "Tailnet", "tailscale")),
-              (H_KINDLE if isinstance(kv, dict) else H_SEM_DADOS, lambda c, x, y, h: _card_kindle(c, kv, x, y, w, h))]
+    h_kindle = H_KINDLE if isinstance(kv, dict) else H_SEM_DADOS
+    ap = m.get("aparelhos")
+    # o cartao TAILNET deixa sempre espaco para o do Kindle logo abaixo; se faltar, corta com "+N"
+    disp = botoes.limite(c.altura) - botoes.TOPO - h_kindle - GAP
+    max_linhas = max(2, min(APARELHOS_MAX, (disp - 64 - 4 - 8) // APARELHO_LINHA))
+    blocos = [(_h_tailnet(ap, max_linhas), lambda c, x, y, h: _card_tailnet(c, ap, x, y, w, h, max_linhas)),
+              (h_kindle, lambda c, x, y, h: _card_kindle(c, kv, x, y, w, h))]
     if "s10" in m:
         blocos.append((_h_s10(m["s10"]), lambda c, x, y, h: _card_s10(c, m["s10"], x, y, w, h)))
     pares = m.get("pares")

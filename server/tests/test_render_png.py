@@ -680,6 +680,338 @@ class CorrecoesRevisaoPngTest(unittest.TestCase):
             self.assertFalse(hasattr(render_png, nome), nome)
 
 
+# ------------------------------------------------- aparelhos e rotinas (Entrega 2, Tarefa 22)
+
+def ap(i, rotulo, online=True, icone="celular", **k):
+    d = {"id": i, "rotulo": rotulo, "icone": icone, "online": online, "offline_min": None,
+         "conexao": "direto" if online else None, "alerta_offline_min": None}
+    d.update(k)
+    return d
+
+
+def aparelhos(itens, inv="ok"):
+    return {"inventario": inv, "idade_s": 4 if inv == "ok" else 300, "itens": itens}
+
+
+APS7 = [ap("notebook", "Notebook", icone="notebook"), ap("s22", "S22", conexao="relay"), ap("s10", "S10"),
+        ap("iphone", "iPhone", conexao="relay"), ap("kindle", "Kindle", icone="leitor"),
+        ap("gateway", "Gateway", icone="rede"), ap("games", "Games", icone="jogo")]
+
+
+def rot(i, rotulo, resultado="ok", idade_h=5.5, atrasada=False, ultima_em=None, max_idade_h=26):
+    return {"id": i, "rotulo": rotulo, "resultado": resultado,
+            "ultima_em": 1_794_000_000 - int(idade_h * 3600) if ultima_em is None and idade_h is not None
+            else ultima_em, "idade_h": idade_h, "max_idade_h": max_idade_h, "atrasada": atrasada}
+
+
+def rotinas(itens, inv="ok", n=0, nomes=()):
+    return {"inventario": inv, "idade_s": 4 if inv == "ok" else 300, "itens": itens,
+            "unidades_falhas": {"n": n, "nomes": list(nomes)}}
+
+
+ROTS4 = [rot("backup-senhas", "Backup senhas", idade_h=4.2), rot("sync-cofre", "Sync cofre", idade_h=0.4),
+         rot("segundo-cerebro", "Segundo cerebro", idade_h=9), rot("tokens-claude", "Tokens Claude", idade_h=0.2)]
+
+
+def espiar(m, pagina, kv=None, w=1236, h=1648):
+    """(textos, icones) desenhados em `pagina` com canvas estrito."""
+    textos, icones = [], []
+    orig_t, orig_i = cv.Canvas.texto, cv.Canvas.icone
+
+    def espia_t(self, x, y, t, *a, **k):
+        textos.append(t)
+        return orig_t(self, x, y, t, *a, **k)
+
+    def espia_i(self, x, y, nome, tam, cor):
+        icones.append((nome, tam))
+        return orig_i(self, x, y, nome, tam, cor)
+    cv.Canvas.texto, cv.Canvas.icone = espia_t, espia_i
+    try:
+        render_png.desenhar(cv.Canvas(w, h, estrito=True), m, historico(), pagina=pagina, kindle=kv)
+    finally:
+        cv.Canvas.texto, cv.Canvas.icone = orig_t, orig_i
+    return textos, icones
+
+
+def fora_da_caixa(c, x, y, w, h):
+    """Menor pixel fora da caixa (255 = nada desenhado fora)."""
+    menor = 255
+    for yy in range(c.altura):
+        linha = c.pixels[yy * c.largura:(yy + 1) * c.largura]
+        if y <= yy < y + h:
+            linha = linha[:x] + linha[x + w:]
+        menor = min(menor, min(linha, default=255))
+    return menor
+
+
+class VistoTest(unittest.TestCase):
+    def test_minutos_horas_dias(self):
+        f = render_png._ha_txt
+        self.assertEqual([f(5), f(89), f(90), f(125), f(47 * 60 + 59), f(48 * 60), f(3 * 1440 + 5)],
+                         ["ha 5 min", "ha 89 min", "ha 1 h", "ha 2 h", "ha 47 h", "ha 2 d", "ha 3 d"])
+        self.assertEqual(f(0), "ha 1 min")
+        for ruim in (None, "x", True, -3, float("nan"), 10 ** 400):
+            self.assertEqual(f(ruim), "", ruim)
+
+
+class LinhaAparelhosTest(unittest.TestCase):
+    def _l(self, m, kv=None, al=()):
+        return {x["id"]: x for x in render_png._linhas_resumo(m, [], kv, list(al))}["aparelhos"]
+
+    def test_n_de_m_online_e_rotulos_dos_offline(self):
+        its = [dict(i) for i in APS7]
+        its[1].update(online=False, offline_min=95, conexao=None)
+        its[6].update(online=False, offline_min=5, conexao=None)
+        l = self._l({"aparelhos": aparelhos(its)}, {"bateria": 58})
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("5 de 7 online", "offline: S22, Games", "ok"))
+
+    def test_todos_online_mostra_as_baterias(self):
+        m = completo(s10=S10, aparelhos=aparelhos(APS7))
+        l = self._l(m, {"bateria": 58, "carregando": False})
+        self.assertEqual((l["valor"], l["detalhe"]), ("7 de 7 online", "Kindle 58%  S10 87%"))
+
+    def test_online_none_nao_conta_como_online(self):
+        its = [ap("a", "A"), ap("b", "B", online=None, conexao=None)]
+        l = self._l({"aparelhos": aparelhos(its)})
+        self.assertEqual((l["valor"], l["detalhe"]), ("1 de 2 online", "1 sem dado"))
+
+    def test_lista_de_offline_longa_e_cortada_com_reticencias(self):
+        its = [ap("i%d" % k, "Aparelho %02d" % k, online=False, conexao=None) for k in range(16)]
+        l = self._l({"aparelhos": aparelhos(its)})
+        self.assertEqual(l["valor"], "0 de 16 online")
+        c = cv.Canvas(1236, 1648, estrito=True)
+        import botoes
+        render_png._linha_sistema(c, botoes.geometria_resumo()["linhas"][2], l)  # nao estoura a caixa
+
+    def test_inventario_velho_ou_ausente_vira_sem_dados(self):
+        for inv in ("velho", "ausente"):
+            its = [ap("a", "A", online=None, conexao=None)]
+            l = self._l({"aparelhos": aparelhos(its, inv)}, None, [{"nivel": "aviso", "sistema": "aparelhos"}])
+            self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("sem dados", "inventario sem atualizar", "aviso"))
+
+    def test_sem_catalogo_continua_como_antes(self):
+        l = self._l(completo(s10=S10), {"bateria": 58})
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("sem dados", "Kindle 58%  S10 87%", "sem_dados"))
+
+    def test_estado_vem_dos_alertas_do_sistema_aparelhos(self):
+        l = self._l({"aparelhos": aparelhos(APS7)}, None, [{"nivel": "critico", "sistema": "aparelhos"}])
+        self.assertEqual(l["estado"], "critico")
+
+    def test_blocos_malformados_nao_levantam(self):
+        for ruim in TIPOS_ERRADOS + [{"itens": "x"}, {"itens": [None, 5, {"online": "x", "rotulo": 7}]},
+                                     {"inventario": "ok", "itens": []}]:
+            self._l({"aparelhos": ruim})
+
+
+class LinhaRotinasTest(unittest.TestCase):
+    def _l(self, m, al=()):
+        return {x["id"]: x for x in render_png._linhas_resumo(m, [], None, list(al))}["rotinas"]
+
+    def test_tudo_ok_cita_a_mais_recente(self):
+        l = self._l({"rotinas": rotinas(ROTS4)})
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("4 de 4 ok", "Tokens Claude ha 12 min", "ok"))
+        its = [rot("a", "Backup senhas", idade_h=4.2), rot("b", "Sync cofre", idade_h=9)]
+        self.assertEqual(self._l({"rotinas": rotinas(its)})["detalhe"], "Backup senhas ha 4 h")
+
+    def test_atrasada_nao_conta_como_ok_e_vira_o_detalhe(self):
+        its = [rot("a", "Backup senhas"), rot("b", "Segundo cerebro", idade_h=31, atrasada=True)]
+        l = self._l({"rotinas": rotinas(its)}, [{"nivel": "aviso", "sistema": "rotinas"}])
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("1 de 2 ok", "Segundo cerebro atrasada", "aviso"))
+
+    def test_falha_e_a_primeira_com_problema(self):
+        its = [rot("a", "Backup senhas", resultado="falha", idade_h=2), rot("b", "Sync cofre", atrasada=True)]
+        l = self._l({"rotinas": rotinas(its)}, [{"nivel": "critico", "sistema": "rotinas"}])
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("0 de 2 ok", "Backup senhas falhou", "critico"))
+
+    def test_desconhecida_nao_conta_como_ok(self):
+        its = [rot("a", "Backup senhas", resultado="desconhecido", idade_h=None), rot("b", "Sync cofre")]
+        l = self._l({"rotinas": rotinas(its)})
+        self.assertEqual((l["valor"], l["detalhe"]), ("1 de 2 ok", "Backup senhas sem dado"))
+
+    def test_unidades_em_falha_sem_rotina_com_problema(self):
+        l = self._l({"rotinas": rotinas(ROTS4, n=2, nomes=["a.service", "b.service"])})
+        self.assertEqual((l["valor"], l["detalhe"]), ("4 de 4 ok", "2 unidades em falha"))
+
+    def test_inventario_velho_ou_ausente_ou_sem_chave(self):
+        for inv in ("velho", "ausente"):
+            l = self._l({"rotinas": rotinas(ROTS4, inv)})
+            self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("sem dados", "inventario sem atualizar", "ok"))
+        l = self._l({})
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("sem dados", "", "sem_dados"))
+
+    def test_blocos_malformados_nao_levantam(self):
+        for ruim in TIPOS_ERRADOS + [{"itens": "x"}, {"itens": [None, 5, {"resultado": 3, "rotulo": []}]}]:
+            self._l({"rotinas": ruim})
+        for ruim in TIPOS_ERRADOS + [{"n": "x", "nomes": 5}, {"n": 2, "nomes": [None, 3, "a"]}]:
+            self._l({"rotinas": {"inventario": "ok", "itens": [rot("a", "A")], "unidades_falhas": ruim}})
+
+
+class PaginaAparelhosTest(unittest.TestCase):
+    def test_sete_aparelhos_com_formas_e_texto_secundario(self):
+        its = [dict(i) for i in APS7]
+        its[1].update(online=False, offline_min=95, conexao=None)           # offline ha 1 h
+        its[5].update(online=False, offline_min=20, conexao=None, alerta_offline_min=10)  # passou do limite
+        its[6].update(online=False, offline_min=4000, conexao=None)         # offline ha 2 d
+        tx, ic = espiar(completo(aparelhos=aparelhos(its)), "aparelhos")
+        for t in ("Tailnet", "Notebook", "S22", "iPhone", "Gateway", "Games", "direto", "relay",
+                  "offline ha 1 h", "offline ha 20 min", "offline ha 2 d"):
+            self.assertIn(t, tx)
+        self.assertEqual(tx.count("direto"), 3)
+        self.assertEqual(tx.count("relay"), 1)
+        self.assertEqual(ic.count(("notebook", 40)), 1)
+        self.assertEqual(ic.count(("celular", 40)), 3)
+        self.assertEqual(ic.count(("rede", 40)), 1)
+        self.assertNotIn("inventario sem atualizar", tx)
+
+    def test_formas_de_estado(self):
+        calls = []
+        orig = render_png._forma
+        render_png._forma = lambda c, x, y, lado, estado: (calls.append((lado, estado)), orig(c, x, y, lado, estado))[1]
+        try:
+            its = [ap("a", "A"), ap("b", "B", online=False, offline_min=5, conexao=None),
+                   ap("c", "C", online=False, offline_min=50, conexao=None, alerta_offline_min=30),
+                   ap("d", "D", online=None, conexao=None)]
+            espiar(completo(aparelhos=aparelhos(its)), "aparelhos")
+        finally:
+            render_png._forma = orig
+        self.assertEqual([e for lado, e in calls if lado == 28][:4], ["ativo", "parado", "falha", None])
+
+    def test_dezesseis_aparelhos_cabem(self):
+        its = [ap("i%d" % k, "Aparelho %02d" % k, online=k % 3 != 0, offline_min=k * 7,
+                  conexao="direto" if k % 3 else None) for k in range(16)]
+        tx, _ = espiar(completo(aparelhos=aparelhos(its)), "aparelhos")
+        self.assertEqual(len([t for t in tx if t.startswith("Aparelho ")]), 16)
+        self.assertFalse([t for t in tx if t.startswith("+")])
+
+    def test_sem_espaco_corta_com_mais_n_e_mantem_os_problemas(self):
+        its = [ap("i%d" % k, "Aparelho %02d" % k) for k in range(16)]
+        its[14].update(online=False, offline_min=500, conexao=None, alerta_offline_min=10)
+        tx, _ = espiar(completo(aparelhos=aparelhos(its)), "aparelhos", None, 1236, 1000)
+        mostrados = [t for t in tx if t.startswith("Aparelho ")]
+        resto = [t for t in tx if t.startswith("+")]
+        self.assertEqual(len(resto), 1)
+        self.assertEqual(len(mostrados) + int(resto[0][1:]), 16)
+        self.assertIn("Aparelho 14", mostrados)  # o aparelho em falha nao fica no corte
+
+    def test_icone_desconhecido_cai_no_aparelhos(self):
+        its = [ap("a", "A", icone="nao-existe"), ap("b", "B", icone=None), ap("c", "C", icone=[1])]
+        _, ic = espiar(completo(aparelhos=aparelhos(its)), "aparelhos")
+        self.assertEqual(ic.count(("aparelhos", 40)), 3)
+
+    def test_online_none_mostra_sem_dado(self):
+        tx, _ = espiar(completo(aparelhos=aparelhos([ap("a", "A", online=None, conexao=None)])), "aparelhos")
+        self.assertIn("sem dado", tx)
+
+    def test_inventario_velho_ou_ausente_mostra_sem_dados(self):
+        for inv in ("velho", "ausente"):
+            tx, _ = espiar(completo(aparelhos=aparelhos(APS7, inv)), "aparelhos")
+            self.assertIn("inventario sem atualizar", tx)
+            self.assertIn("sem dados", tx)
+            self.assertNotIn("Notebook", tx)
+
+    def test_sem_a_chave_continua_sem_dados(self):
+        tx, _ = espiar(completo(), "aparelhos")
+        self.assertIn("Tailnet", tx)
+        self.assertIn("sem dados", tx)
+        self.assertNotIn("inventario sem atualizar", tx)
+
+    def test_cartoes_kindle_e_s10_continuam_abaixo(self):
+        tx, _ = espiar(completo(s10=S10, aparelhos=aparelhos(APS7)), "aparelhos", PaginasAparelhosDevTest.KV)
+        for t in ("Kindle", "BATERIA", "S10", "nomad"):
+            self.assertIn(t, tx)
+
+    def test_rotulos_hostis_nao_estouram(self):
+        hostis = ["W" * 16, "\u00e7\u00e3\u00f5\u0301\u4e2d\u6587", "\x00\x1b[31m", "M" * 16, "...", ""]
+        for conexao in ("direto", None):
+            its = [ap("i%d" % k, r, online=k % 2 == 0, offline_min=10 ** 9, conexao=conexao, alerta_offline_min=5)
+                   for k, r in enumerate(hostis)]
+            for inv in ("ok", "velho"):
+                for h in (1648, 900):
+                    c = cv.Canvas(1236, h, estrito=True)
+                    ap_ = aparelhos(its, inv)
+                    render_png._card_tailnet(c, ap_, 48, 200, 1140, 500)
+                    self.assertEqual(fora_da_caixa(c, 48, 200, 1140, 500), 255)
+
+    def test_blocos_malformados_nao_levantam(self):
+        for ruim in TIPOS_ERRADOS + [{"itens": "x"}, {"inventario": "ok", "itens": [None, 5, {"online": "x", "rotulo": 7}]},
+                                     {"inventario": "ok", "itens": []}]:
+            espiar(completo(aparelhos=ruim), "aparelhos")
+
+
+class CartaoRotinasTest(unittest.TestCase):
+    def test_uma_linha_por_rotina_com_ha_n_h(self):
+        tx, ic = espiar(completo(rotinas=rotinas(ROTS4)), "detalhes")
+        for t in ("ROTINAS", "Backup senhas", "Sync cofre", "Segundo cerebro", "Tokens Claude", "ha 4 h", "ha 24 min",
+                  "ha 9 h", "ha 12 min"):
+            self.assertIn(t, tx)
+        self.assertFalse([t for t in tx if "unidades" in t])
+
+    def test_formas_ok_falha_aviso_desconhecida(self):
+        calls = []
+        orig = render_png._forma
+        render_png._forma = lambda c, x, y, lado, estado: (calls.append((lado, estado)), orig(c, x, y, lado, estado))[1]
+        try:
+            its = [rot("a", "A"), rot("b", "B", resultado="falha"), rot("c", "C", atrasada=True),
+                   rot("d", "D", resultado="desconhecido", idade_h=None)]
+            tx, _ = espiar(completo(rotinas=rotinas(its)), "detalhes")
+        finally:
+            render_png._forma = orig
+        self.assertEqual([e for lado, e in calls if lado == 28], ["ativo", "falha", "aviso", None])
+        for t in ("falhou", "atrasada", "sem dado"):
+            self.assertIn(t, tx)
+
+    def test_unidades_em_falha_ultima_linha(self):
+        m = completo(rotinas=rotinas(ROTS4, n=2, nomes=["rclone-nas-sync.service", "x.service"]))
+        tx, _ = espiar(m, "detalhes")
+        self.assertIn("2 unidades em falha: rclone-nas-sync.service, x.service", tx)
+
+    def test_inventario_velho_ou_sem_chave_mostra_sem_dados(self):
+        for m in (completo(rotinas=rotinas(ROTS4, "velho")), completo(rotinas=rotinas(ROTS4, "ausente")), completo()):
+            tx, _ = espiar(m, "detalhes")
+            self.assertIn("ROTINAS", tx)
+            self.assertIn("sem dados", tx)
+            self.assertNotIn("Backup senhas", tx)
+
+    def test_dezesseis_rotinas_cortam_com_mais_n_e_mantem_problemas(self):
+        its = [rot("r%d" % k, "Rotina %02d" % k) for k in range(16)]
+        its[13].update(resultado="falha")
+        tx, _ = espiar(completo(rotinas=rotinas(its, n=1, nomes=["a.service"])), "detalhes")
+        mostradas = [t for t in tx if t.startswith("Rotina ")]
+        resto = [t for t in tx if t.startswith("+")]
+        self.assertEqual(len(resto), 1)
+        self.assertEqual(len(mostradas) + int(resto[0][1:]), 16)
+        self.assertIn("Rotina 13", mostradas)
+        self.assertIn("1 unidades em falha: a.service", tx)
+
+    def test_sem_espaco_o_historico_sai_antes_do_rotinas(self):
+        its = [rot("r%d" % k, "Rotina %02d" % k) for k in range(8)]
+        m = cheio() | {"rotinas": rotinas(its, n=1, nomes=["a.service"]),
+                       "discos": [{"rotulo": "d%d" % i, "caminho": "/", "total_b": 10**12, "usado_b": 10**11,
+                                   "pct": 10.0} for i in range(5)],
+                       "io": {"discos": [{"rotulo": "NVMe", "leitura_bps": 1, "escrita_bps": 2}],
+                              "redes": [{"rotulo": "LAN", "rx_bps": 1, "tx_bps": 2}]}}
+        tx, _ = espiar(m, "detalhes")
+        self.assertIn("ROTINAS", tx)
+        self.assertEqual(len([t for t in tx if t.startswith("Rotina ")]), 6)  # 8 linhas: 6 rotinas, "+2" e as unidades
+        self.assertIn("+2", tx)
+        self.assertNotIn("HISTORICO", tx)
+        tx, _ = espiar(completo(rotinas=rotinas(ROTS4)), "detalhes")  # com folga, o historico fica
+        self.assertIn("HISTORICO", tx)
+
+    def test_rotulos_hostis_e_tipos_errados_nao_estouram(self):
+        its = [rot("a", "W" * 20), rot("b", "\u00e7\u00e3\u4e2d", resultado="falha"),
+               {"rotulo": 5, "resultado": [], "idade_h": "x", "atrasada": "sim"}, None, 7]
+        for inv in ("ok", "velho"):
+            c = cv.Canvas(1236, 1648, estrito=True)
+            r = rotinas(its, inv, n=3, nomes=["N" * 40] * 5)
+            render_png._card_rotinas(c, r, 48, 200, 1140, render_png._h_rotinas(r))
+            self.assertEqual(fora_da_caixa(c, 48, 200, 1140, render_png._h_rotinas(r)), 255)
+        for ruim in TIPOS_ERRADOS:
+            espiar(completo(rotinas=ruim), "detalhes")
+            c = cv.Canvas(1236, 1648, estrito=True)
+            render_png._card_rotinas(c, ruim, 48, 200, 1140, render_png._h_rotinas(ruim))
+
+
 class PaginasAparelhosDevTest(unittest.TestCase):
     KV = {"bateria": 86, "carregando": False, "temp_c": 29, "autonomia": "2 d 4 h", "wifi": 3, "wifi_ok": True,
           "aviao": False, "bt": False, "bt_conectados": 0, "tailscale": "direto", "latencia": "38 ms",

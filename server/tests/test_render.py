@@ -269,5 +269,95 @@ class PaginaClaudeTextoTest(unittest.TestCase):
         render.render_texto(local() | {"claude": 3, "s10": "x"}, 38, pagina="claude")
 
 
+def _ap(i, rotulo, online=True, **k):
+    d = {"id": i, "rotulo": rotulo, "icone": "celular", "online": online, "offline_min": None,
+         "conexao": "direto" if online else None, "alerta_offline_min": None}
+    d.update(k)
+    return d
+
+
+def _rot(i, rotulo, resultado="ok", idade_h=5.5, atrasada=False):
+    return {"id": i, "rotulo": rotulo, "resultado": resultado, "ultima_em": 1_794_000_000, "idade_h": idade_h,
+            "max_idade_h": 26, "atrasada": atrasada}
+
+
+class TextoEcossistemaTest(unittest.TestCase):
+    def _t(self, m, cols=60, **k):
+        linhas = render.render_texto(m, cols, **k)
+        self.assertLessEqual(len(linhas), 26)
+        for l in linhas:
+            self.assertTrue(l.isascii() and l.isprintable(), repr(l))
+            self.assertLessEqual(len(l), cols, l)
+        return "\n".join(linhas)
+
+    def test_aparelhos_resumo_e_so_o_que_pede_atencao(self):
+        its = [_ap("a", "Notebook"), _ap("b", "S22", online=False, offline_min=95),
+               _ap("c", "Gateway", online=False, offline_min=20, alerta_offline_min=10),
+               _ap("d", "Games", online=None), _ap("e", "Kindle")]
+        m = local(aparelhos={"inventario": "ok", "idade_s": 3, "itens": its})
+        t = self._t(m, pagina="aparelhos")
+        for esperado in ("TAILNET 2 de 5 online", "[ ] S22 offline ha 1 h", "[X] Gateway offline ha 20 min",
+                         "[?] Games sem dado", "KINDLE"):
+            self.assertIn(esperado, t)
+        self.assertNotIn("Notebook", t)
+
+    def test_aparelhos_todos_online_uma_linha(self):
+        m = local(aparelhos={"inventario": "ok", "idade_s": 3, "itens": [_ap("a", "A"), _ap("b", "B")]})
+        self.assertIn("TAILNET 2 de 2 online\n", self._t(m, pagina="aparelhos") + "\n")
+
+    def test_aparelhos_inventario_velho_e_sem_chave(self):
+        m = local(aparelhos={"inventario": "velho", "idade_s": 300, "itens": [_ap("a", "A", online=None)]})
+        t = self._t(m, pagina="aparelhos")
+        self.assertIn("TAILNET", t)
+        self.assertIn("sem dados (inventario sem atualizar)", t)
+        self.assertIn("sem dados", self._t(local(), pagina="aparelhos"))
+
+    def test_aparelhos_16_com_s10_cabem_e_cortam_com_mais_n(self):
+        its = [_ap("i%d" % k, "Aparelho %02d" % k, online=False, offline_min=k) for k in range(16)]
+        its[9].update(alerta_offline_min=1)
+        m = local(aparelhos={"inventario": "ok", "idade_s": 3, "itens": its},
+                  s10={"bateria": {"nivel": 87}, "caminhos": {"usb": True}, "avisos": [], "idade_s": 1, "velho": False})
+        for cols in (20, 38, 60):
+            t = self._t(m, cols, pagina="aparelhos", kindle={"bateria": 50})
+            self.assertIn("+", t)
+            self.assertIn("S10", t)
+        self.assertIn("[X] Aparelho 09", self._t(m, pagina="aparelhos"))
+
+    def test_aparelhos_rotulo_hostil_e_blocos_ruins(self):
+        m = local(aparelhos={"inventario": "ok", "idade_s": 3,
+                             "itens": [_ap("a", "\u00e7\u00e3o\x1b[0m" * 3, online=False, offline_min=3)]})
+        self._t(m, 20, pagina="aparelhos")
+        for ruim in (None, 5, "x", [], {"itens": "x"}, {"inventario": "ok", "itens": [None, 5, {"online": 3}]}):
+            self._t(local(aparelhos=ruim), 38, pagina="aparelhos")
+
+    def test_rotinas_na_tela_principal_e_uma_linha_com_o_problema_no_atencao(self):
+        its = [_rot("a", "Backup senhas"), _rot("b", "Segundo cerebro", atrasada=True, idade_h=31),
+               _rot("c", "Sync cofre", resultado="falha"), _rot("d", "Tokens", resultado="desconhecido", idade_h=None)]
+        m = local(rotinas={"inventario": "ok", "idade_s": 3, "itens": its,
+                           "unidades_falhas": {"n": 2, "nomes": ["a.service", "b.service"]}})
+        linhas = render.render_texto(m, 60)
+        self.assertEqual([l for l in linhas if l.startswith("Rotinas")], ["Rotinas: 1 de 4 ok"])
+        t = "\n".join(linhas)
+        self.assertIn("ATENCAO", t)
+        self.assertIn("Sync cofre falhou", t)  # o detalhe vem do motor de alertas
+        self.assertTrue(all(l.isascii() and l.isprintable() and len(l) <= 60 for l in linhas))
+
+    def test_rotinas_ok_velho_e_ausente(self):
+        ok = local(rotinas={"inventario": "ok", "idade_s": 3, "itens": [_rot("a", "A")],
+                            "unidades_falhas": {"n": 0, "nomes": []}})
+        self.assertIn("Rotinas: 1 de 1 ok", self._t(ok))
+        velho = local(rotinas={"inventario": "velho", "idade_s": 300, "itens": [_rot("a", "A", resultado="desconhecido")],
+                               "unidades_falhas": {"n": 0, "nomes": []}})
+        self.assertIn("Rotinas: sem dados", self._t(velho))
+        self.assertNotIn("Rotinas", self._t(local()))
+
+    def test_rotinas_16_e_blocos_ruins_nao_estouram(self):
+        its = [_rot("r%d" % k, "Rotina %02d" % k, resultado="falha") for k in range(16)]
+        m = local(rotinas={"inventario": "ok", "idade_s": 3, "itens": its, "unidades_falhas": {"n": 0, "nomes": []}})
+        self.assertIn("Rotinas: 0 de 16 ok", self._t(m, 38))
+        for ruim in (None, 5, "x", [], {"itens": "x"}, {"inventario": "ok", "itens": [None, 5, {"resultado": 3}]}):
+            self._t(local(rotinas=ruim), 38)
+
+
 if __name__ == "__main__":
     unittest.main()

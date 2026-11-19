@@ -222,6 +222,7 @@ def _secao(m, cols, compacto, nome=None, kindle=None):
         elif svcs is not None:
             linhas.append("Servicos n/d")
         linhas += _linhas_catalogo(m, cols)
+        linhas += _linhas_rotinas(m, cols)
         linhas += _linhas_atencao(m, cols, kindle)
     return linhas
 
@@ -237,6 +238,37 @@ def _linhas_catalogo(m, cols):
     if aviso:
         linhas.append("! " + aviso)
     return linhas
+
+
+FORMA_ECO_TXT = {"ativo": "[#]", "parado": "[ ]", "falha": "[X]", "aviso": "[!]", None: "[?]"}
+ECO_PROBLEMAS_MAX = 4  # linhas de problema por secao (aparelhos ou rotinas), com "+N" no lugar da ultima se sobrar
+
+
+def _problemas(itens, estado):
+    """Linhas "[forma] rotulo texto" so dos itens que pedem atencao (nao ok), no maximo ECO_PROBLEMAS_MAX; o resto
+    vira "  +N". Os piores primeiro quando precisa cortar."""
+    ruins = [i for i in itens if estado(i)[0] != "ativo"]
+    vis, resto = render_png._cortar(ruins, ECO_PROBLEMAS_MAX, estado)
+    linhas = []
+    for it in vis:
+        forma, txt = estado(it)
+        linhas.append("  %s %s %s" % (FORMA_ECO_TXT.get(forma, "[?]"), render_png._rotulo(it), txt))
+    if resto:
+        linhas.append("  +%d" % resto)
+    return linhas
+
+
+def _linhas_rotinas(m, cols):
+    """Secao de rotinas da tela principal, uma linha so ("Rotinas: N de M ok", como "Servicos: ..."): o que esta
+    com problema (falha, atrasada, unidades em falha, inventario velho) ja sai no ATENCAO, que o motor de alertas
+    alimenta. Vazia sem o bloco `rotinas`."""
+    fonte = render_png._fonte_itens(m, "rotinas")
+    if fonte is None:
+        return []
+    ok, its = fonte
+    if not ok or not its:
+        return ["Rotinas: sem dados"]
+    return ["Rotinas: %d de %d ok" % (sum(1 for i in its if render_png._rotina_ok(i)), len(its))]
 
 
 ATENCAO_MAX = 6
@@ -371,10 +403,23 @@ def _linhas_kindle(kv):
     return linhas
 
 
+def _linhas_tailnet(m):
+    """Cartao TAILNET em texto: "TAILNET N de M online" e so os aparelhos que pedem atencao (offline, falha, sem
+    dado); sem o bloco, ou com inventario velho/ausente, "sem dados"."""
+    fonte = render_png._fonte_itens(m, "aparelhos")
+    if fonte is None or (fonte[0] and not fonte[1]):
+        return ["TAILNET", "  sem dados"]
+    ok, its = fonte
+    if not ok:
+        return ["TAILNET", "  sem dados (" + render_png.INVENTARIO_SEM + ")"]
+    on = sum(1 for i in its if i.get("online") is True)
+    return ["TAILNET %d de %d online" % (on, len(its))] + _problemas(its, render_png._estado_aparelho)
+
+
 def _linhas_aparelhos(m, cols, kv=None):
-    """Pagina aparelhos em texto: TAILNET (sem dados ainda), Kindle e S10 (se houver na config)."""
+    """Pagina aparelhos em texto: TAILNET, Kindle e S10 (se houver na config)."""
     ok, num = render_png._ok, render_png._num
-    linhas = ["TAILNET", "  sem dados", ""] + _linhas_kindle(kv)
+    linhas = _linhas_tailnet(m) + [""] + _linhas_kindle(kv)
     if "s10" in m:
         s = m["s10"] if ok(m["s10"]) else {}
         linhas.append("")
