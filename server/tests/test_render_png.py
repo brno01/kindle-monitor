@@ -148,8 +148,8 @@ class RenderPngTest(unittest.TestCase):
         self.assertEqual(ihdr(render_png.render_png(completo(), {})), (1236, 1648))
 
     def test_historico_vem_de_metricas_quando_omitido(self):
-        a = render_png.render_png(completo(historico=historico()), None)
-        b = render_png.render_png(completo(), None)
+        a = render_png.render_png(completo(historico=historico()), None, pagina="detalhes")
+        b = render_png.render_png(completo(), None, pagina="detalhes")
         self.assertNotEqual(a, b)
 
     def test_tempo_de_render(self):
@@ -175,90 +175,7 @@ S10 = {"versao": 1, "gerado_em": "2026-11-15T14:32:10-03:00",
        "avisos": [], "idade_s": 20, "velho": False}
 
 
-def _caixas(m):
-    """(nome, y, h) dos blocos do resumo, na ordem em que sao desenhados."""
-    reg = []
-
-    def espia(nome, pos_y, pos_h):
-        orig = getattr(render_png, nome)
-
-        def f(*a, **k):
-            reg.append((nome, a[pos_y], a[pos_h]))
-            return orig(*a, **k)
-        return f
-
-    c = cv.Canvas(1236, 1648, estrito=True)
-    trocas = {"_tile": espia("_tile", 2, 4), "_card_io": espia("_card_io", 3, 5),
-              "_card_atencao": espia("_card_atencao", 3, 5), "_card_grupos": espia("_card_grupos", 3, 5),
-              "_card_chips": espia("_card_chips", 3, 5), "_linha_ragnarok": espia("_linha_ragnarok", 3, 5),
-              "_linha_claude_s10": espia("_linha_claude_s10", 3, 5)}
-    antigos = {k: getattr(render_png, k) for k in trocas}
-    try:
-        for k, v in trocas.items():
-            setattr(render_png, k, v)
-        render_png.desenhar(c, m, historico())
-    finally:
-        for k, v in antigos.items():
-            setattr(render_png, k, v)
-    tiles = [r for r in reg if r[0] == "_tile"][:1]  # os tiles dividem a mesma linha
-    return tiles + [r for r in reg if r[0] != "_tile"]
-
-
 class LinhaClaudeS10Test(unittest.TestCase):
-    def _linha(self, m):
-        return [r for r in _caixas(m) if r[0] == "_linha_claude_s10"]
-
-    def test_fica_acima_do_ragnarok_sem_sobrepor_nem_sair(self):
-        import botoes
-        for m in (completo(claude=CL, s10=S10), cheio() | {"claude": CL, "s10": S10}):
-            caixas = _caixas(m)
-            (_, yl, hl), (_, yr, hr) = [r for r in caixas if r[0] == "_linha_claude_s10"][0], \
-                [r for r in caixas if r[0] == "_linha_ragnarok"][0]
-            self.assertEqual(hl, 60)
-            self.assertLess(yl + hl, yr)
-            self.assertEqual(yr + hr, botoes.limite(1648))
-            ordenadas = sorted(caixas, key=lambda r: r[1])
-            for (_, ya, ha), (_, yb, _) in zip(ordenadas, ordenadas[1:]):
-                self.assertLessEqual(ya + ha, yb)
-            self.assertGreaterEqual(min(r[1] for r in caixas), botoes.TOPO)
-
-    def test_sem_ragnarok_ancora_no_rodape(self):
-        import botoes
-        m = completo(claude=CL, s10=S10, ragnarok=None, portas=None)
-        (_, y, h), = self._linha(m)
-        self.assertEqual(y + h, botoes.limite(1648))
-
-    def test_muitos_itens_em_atencao_continua_cabendo(self):
-        import botoes
-        m = completo(claude=CL, s10=S10, servicos=[{"nome": "s%d.service" % i, "ativo": False} for i in range(40)])
-        caixas = _caixas(m)
-        ordenadas = sorted(caixas, key=lambda r: r[1])
-        for (_, ya, ha), (_, yb, _) in zip(ordenadas, ordenadas[1:]):
-            self.assertLessEqual(ya + ha, yb)
-        self.assertLessEqual(max(y + h for _, y, h in caixas), botoes.limite(1648))
-        self.assertEqual(len(self._linha(m)), 1)
-
-    def test_sem_as_chaves_nao_ha_linha_e_layout_e_o_antigo(self):
-        orig = render_png._linha_claude_s10
-
-        def nunca(*a, **k):
-            raise AssertionError("linha nao deveria ser desenhada")
-        m = completo()
-        ref = render_png.render_png(m, historico())
-        render_png._linha_claude_s10 = nunca
-        try:
-            self.assertEqual(render_png.render_png(m, historico()), ref)
-        finally:
-            render_png._linha_claude_s10 = orig
-        self.assertNotEqual(render_png.render_png(completo(claude=CL), historico()), ref)
-        self.assertNotEqual(render_png.render_png(completo(s10=S10), historico()), ref)
-
-    def test_so_uma_parte_so_desenha_ela(self):
-        so_c = render_png.render_png(completo(claude=CL), historico())
-        so_s = render_png.render_png(completo(s10=S10), historico())
-        ambos = render_png.render_png(completo(claude=CL, s10=S10), historico())
-        self.assertEqual(len({so_c, so_s, ambos}), 3)
-
     def test_estados_degradados_nao_quebram(self):
         estados = [{"claude": {"limites": {"erro": "n/d"}, "tokens": {"erro": "n/d"}}},
                    {"claude": {"limites": {"cinco_horas": None, "semanal": None, "idade_s": 1, "velho": False}}},
@@ -268,11 +185,11 @@ class LinhaClaudeS10Test(unittest.TestCase):
                    {"s10": dict(S10, velho=True)}, {"s10": dict(S10, bateria=None)},
                    {"s10": dict(S10, bateria={"nivel": None, "status": 5}, caminhos={"usb": 1, "vnc": "x"})},
                    {"s10": dict(S10, bateria={"nivel": 250, "status": "full"})}]
-        base = render_png.render_png(completo(), historico())
         for e in estados:
-            dados = render_png.render_png(completo(**e), historico())
-            self.assertEqual(ihdr(dados), (1236, 1648))
-            self.assertNotEqual(dados, base)
+            m = completo(**e)
+            self.assertEqual(ihdr(render_png.render_png(m, historico())), (1236, 1648))
+            c = cv.Canvas(1236, 1648, estrito=True)
+            render_png._linha_claude_s10(c, m, 24, 1400, 1188, 60)  # a funcao continua valida (limpeza na Tarefa 8)
 
     def _espiar_linha(self, m):
         textos, formas = [], []
@@ -368,37 +285,30 @@ class LinhaClaudeS10Test(unittest.TestCase):
                                                   "discharging": "bat.", "not_charging": "bat."})
 
 
-def _tinta_gpu(dados):
-    """Linhas com tinta nos primeiros 120 px do tile da GPU (resumo, 3o tile), entre o rotulo e a barra.
-
-    Numero de 72 px (tile ativo) ocupa ~52 linhas; a palavra "desativada" (34 px) so ~26."""
-    larg, alt, linhas = pixels(dados)
-    return sum(1 for y in range(118, 200) if min(linhas[y][642:760]) < 100)
+def _detalhe_atheron(m):
+    return render_png._linhas_resumo(m, [], None, [])[0]["detalhe"]
 
 
 class GpuRamPngTest(unittest.TestCase):
     OFF = {"util_pct": 0, "mem_usada_mb": 0, "mem_total_mb": 2048, "temp_c": 39}
     ON = {"util_pct": 35, "mem_usada_mb": 900, "mem_total_mb": 2048, "temp_c": 50}
 
-    def test_dimensoes_e_menos_barras_quando_desativada(self):
+    def test_dimensoes_e_gpu_desativada_so_no_detalhe_do_atheron(self):
         off = render_png.render_png(completo(gpu=self.OFF), historico())
         on = render_png.render_png(completo(gpu=self.ON), historico())
         self.assertEqual(ihdr(off), (1236, 1648))
         self.assertEqual(ihdr(on), (1236, 1648))
-        # v5: o tile ativo tem numero grande, sparkline e barra cheia; o desativado so a palavra e a barra vazia
-        self.assertGreater(_tinta_gpu(on), _tinta_gpu(off) + 15)
+        self.assertIn("GPU desativada", _detalhe_atheron(completo(gpu=self.OFF)))
+        self.assertNotIn("GPU", _detalhe_atheron(completo(gpu=self.ON)))
 
     def test_gpu_desativada_sem_mem_nula(self):
         g = {"util_pct": 0, "mem_usada_mb": None, "mem_total_mb": None, "temp_c": None}
         self.assertEqual(ihdr(render_png.render_png(completo(gpu=g), historico())), (1236, 1648))
 
-    def test_uso_de_vram_sem_util_volta_layout_ativo(self):
+    def test_uso_de_vram_sem_util_nao_conta_como_desativada(self):
         a = {"util_pct": 0, "mem_usada_mb": 100, "mem_total_mb": 2048, "temp_c": 40}
-        on = render_png.render_png(completo(gpu=self.ON), historico())
-        so_vram = render_png.render_png(completo(gpu=a), historico())
-        off = render_png.render_png(completo(gpu=self.OFF), historico())
-        self.assertGreater(_tinta_gpu(so_vram), _tinta_gpu(off) + 15)  # nao cai no layout "desativada"
-        self.assertNotEqual(so_vram, off)
+        self.assertNotIn("GPU", _detalhe_atheron(completo(gpu=a)))
+        self.assertIn("GPU desativada", _detalhe_atheron(completo(gpu=self.OFF)))
 
     def test_ram_com_valor_e_disco_tier_state(self):
         m = completo(ram={"total_kb": 20331012, "usado_kb": 7763836, "pct": 38.2},
@@ -561,3 +471,138 @@ class CartaoAtencaoAlertasTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------------------------------------- tela inicial (linhas por sistema)
+
+IDS_LINHAS = ["atheron", "nas", "aparelhos", "servicos", "rotinas", "claude", "github", "ragnarok"]
+SERV = [{"id": "a", "rotulo": "a", "grupo": "host", "estado": "ativo"},
+        {"id": "b", "rotulo": "b", "grupo": "host", "estado": "falha"},
+        {"id": "c", "rotulo": "c", "grupo": "docker", "estado": "ativo"}]
+TIPOS_ERRADOS = [None, 5, "x", [], [1, None], {"erro": "n/d"}, float("nan"), True, 10 ** 400]
+
+
+class LinhasResumoTest(unittest.TestCase):
+    def test_vazio_devolve_as_8_linhas_sem_dados(self):
+        import botoes
+        ls = render_png._linhas_resumo({}, [], None, [])
+        self.assertEqual([l["id"] for l in ls], IDS_LINHAS)
+        self.assertEqual([l["id"] for l in ls], [i for i, _ in botoes.LINHAS_RESUMO])
+        for l in ls:
+            self.assertEqual(set(l), {"id", "icone", "titulo", "valor", "detalhe", "estado"})
+            self.assertEqual((l["valor"], l["estado"]), ("sem dados", "sem_dados"), l["id"])
+
+    def test_completo(self):
+        m = completo(claude={"limites": {"cinco_horas": {"pct": 14.0, "volta_em": 1_794_000_000, "renovado": False},
+                                         "semanal": {"pct": 2.0}}},
+                     s10=S10, gpu={"util_pct": 0, "mem_usada_mb": 0, "mem_total_mb": 2048, "temp_c": 39})
+        kv = {"bateria": 58, "carregando": False}
+        l = {x["id"]: x for x in render_png._linhas_resumo(m, SERV, kv, [])}
+        self.assertEqual(l["atheron"]["valor"], "CPU 56%  RAM 38%")
+        self.assertEqual(l["atheron"]["detalhe"], "55 C  ·  / 40%  ·  GPU desativada")
+        self.assertEqual(l["nas"]["valor"], "NAS 75%")
+        self.assertTrue(l["nas"]["detalhe"].startswith("NAS  "))
+        self.assertEqual((l["aparelhos"]["valor"], l["aparelhos"]["detalhe"]), ("sem dados", "Kindle 58%  S10 87%"))
+        self.assertEqual((l["servicos"]["valor"], l["servicos"]["detalhe"]), ("2 de 3 ok", "host 1/2  docker 1/1"))
+        self.assertEqual((l["rotinas"]["valor"], l["github"]["valor"]), ("sem dados", "sem dados"))
+        self.assertEqual(l["claude"]["valor"], "5h 14%  sem 2%")
+        self.assertTrue(l["claude"]["detalhe"].startswith("5h volta "))
+        self.assertEqual((l["ragnarok"]["valor"], l["ragnarok"]["detalhe"]), ("3 jogadores", "login ok  char ok  map fechada"))
+        for i in ("atheron", "nas", "servicos", "claude", "ragnarok"):
+            self.assertEqual(l[i]["estado"], "ok", i)
+
+    def test_estado_e_o_pior_nivel_dos_alertas_do_sistema(self):
+        al = [{"nivel": "leve", "sistema": "nas"}, {"nivel": "critico", "sistema": "nas"},
+              {"nivel": "aviso", "sistema": "nas"}, {"nivel": "aviso", "sistema": "kindle"},
+              {"nivel": "leve", "sistema": "servicos"}]
+        l = {x["id"]: x["estado"] for x in render_png._linhas_resumo(completo(), SERV, None, al)}
+        self.assertEqual((l["nas"], l["aparelhos"], l["servicos"], l["atheron"]), ("critico", "aviso", "leve", "ok"))
+
+    def test_alerta_vale_mesmo_sem_dados(self):
+        al = [{"nivel": "critico", "sistema": "rotinas"}]
+        l = {x["id"]: x for x in render_png._linhas_resumo({}, [], None, al)}
+        self.assertEqual(l["rotinas"]["estado"], "critico")
+        self.assertEqual(l["rotinas"]["valor"], "sem dados")
+
+    def test_tipos_errados_nunca_levantam(self):
+        for ruim in TIPOS_ERRADOS:
+            for m in (ruim, {k: ruim for k in ("cpu", "ram", "temp_cpu", "discos", "gpu", "s10", "claude",
+                                                "ragnarok", "portas", "gerado_em")}):
+                for itens, kv, al in ((ruim, ruim, ruim), ([ruim], {"bateria": ruim}, [ruim, {"sistema": ruim}]),
+                                      (SERV, {"bateria": ruim}, [{"nivel": ruim, "sistema": "nas"}])):
+                    ls = render_png._linhas_resumo(m, itens, kv, al)
+                    self.assertEqual([x["id"] for x in ls], IDS_LINHAS)
+        m = completo(discos=[ruim_ for ruim_ in TIPOS_ERRADOS] + [{"rotulo": 5, "pct": "x"}],
+                     portas=TIPOS_ERRADOS, claude={"limites": {"cinco_horas": "x", "semanal": [1]}})
+        self.assertEqual(len(render_png._linhas_resumo(m, SERV, None, [])), 8)
+
+    def test_renderiza_com_tipos_errados_sem_sair_do_canvas(self):
+        for ruim in TIPOS_ERRADOS:
+            m = {k: ruim for k in ("cpu", "ram", "temp_cpu", "discos", "gpu", "s10", "claude", "ragnarok", "portas")}
+            c = cv.Canvas(1236, 1648, estrito=True)
+            render_png.desenhar(c, m, None)
+
+
+class DesenhoResumoTest(unittest.TestCase):
+    def _textos(self, m, kv=None):
+        textos = []
+        orig = cv.Canvas.texto
+
+        def espia(self, x, y, t, *a, **k):
+            textos.append(t)
+            return orig(self, x, y, t, *a, **k)
+        cv.Canvas.texto = espia
+        try:
+            c = cv.Canvas(1236, 1648, estrito=True)
+            render_png.desenhar(c, m, historico(), kindle=kv)
+        finally:
+            cv.Canvas.texto = orig
+        return textos
+
+    def test_com_12_alertas_aparecem_6_e_mais_6(self):
+        m = completo(servicos=[], portas=[{"rotulo": "LOGIN", "aberto": True}], servicos_kindle={"inventario": "ok", "itens": [
+            {"id": "s%d" % i, "rotulo": "svc%d" % i, "grupo": "host", "estado": "falha", "detalhe": "x",
+             "verbos": [], "protegido": False, "opcional": False} for i in range(12)]})
+        tx = self._textos(m)
+        self.assertIn("ATENCAO (12)", tx)
+        self.assertEqual(len([t for t in tx if t.endswith("em falha")]), 6)
+        self.assertIn("+6", tx)
+
+    def test_sem_alertas_mostra_tudo_em_ordem(self):
+        m = completo(portas=[{"rotulo": "LOGIN", "aberto": True}], servicos=[])
+        self.assertIn("Tudo em ordem", self._textos(m))
+
+    def test_nao_desenha_o_que_saiu_da_tela_inicial(self):
+        chamadas = []
+        nomes = ("_tiles", "_tile", "_card_chips", "_card_grupos", "_linha_claude_s10", "_linha_ragnarok",
+                 "_card_discos", "_card_io")
+        antigos = {n: getattr(render_png, n) for n in nomes}
+        try:
+            for n in nomes:
+                setattr(render_png, n, lambda *a, _n=n, **k: chamadas.append(_n))
+            render_png.render_png(completo(), historico())
+        finally:
+            for n, f in antigos.items():
+                setattr(render_png, n, f)
+        self.assertEqual(chamadas, [])
+
+    def test_cabecalho_so_host_e_hora(self):
+        tx = self._textos(completo())
+        self.assertIn("atheron", tx)
+        self.assertIn("14:32", tx)
+        self.assertFalse([t for t in tx if "servicos ·" in t])
+
+    def test_linha_sistema_nao_sai_da_caixa(self):
+        import botoes
+        extremos = [{"id": "nas", "icone": "nas", "titulo": "T" * 60, "valor": "V" * 200, "detalhe": "d" * 300,
+                     "estado": e} for e in ("ok", "critico", "aviso", "leve", "sem_dados")]
+        extremos.append({"id": "x", "icone": "inexistente", "titulo": "", "valor": "", "detalhe": "", "estado": "?"})
+        for cx in botoes.geometria_resumo()["linhas"]:
+            for ln in extremos:
+                c = cv.Canvas(1236, 1648, estrito=True)
+                render_png._linha_sistema(c, cx, ln)
+                for y in range(1648):
+                    fora = c.pixels[y * 1236:(y + 1) * 1236]
+                    if cx["y"] <= y < cx["y"] + cx["h"]:
+                        fora = fora[:cx["x"]] + fora[cx["x"] + cx["w"]:]
+                    self.assertEqual(min(fora, default=255), 255, (cx["id"], ln["estado"], y))

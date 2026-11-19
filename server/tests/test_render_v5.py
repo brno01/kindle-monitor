@@ -173,18 +173,18 @@ class ConteudoTest(unittest.TestCase):
         for g in ("HOST", "CONTEINERES", "DOCKER", "RAGNAROK"):
             self.assertIn(g, todos)
 
-    def test_resumo_tem_resumo_no_cabecalho_e_ragnarok_em_uma_linha(self):
+    def test_resumo_tem_uma_linha_por_sistema_e_o_cabecalho_so_host_e_hora(self):
         m = caso52()
         tx = self.textos(m, "resumo")
-        itens = servicos.itens_de(m)
-        self.assertIn(servicos.texto_resumo(itens), tx)
-        rag = [t for t in tx if t.startswith("RAGNAROK") and "jogadores" in t]  # o titulo do grupo tambem comeca assim
-        self.assertEqual(len(rag), 1)
-        self.assertIn("jogadores", rag[0])
-        for rot in ("CPU", "RAM", "GPU"):
-            self.assertIn(rot, tx)
-        self.assertTrue(any(t.startswith("DISCO") for t in tx))
+        self.assertNotIn(servicos.texto_resumo(servicos.itens_de(m)), tx)  # saiu do cabecalho
+        self.assertEqual([t for t in tx if t in ("ATHERON", "NAS", "APARELHOS", "SERVICOS", "ROTINAS", "CLAUDE",
+                                                  "GITHUB", "RAGNAROK")],
+                         ["ATHERON", "NAS", "APARELHOS", "SERVICOS", "ROTINAS", "CLAUDE", "GITHUB", "RAGNAROK"])
+        self.assertTrue(any(t.endswith("jogadores") for t in tx))
+        self.assertTrue(any(t.startswith("CPU ") for t in tx))
         self.assertTrue(any(t.startswith("ATENCAO (") for t in tx))
+        for velho in ("TODOS OS SERVICOS", "SERVICOS POR GRUPO"):  # chips e grupos so existem em outras paginas
+            self.assertNotIn(velho, tx)
 
     def test_tudo_em_ordem(self):
         todos_ok = servicos_kindle(12, 1)
@@ -204,8 +204,7 @@ class ConteudoTest(unittest.TestCase):
 
     def test_aviso_de_inventario_velho(self):
         m = caso52(servicos_kindle=servicos_kindle(gerado=AGORA - 500))
-        for pagina in ("resumo", "servicos"):
-            self.assertIn("estados desatualizados", self.textos(m, pagina))
+        self.assertIn("Inventario de servicos velho", self.textos(m, "resumo"))  # vira alerta no ATENCAO
         self.assertNotIn("estados desatualizados", self.textos(caso52(), "resumo"))
 
     def test_acoes_tem_ate_8_comandos_e_rotulo_de_servico(self):
@@ -264,7 +263,7 @@ class PixelsTest(unittest.TestCase):
                 self.assertEqual(min(linhas[y][larg - 40:]), 255, (pagina, y))
 
     def test_sem_grandes_vazios_no_resumo(self):
-        # nenhuma faixa em branco com mais de 130 px entre o cabecalho e a navegacao
+        # com o ATENCAO cheio (6 itens + "+N") nenhuma faixa em branco passa de 60 px entre o cabecalho e a navegacao
         larg, alt, linhas = pixels(render_png.render_png(caso52(), historico(), pagina="resumo"))
         corrida = maior = 0
         for y in range(botoes.CAB_PX, botoes.nav_topo(alt)):
@@ -273,7 +272,7 @@ class PixelsTest(unittest.TestCase):
                 maior = max(maior, corrida)
             else:
                 corrida = 0
-        self.assertLessEqual(maior, 130)  # o cartao ATENCAO tem teto de 6 itens + "+N": sobra um vao acima do rodape
+        self.assertLessEqual(maior, 60)
 
     def test_formas_de_estado_distintas(self):
         # ativo (cheia), parado (vazia), falha (X) e desconhecido (?) nunca desenham a mesma forma

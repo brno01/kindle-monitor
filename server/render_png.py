@@ -197,21 +197,13 @@ def _aviso_inventario(m):
 
 
 def _cabecalho(c, m, itens):
-    """Fino: host, resumo dos servicos e hora (HH:MM, sem segundos); uma linha clara embaixo (abaixo da barra do Kindle)."""
+    """Fino: host a esquerda e hora (HH:MM, sem segundos) a direita; uma linha clara embaixo (abaixo da barra do Kindle).
+    O resumo dos servicos saiu (a linha SERVICOS da tela inicial e o ATENCAO ja dizem isso)."""
     base = botoes.BARRA_KINDLE_H + 14 + _cap(NEG, 34)
     hora = _hora(m, "%H:%M")
     c.texto(c.largura - MARGEM, base, hora, NEG, 34, PRETO, alinhar="dir")
     fim = c.largura - MARGEM - c.medir(hora, NEG, 34) - 28
-    resumo = _aviso_inventario(m) or (servicos.texto_resumo(itens) if itens else "")
-    host = _limpar(m.get("host", "?"))
-    wh = c.medir(host, NEG, 34)
-    ws = c.medir(_limpar(resumo), REG, 26) if resumo else 0
-    if resumo and MARGEM + min(wh, 200) + 28 + ws > fim:
-        resumo = _ajustar(c, resumo, REG, 26, max(0, fim - MARGEM - min(wh, 200) - 28))
-        ws = c.medir(resumo, REG, 26)
-    if resumo and ws:
-        c.texto(fim, base, resumo, REG, 26, ESCURO, alinhar="dir")
-    c.texto(MARGEM, base, _ajustar(c, host, NEG, 34, max(40, fim - ws - MARGEM - 28)), NEG, 34, PRETO)
+    c.texto(MARGEM, base, _ajustar(c, _limpar(m.get("host", "?")), NEG, 34, max(40, fim - MARGEM)), NEG, 34, PRETO)
     c.retangulo(MARGEM, ALTURA_CABECALHO - 4, c.largura - 2 * MARGEM, 2, CLARO)
 
 
@@ -797,70 +789,194 @@ def _tile(c, x, y, w, h, t):
     _barra(c, ix, barra_y, iw, 14, pct)
 
 
+ICONE_LINHA = 56
+FORMA_LINHA = 32
+RESUMO_PAD = 8
+ESTADO_FORMA = {"critico": "falha", "aviso": "aviso", "leve": "parado", "sem_dados": "desconhecido"}
+RANK_NIVEL = {"leve": 1, "aviso": 2, "critico": 3}
+# (id, icone, titulo, sistemas de alerta que contam para a linha), na ordem de botoes.LINHAS_RESUMO
+_LINHAS = (("atheron", "servidor", "ATHERON", ("atheron",)), ("nas", "nas", "NAS", ("nas",)),
+           ("aparelhos", "aparelhos", "APARELHOS", ("aparelhos", "kindle")),
+           ("servicos", "servicos", "SERVICOS", ("servicos",)), ("rotinas", "rotinas", "ROTINAS", ("rotinas",)),
+           ("claude", "claude", "CLAUDE", ("claude",)), ("github", "github", "GITHUB", ("github",)),
+           ("ragnarok", "jogo", "RAGNAROK", ("ragnarok",)))
+SEM_DADOS = "sem dados"
+SEP = "  \u00b7  "
+GRUPOS_RESUMO = ("host", "docker", "incus", "ragnarok")
+
+
+def _pior_nivel(lista, sistemas):
+    """Pior nivel (critico > aviso > leve) dos alertas desses sistemas; None se nao houver."""
+    pior = None
+    for a in lista if isinstance(lista, list) else []:
+        if not isinstance(a, dict) or not isinstance(a.get("sistema"), str) or not isinstance(a.get("nivel"), str):
+            continue
+        if a["sistema"] in sistemas and RANK_NIVEL.get(a["nivel"], 0) > RANK_NIVEL.get(pior, 0):
+            pior = a["nivel"]
+    return pior
+
+
+def _d(v):
+    return v if isinstance(v, dict) else {}
+
+
+def _p(v):
+    """'42%' de um numero (limitado a 0..100); None se nao for numero."""
+    v = _num(v)
+    return None if v is None else "%d%%" % round(min(100.0, max(0.0, float(v))))
+
+
+def _disco_raiz(dk):
+    return isinstance(dk, dict) and (dk.get("caminho") == "/" or dk.get("rotulo") == "/")
+
+
+def _l_atheron(m, kv, itens):
+    partes = []
+    for rot, v in (("CPU", _d(m.get("cpu")).get("pct")), ("RAM", _d(m.get("ram")).get("pct"))):
+        if _p(v):
+            partes.append("%s %s" % (rot, _p(v)))
+    det = []
+    tc = _d(m.get("temp_cpu"))
+    if _ok(tc) and _num(tc.get("c")) is not None:
+        det.append("%d C" % round(tc["c"]))
+    raiz = next((d for d in m.get("discos") if _disco_raiz(d)), None) if isinstance(m.get("discos"), list) else None
+    if raiz and _p(raiz.get("pct")):
+        det.append("/ " + _p(raiz["pct"]))
+    if coletores.gpu_desativada(m.get("gpu")):
+        det.append("GPU desativada")
+    return "  ".join(partes), SEP.join(det), bool(partes or det)
+
+
+def _l_nas(m, kv, itens):
+    discos = [d for d in (m.get("discos") if isinstance(m.get("discos"), list) else []) if isinstance(d, dict)
+              and not _disco_raiz(d) and "erro" not in d]
+    infos = [i for i in (_info_disco(d) for d in discos) if i and i[1] is not None]
+    valor = "  ".join("%s %s" % (_limpar(i[0]), _p(i[1])) for i in infos)
+    det = ""
+    if infos:
+        rot, pct, usado, total, base, _ = max(infos, key=lambda i: i[1])
+        if usado is not None and total:
+            det = "%s  %s" % (_limpar(rot), _tamanho(usado, total, base))
+    return valor, det, bool(infos)
+
+
+def _l_aparelhos(m, kv, itens):
+    det = []
+    bat = _p(_d(kv).get("bateria"))
+    if bat:
+        det.append("Kindle " + bat)
+    s10 = _d(m.get("s10"))
+    nivel = _p(_d(s10.get("bateria")).get("nivel")) if _ok(s10) else None
+    if nivel:
+        det.append("S10 " + nivel)
+    return "", "  ".join(det), False  # a tailnet ainda nao tem dados (Entrega 2)
+
+
+def _l_servicos(m, kv, itens):
+    itens = [i for i in itens if isinstance(i, dict)] if isinstance(itens, list) else []
+    if not itens:
+        return "", "", False
+    r = servicos.resumo(itens)
+    cont = {}
+    for i in itens:
+        t = cont.setdefault(i.get("grupo"), [0, 0])
+        t[1] += 1
+        t[0] += 1 if i.get("estado") == "ativo" else 0
+    det = "  ".join("%s %d/%d" % (g, cont[g][0], cont[g][1]) for g in GRUPOS_RESUMO if g in cont)
+    return "%d de %d ok" % (r["ok"], r["total"]), det, True
+
+
+def _l_nada(m, kv, itens):  # ROTINAS e GITHUB: o formato em `m` chega nas Tarefas 17 e 23
+    return "", "", False
+
+
+def _l_claude(m, kv, itens):
+    cl = _d(m.get("claude"))
+    lim = cl.get("limites")
+    if not _ok(lim):
+        return "", "", False
+    valor = "5h %s  sem %s" % (_pct_txt(lim.get("cinco_horas")), _pct_txt(lim.get("semanal")))
+    cinco = _d(lim.get("cinco_horas"))
+    det = ""
+    if cinco.get("renovado") is not True and cinco.get("volta_em") is not None:
+        agora, tz = _agora(m)
+        det = "5h " + _volta_txt(cinco["volta_em"], agora, tz)
+        det = det if det != "5h " else ""
+    return valor, det, True
+
+
+def _l_ragnarok(m, kv, itens):
+    rag = m.get("ragnarok")
+    portas = m.get("portas")
+    portas = [p for p in portas if isinstance(p, dict)] if isinstance(portas, list) else []
+    valor = ""
+    if _ok(rag) and _num(rag.get("jogadores")) is not None:
+        n = int(rag["jogadores"])
+        valor = "%d jogador%s" % (n, "" if n == 1 else "es")
+        if rag.get("parado"):
+            valor += "  parado"
+    det = "  ".join("%s %s" % (_limpar(p.get("rotulo", "?")).lower(), "ok" if p.get("aberto") else "fechada")
+                    for p in portas)
+    return valor, det, bool(valor or det)
+
+
+_CONSTRUTORES = {"atheron": _l_atheron, "nas": _l_nas, "aparelhos": _l_aparelhos, "servicos": _l_servicos,
+                 "rotinas": _l_nada, "claude": _l_claude, "github": _l_nada, "ragnarok": _l_ragnarok}
+
+
+def _linhas_resumo(m, itens, kv, alertas):
+    """As 8 linhas da tela inicial (ordem de botoes.LINHAS_RESUMO): {"id","icone","titulo","valor","detalhe","estado"}.
+    Pura e tolerante: `m`, `itens`, `kv` ou `alertas` com tipo errado so deixam a linha em "sem dados".
+    `estado` = pior nivel dos alertas da linha, "ok", ou "sem_dados" (sem fonte e sem alerta)."""
+    m = m if isinstance(m, dict) else {}
+    saida = []
+    for lid, icone, titulo, sistemas in _LINHAS:
+        try:
+            valor, detalhe, tem = _CONSTRUTORES[lid](m, kv, itens)
+        except Exception:
+            valor, detalhe, tem = "", "", False
+        estado = _pior_nivel(alertas, sistemas) or ("ok" if tem else "sem_dados")
+        saida.append({"id": lid, "icone": icone, "titulo": titulo, "valor": valor or SEM_DADOS,
+                      "detalhe": detalhe, "estado": estado})
+    return saida
+
+
+def _linha_sistema(c, caixa, linha):
+    """Uma linha da tela inicial dentro de `caixa` ({x,y,w,h}): icone 56 px, titulo + valor na 1a linha de texto,
+    detalhe na 2a e, so se o estado nao for ok, a forma dele na direita."""
+    x, y, w, h = caixa["x"], caixa["y"], caixa["w"], caixa["h"]
+    estado = linha.get("estado")
+    sem = linha.get("valor") == SEM_DADOS
+    c.icone(x + RESUMO_PAD, y + (h - ICONE_LINHA) // 2, linha.get("icone", ""), ICONE_LINHA, PRETO)
+    xt = x + RESUMO_PAD + ICONE_LINHA + 20
+    xv = xt + int(c.medir("APARELHOS", NEG, 26)) + 32  # coluna dos valores: igual em todas as linhas
+    fim = x + w - RESUMO_PAD - FORMA_LINHA - 16
+    if estado in ESTADO_FORMA and estado != "ok":
+        _forma(c, x + w - RESUMO_PAD - FORMA_LINHA, y + (h - FORMA_LINHA) // 2, FORMA_LINHA, ESTADO_FORMA[estado])
+    cap_v, cap_d = _cap(NEG, 34), _cap(REG, 26)
+    topo = y + (h - (cap_v + 16 + cap_d)) // 2
+    base1 = topo + cap_v
+    c.texto(xt, base1, _ajustar(c, linha.get("titulo", ""), NEG, 26, xv - xt - 8), NEG, 26, ESCURO)
+    c.texto(xv, base1, _ajustar(c, linha.get("valor", ""), NEG, 34, fim - xv), NEG, 34, MEDIO if sem else PRETO)
+    det = linha.get("detalhe") or ""
+    if det:
+        c.texto(xv, base1 + 16 + cap_d, _ajustar(c, det, REG, 26, fim - xv), REG, 26, ESCURO)
+
+
 def _desenhar_resumo(c, m, hist, itens, kv=None):
-    """Tiles, armazenamento, I/O, Atencao, (grade de servicos | resumo por grupo se couber), linha Claude/S10 e Ragnarok."""
-    x0, w = MARGEM, c.largura - 2 * MARGEM
-    topo, limite = botoes.TOPO, botoes.limite(c.altura)
-    discos = _discos(m)
-    tiles = _tiles(m, hist, discos)
-    do_tile = tiles[-1].get("_disco") if tiles and "_disco" in tiles[-1] else None
-    outros = [d for d in discos if d is not do_tile][:5]
+    """Tela inicial so com excecoes: cartao ATENCAO no alto (so a altura que precisa) e uma linha por sistema."""
+    geo = botoes.geometria_resumo(c.largura, c.altura)
     atencao = _atencao(m, kv)
-    rag = m.get("ragnarok") is not None or bool(m.get("portas"))
-
-    # (nome, altura) de cima para baixo; o Ragnarok fica ancorado embaixo, fora da lista
-    blocos = [("tiles", _h_tile())]
-    if outros:
-        blocos.append(("disc", _h_discos(outros)))
-    h_io = _h_io(c, m, w)
-    if h_io:
-        blocos.append(("io", h_io))
-    h_rag = 60 if rag else 0
-    h_cl = H_LINHA_CLAUDE_S10 if "claude" in m or "s10" in m else 0
-    util = limite - topo - (h_rag + GAP if h_rag else 0) - (h_cl + GAP if h_cl else 0)
-
-    def total(bl):
-        return sum(h for _, h in bl) + GAP * (len(bl) - 1)
-
-    ate = _h_atencao(len(atencao))
-    if total(blocos) + GAP + ate > util:  # muitas falhas: Atencao encolhe e mostra "+N itens"
-        k = max(1, (util - total(blocos) - GAP - ATENCAO_TITULO - 14) // ATENCAO_LINHA)
-        ate = _h_atencao(len(atencao), min(k, _linhas_atencao(len(atencao)))) if atencao else _h_atencao(0)
-    blocos.append(("atencao", ate))
-    extra = None
-    if itens:
-        for nome, h in (("chips3", _chips_h(len(itens), 3)), ("chips3c", _chips_h(len(itens), 3, CHIP_H_COMPACTO)),
-                        ("chips4", _chips_h(len(itens), 4)), ("grupos", H_GRUPOS)):
-            if total(blocos) + GAP + h <= util:
-                extra = (nome, h)
-                break
-    if extra:
-        blocos.append(extra)
-    sobra = max(0, util - total(blocos))
-    gap = GAP + min(40, sobra // max(1, len(blocos) - 1)) if len(blocos) > 1 else GAP
-    y = topo
-    for nome, h in blocos:
-        if nome == "tiles":
-            n = len(tiles)
-            tw = (w - (n - 1) * GAP) // n
-            for i, t in enumerate(tiles):
-                _tile(c, x0 + i * (tw + GAP), y, tw, h, t)
-        elif nome == "disc":
-            _card_discos(c, outros, x0, y, w)
-        elif nome == "io":
-            _card_io(c, m, x0, y, w, h)
-        elif nome == "atencao":
-            _card_atencao(c, atencao, x0, y, w, h)
-        elif nome == "grupos":
-            _card_grupos(c, itens, x0, y, w, h)
-        else:
-            _card_chips(c, itens, x0, y, w, h, 4 if nome == "chips4" else 3,
-                        CHIP_H_COMPACTO if nome == "chips3c" else CHIP_H)
-        y += h + gap
-    if h_rag:
-        _linha_ragnarok(c, m, x0, limite - h_rag, w, h_rag)
-    if h_cl:
-        _linha_claude_s10(c, m, x0, limite - h_rag - (GAP if h_rag else 0) - h_cl, w, h_cl)
+    caixa = geo["atencao"]
+    h = min(_h_atencao(len(atencao)), caixa["h"] - botoes.LINHA_RESUMO_GAP)
+    if h >= ATENCAO_TITULO + ATENCAO_LINHA + 14:  # tela baixa demais (so fora do Kindle): sem espaco para o cartao
+        _card_atencao(c, atencao, caixa["x"], caixa["y"], caixa["w"], h)
+    linhas = _linhas_resumo(m, itens, kv, atencao)
+    ultima = len(linhas) - 1
+    for i, (cx, ln) in enumerate(zip(geo["linhas"], linhas)):
+        _linha_sistema(c, cx, ln)
+        if i != ultima:  # fio fino claro no fim da caixa, no lugar de um contorno em cada linha
+            c.retangulo(cx["x"], cx["y"] + cx["h"] - 2, cx["w"], 2, TRILHO)
 
 
 # ------------------------------------------------------------------- servicos

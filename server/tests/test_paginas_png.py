@@ -152,18 +152,20 @@ class ResumoTest(unittest.TestCase):
                 self.assertEqual(min(linhas[y][:40]), 255, (pagina, y))
                 self.assertEqual(min(linhas[y][larg - 40:]), 255, (pagina, y))
 
-    def test_resumo_tem_numeros_grandes(self):
-        # o numero do CPU (72 px na v5) ocupa muita altura contigua de tinta
-        larg, alt, linhas = pixels(render_png.render_png(completo(cpu={"pct": 56.0}), historico()))
-        topo = None
-        seq = 0
-        for y in range(100, 600):
-            if min(linhas[y][70:200]) < 100:
-                seq += 1
-                topo = max(topo or 0, seq)
-            else:
-                seq = 0
-        self.assertGreater(topo, 48)
+    def test_resumo_valores_em_negrito_34_e_titulos_em_26(self):
+        usados = []
+        orig = cv.Canvas.texto
+
+        def espia(self, x, y, t, fonte, tam, *a, **k):
+            usados.append((t, fonte, tam))
+            return orig(self, x, y, t, fonte, tam, *a, **k)
+        cv.Canvas.texto = espia
+        try:
+            tela(completo(cpu={"pct": 56.0}), "resumo")
+        finally:
+            cv.Canvas.texto = orig
+        self.assertIn(("CPU 56%  RAM 38%", "sans-bold", 34), usados)
+        self.assertIn(("ATHERON", "sans-bold", 26), usados)
 
     def test_servicos_com_falha_aparecem(self):
         a = render_png.render_png(completo(servicos=[{"nome": "a.service", "ativo": True}]), None)
