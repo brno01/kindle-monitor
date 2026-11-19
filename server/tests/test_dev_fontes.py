@@ -1,5 +1,8 @@
 """Fontes da aba Dev: sessoes do Claude Code e resumo do GitHub (dev_fontes), integracao com Coletor e alertas."""
 import json
+import os
+import tempfile
+import threading
 import unittest
 
 import _caminho  # noqa: F401
@@ -83,12 +86,39 @@ class SessoesTest(unittest.TestCase):
     def test_diretorio_ausente(self):
         self.assertEqual(df.coletar_sessoes("/var/lib/nada", Dir({}).listar, Dir({}).ler, AGORA), {"erro": "n/d"})
 
-    def test_symlink_e_nao_regular_ignorados(self):
+    def test_leitor_que_recusa_o_arquivo_ignora_a_sessao(self):
         d = com(sessao(1))
-        d.extra = [Entrada(sid(2) + ".json", 100, regular=False)]  # symlink, fifo, diretorio: nao regular
-        d.ler = lambda c: json.dumps(sessao(1) if sid(1) in c else sessao(2))
-        r = coletar(d)
-        self.assertEqual(r["total"], 1)
+        d.extra = [Entrada(sid(2) + ".json", 100)]
+
+        def ler(c):
+            if sid(2) in c:
+                raise OSError("nao regular")  # symlink, fifo, diretorio: o leitor recusa
+            return json.dumps(sessao(1))
+        d.ler = ler
+        self.assertEqual(coletar(d)["total"], 1)
+
+    def test_fifo_e_symlink_reais_no_diretorio_de_sessoes(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            with open(os.path.join(raiz, sid(1) + ".json"), "w") as f:
+                json.dump(sessao(1), f)
+            os.mkfifo(os.path.join(raiz, sid(2) + ".json"))
+            os.symlink("/dev/zero", os.path.join(raiz, sid(3) + ".json"))
+            saida = []
+            t = threading.Thread(target=lambda: saida.append(
+                df.coletar_sessoes(raiz, os.scandir, coletores.ler_arquivo_padrao, AGORA)), daemon=True)
+            t.start()
+            t.join(5)
+            self.assertFalse(t.is_alive(), "coleta travou num FIFO")
+            self.assertEqual(saida[0]["total"], 1)
+
+    def test_nao_checa_tipo_antes_de_abrir(self):
+        # o tipo e conferido por quem le (fstat no descritor aberto), nao por is_file + open
+        d = com(sessao(1))
+        d.extra = [Entrada(sid(2) + ".json", 100, regular=False)]
+        pedidos = []
+        d.ler = lambda c: pedidos.append(c) or json.dumps(sessao(1) if sid(1) in c else sessao(2))
+        coletar(d)
+        self.assertEqual(len(pedidos), 2)
 
     def test_arquivo_grande_ignorado(self):
         grande = json.dumps(sessao(2, projeto="x" * 8000))
@@ -458,3 +488,50 @@ class ColetorTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeituraRealTest(unittest.TestCase):
+    """Arquivos de outro usuario: FIFO ou link em github.json / limites.json / tokens.json nao pode travar a coleta."""
+
+    def com_prazo(self, fn):
+        saida = []
+        t = threading.Thread(target=lambda: saida.append(fn()), daemon=True)
+        t.start()
+        t.join(5)
+        self.assertFalse(t.is_alive(), "coleta travou")
+        return saida[0]
+
+    def test_github_fifo(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            caminho = os.path.join(raiz, "github.json")
+            os.mkfifo(caminho)
+            r = self.com_prazo(lambda: df.coletar_github(caminho, coletores.ler_arquivo_padrao, AGORA))
+        self.assertEqual(r, {"erro": "n/d"})
+
+    def test_github_symlink(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            real = os.path.join(raiz, "real.json")
+            with open(real, "w") as f:
+                json.dump({"versao": 1, "gerado_em": AGORA, "prs": [], "ci": []}, f)
+            caminho = os.path.join(raiz, "github.json")
+            os.symlink(real, caminho)
+            r = df.coletar_github(caminho, coletores.ler_arquivo_padrao, AGORA)
+            self.assertEqual(r, {"erro": "n/d"})
+            self.assertEqual(df.coletar_github(real, coletores.ler_arquivo_padrao, AGORA)["abertos"], 0)
+
+    def test_github_arquivo_grande(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            caminho = os.path.join(raiz, "github.json")
+            with open(caminho, "wb") as f:
+                f.write(b" " * (coletores.LIMITE_ARQUIVO_PADRAO + 10))
+            r = df.coletar_github(caminho, coletores.ler_arquivo_padrao, AGORA)
+        self.assertEqual(r, {"erro": "n/d"})
+
+    def test_limites_e_tokens_fifo(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            cfg = {}
+            for nome in ("limites", "tokens"):
+                cfg[nome] = os.path.join(raiz, nome + ".json")
+                os.mkfifo(cfg[nome])
+            r = self.com_prazo(lambda: coletores.coletar_claude(cfg, coletores.ler_arquivo_padrao, AGORA))
+        self.assertIsInstance(r, dict)

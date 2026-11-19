@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import threading
 import unittest
 from types import SimpleNamespace
 
@@ -850,3 +851,99 @@ class InteirosGigantesClaudeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LerArquivoPadraoTest(unittest.TestCase):
+    """O servidor roda como nobody e le arquivos de outros usuarios: nada de travar, seguir link ou ler sem limite."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = self._tmp.name
+
+    def caminho(self, nome):
+        return os.path.join(self.dir, nome)
+
+    def ler_com_prazo(self, caminho, prazo=3.0):
+        """Roda ler_arquivo_padrao numa thread; (terminou, resultado|excecao). FIFO preso = terminou False."""
+        saida = []
+
+        def alvo():
+            try:
+                saida.append(c.ler_arquivo_padrao(caminho))
+            except BaseException as e:  # noqa: BLE001
+                saida.append(e)
+
+        t = threading.Thread(target=alvo, daemon=True)
+        t.start()
+        t.join(prazo)
+        return (not t.is_alive()), (saida[0] if saida else None)
+
+    def test_arquivo_normal(self):
+        with open(self.caminho("a.json"), "w", encoding="utf-8") as f:
+            f.write('{"x": "\u00e7"}')
+        self.assertEqual(c.ler_arquivo_padrao(self.caminho("a.json")), '{"x": "\u00e7"}')
+
+    def test_bytes_invalidos_viram_substituicao(self):
+        with open(self.caminho("a"), "wb") as f:
+            f.write(b"ok \xff fim")
+        self.assertEqual(c.ler_arquivo_padrao(self.caminho("a")), "ok \ufffd fim")
+
+    def test_arquivo_vazio(self):
+        open(self.caminho("a"), "w").close()
+        self.assertEqual(c.ler_arquivo_padrao(self.caminho("a")), "")
+
+    def test_ausente_levanta_oserror(self):
+        with self.assertRaises(OSError):
+            c.ler_arquivo_padrao(self.caminho("nada"))
+
+    def test_fifo_nao_trava(self):
+        os.mkfifo(self.caminho("f.json"))
+        terminou, r = self.ler_com_prazo(self.caminho("f.json"))
+        self.assertTrue(terminou, "leitura de FIFO travou")
+        self.assertIsInstance(r, OSError)
+
+    def test_symlink_recusado(self):
+        with open(self.caminho("real"), "w") as f:
+            f.write("segredo")
+        os.symlink(self.caminho("real"), self.caminho("link"))
+        with self.assertRaises(OSError):
+            c.ler_arquivo_padrao(self.caminho("link"))
+
+    def test_symlink_para_dev_zero_nao_trava(self):
+        os.symlink("/dev/zero", self.caminho("z.json"))
+        terminou, r = self.ler_com_prazo(self.caminho("z.json"))
+        self.assertTrue(terminou, "leitura de /dev/zero travou")
+        self.assertIsInstance(r, OSError)
+
+    def test_dispositivo_de_caracteres_recusado(self):
+        terminou, r = self.ler_com_prazo("/dev/zero")
+        self.assertTrue(terminou)
+        self.assertIsInstance(r, OSError)
+
+    def test_diretorio_recusado(self):
+        with self.assertRaises(OSError):
+            c.ler_arquivo_padrao(self.dir)
+
+    def test_arquivo_grande_recusado(self):
+        with open(self.caminho("g"), "wb") as f:
+            f.write(b"x" * (c.LIMITE_ARQUIVO_PADRAO + 1))
+        with self.assertRaises(OSError):
+            c.ler_arquivo_padrao(self.caminho("g"))
+
+    def test_arquivo_no_limite_e_lido(self):
+        with open(self.caminho("g"), "wb") as f:
+            f.write(b"x" * c.LIMITE_ARQUIVO_PADRAO)
+        self.assertEqual(len(c.ler_arquivo_padrao(self.caminho("g"))), c.LIMITE_ARQUIVO_PADRAO)
+
+    def test_procfs_funciona(self):
+        # st_size de /proc e 0: o limite vale para o que foi lido, nao para o tamanho declarado
+        self.assertIn("cpu", c.ler_arquivo_padrao("/proc/stat"))
+
+    def test_link_no_meio_do_caminho_continua_valendo(self):
+        # so o ultimo componente e protegido (O_NOFOLLOW): /sys/class/hwmon/hwmonN e link
+        os.mkdir(self.caminho("d"))
+        with open(self.caminho("d/a"), "w") as f:
+            f.write("ok")
+        os.symlink(self.caminho("d"), self.caminho("l"))
+        self.assertEqual(c.ler_arquivo_padrao(self.caminho("l/a")), "ok")

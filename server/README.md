@@ -221,6 +221,7 @@ Quatro fontes do painel do ecossistema (Entrega 2). Quem grava e o executor root
 ### Privacidade (Entrega 2)
 
 - empresa-x: `nome` com `empresa-x` recusa a lista de aparelhos (servidor e executor). Peer fora do catalogo nunca vai para `aparelhos.json`. Sessao de `cwd` com `/empresa-x` nao e gravada, e so a conta pessoal grava. GitHub: so repos do dono pessoal (afiliacao `OWNER` e login `brno01`); PRs e CI de organizacao nao entram.
+- Leitura das fontes pelo servidor (`nobody`): `coletores.ler_arquivo_padrao` abre com `O_NOFOLLOW|O_NONBLOCK`, confere `S_ISREG` e o tamanho (256 KB) no descritor e le no maximo o limite; FIFO, link, dispositivo, diretorio ou arquivo grande dao o mesmo erro de arquivo ausente (`n/d`). Vale para `limites.json`, `tokens.json`, `sessoes/*.json`, `github.json`, os inventarios e `/proc`.
 - Limite conhecido: a checagem de `claude-sessao` e um substring em minusculas (`/empresa-x`), sem ignorar caixa. Um `cwd` com `empresa-x` nao e barrado, e o leitor nao filtra por nome de projeto.
 - Nenhum IP, chave ou e-mail nos JSON. `aparelhos.json` nao tem nome, IP, usuario nem SO. As sessoes guardam so o basename do projeto. `rotinas.json` guarda nomes de unidades systemd em falha (ate 5).
 - `github.json` guarda o login do dono (`dono`), nomes de repositorio, titulos de PR e estado de CI. Sao dados da conta pessoal, mostrados no Kindle; nao sao IP, chave nem e-mail.

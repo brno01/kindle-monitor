@@ -7,6 +7,7 @@ para os testes nao dependerem de nvidia-smi, systemctl, rede nem /var/lib/cerber
 Convencao de falha: cada coletor falha isolado. Na classe `Coletor`, qualquer excecao
 vira `{"erro": "n/d"}` naquela metrica; coletor "ausente" (sem GPU, sem sensor) omite a chave.
 """
+import errno
 import glob
 import ipaddress
 import json
@@ -14,6 +15,7 @@ import math
 import os
 import re
 import socket
+import stat
 import subprocess
 import threading
 import time
@@ -702,9 +704,35 @@ def executar_padrao(args, timeout=3):
     return p.returncode, p.stdout
 
 
-def ler_arquivo_padrao(caminho):
-    with open(caminho, "r", encoding="utf-8", errors="replace") as f:
-        return f.read()
+LIMITE_ARQUIVO_PADRAO = 256 * 1024
+_FLAGS_LEITURA = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_NOCTTY", 0) | getattr(os, "O_CLOEXEC", 0)
+
+
+def ler_arquivo_padrao(caminho, limite=LIMITE_ARQUIVO_PADRAO):
+    """Texto de um arquivo regular de ate `limite` bytes; senao OSError (como arquivo ausente).
+
+    Os arquivos vem de outros usuarios: o ultimo componente nao pode ser link (O_NOFOLLOW), O_NONBLOCK evita
+    travar a thread de coleta num FIFO, e tipo e tamanho sao conferidos no descritor ja aberto (sem corrida).
+    /proc e /sys declaram tamanho 0, por isso o limite tambem vale para o que foi lido."""
+    fd = os.open(caminho, _FLAGS_LEITURA)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(errno.EINVAL, "nao e arquivo regular")
+        if st.st_size > limite:
+            raise OSError(errno.EFBIG, "arquivo grande demais")
+        partes, total = [], 0
+        while total <= limite:
+            parte = os.read(fd, limite + 1 - total)
+            if not parte:
+                break
+            partes.append(parte)
+            total += len(parte)
+        if total > limite:
+            raise OSError(errno.EFBIG, "arquivo grande demais")
+        return b"".join(partes).decode("utf-8", errors="replace")
+    finally:
+        os.close(fd)
 
 
 def _isolado(fn):

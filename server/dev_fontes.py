@@ -103,8 +103,9 @@ def coletar_sessoes(diretorio, listar, ler, agora):
     candidatas = []
     for e in entradas:
         try:
-            if not (RE_SESSAO_ARQ.match(e.name) and e.is_file(follow_symlinks=False)):
+            if not RE_SESSAO_ARQ.match(e.name):
                 continue
+            # so a ordem e um pre-filtro de tamanho; o tipo (regular, sem link) e conferido por `ler`, ao abrir
             st = e.stat(follow_symlinks=False)
             if st.st_size <= SESSAO_BYTES_MAX:
                 candidatas.append((st.st_mtime, e.name))
