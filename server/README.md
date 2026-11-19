@@ -16,10 +16,10 @@ Opcoes: `--bind` (padrao `127.0.0.1`), `--porta` (padrao `8765`), `--config` (ar
 ## Endpoints
 | Caminho | Resposta |
 |---|---|
-| `/tela.txt` | texto puro ASCII, uma linha por linha da tela (ate `--colunas` colunas e 26 linhas; linhas `IO`/`NET` quando ha `io` na config), barras como `[#####-----]  50%`; inclui a linha `Portas: LOGIN ok CHAR ok MAP FALHA`, o bloco de alertas do motor (ver "Motor de alertas") e, na aba `aparelhos`, Kindle e S10 |
+| `/tela.txt` | texto puro ASCII, uma linha por linha da tela (ate `--colunas` colunas e 26 linhas; linhas `IO`/`NET` quando ha `io` na config), barras como `[#####-----]  50%`; inclui a linha `Portas: LOGIN ok CHAR ok MAP FALHA`, o bloco de alertas do motor (ver "Motor de alertas") linhas da Entrega 2 (`Rotinas: N de M ok` no resumo; TAILNET, Kindle e S10 na aba `aparelhos`; SESSOES e GITHUB na aba `claude`) |
 | `/tela.png` | imagem PNG 8-bit em tons de cinza (`image/png`), `--largura` x `--altura` (padrao 1236x1648, Kindle Paperwhite 5), gerada so com a biblioteca padrao |
 | `/historico.json` | anel em memoria das ultimas 60 amostras: `intervalo_s`, `max`, `t` (epoch), `cpu`, `ram` e `gpu` (so se houver GPU), em %, da mais antiga para a mais nova (`null` = leitura falhou) |
-| `/metricas.json` | metricas brutas em JSON (`host`, `gerado_em` ISO, cpu, ram, gpu, discos, io, servicos, ragnarok, portas, historico, pares). `?pares=0` nao consulta os pares |
+| `/metricas.json` | metricas brutas em JSON (`host`, `gerado_em` ISO, cpu, ram, gpu, discos, io, servicos, ragnarok, portas, historico, pares, e os blocos da Entrega 2: `aparelhos`, `rotinas`, `github`, `claude.sessoes` e `limiares`; ver "Aparelhos, rotinas, sessoes e GitHub"). `?pares=0` nao consulta os pares |
 | `/botoes.json` | `{"largura","altura","pagina","p","paginas","botoes":[{id,rotulo,x,y,w,h,tipo,armado,visivel}]}`: fonte unica do layout dos botoes (pixels do PNG, origem no canto superior esquerdo); o render desenha exatamente estes retangulos (`botoes.py`), exceto os invisiveis (`visivel: false`); `p` e `paginas` valem na pagina servicos. `/botoes.txt` traz o mesmo layout como `id tipo x y w h` por linha (para o awk do Kindle), com os invisiveis |
 | `/saude` | `ok` |
 | `/comando/estado` | lista JSON dos ultimos comandos (mesma de `metricas.comandos`) |
@@ -71,6 +71,13 @@ Copie para `config.json` e ajuste. Chaves que comecam com `_` sao comentarios e 
   | `claude_limite` | 90 | 1 a 100 (% do limite de 5 h ou semanal) |
   | `sessao_esperando_min` | 10 | 1 a 1440 (minutos) |
 
+- `aparelhos` (lista, opcional, ate 16; catalogo da aba Aparelhos e do alerta de aparelho offline): cada item tem `id` (`^[a-z0-9-]{1,24}$`), `nome` (nome do peer no Tailscale, `^[a-z0-9-]{1,63}$`; com `empresa-x` e recusado), `rotulo` (ASCII imprimivel, 1 a 16), `icone` (nome de `icones_dados.ICONES`; o executor so confere o formato `^[a-z]{2,16}$`, ver o paragrafo de paridade abaixo) e `alerta_offline_min` (opcional, inteiro de 1 a 10080; `null` e recusado). `id` e `nome` nao podem repetir, e chave desconhecida recusa a lista. Lista invalida e descartada inteira: o servidor recebe lista vazia (sem `m.aparelhos`, o cartao TAILNET fica sem dados) e o executor registra uma linha e nao grava `aparelhos.json` (o `servicos.json` continua). Producao (`deploy/config.atheron.json`): nomad, s22, s10, iphone, kindle, gw (`alerta_offline_min` 10) e games.
+- `rotinas` (lista, opcional, ate 16): `id` (`^[a-z0-9-]{1,24}$`, unico), `rotulo` (ASCII imprimivel, 1 a 20), `tipo` e `alvo`. `timer`: `alvo` e a unit `.service` (`^[A-Za-z0-9_.@-]{1,64}\.service$`). `arquivo`: `alvo` e caminho absoluto normalizado sob `/srv/`, `/var/lib/` ou `/var/backups/` (vale o mtime, sem ler conteudo). `max_idade_h` de 0.1 a 720 (idade acima dele = atrasada). Mesma regra de lista inteira de `aparelhos`. Producao: `senhas` (timer `cerberus-vault-backup.service`, 26 h), `senhas-arq` (arquivo `/srv/nas/backups/vaultwarden`, 26 h) e `tokens` (arquivo `/var/lib/claude-uso/tokens.json`, 1 h). Os alvos do Syncthing e do segundo cerebro ainda nao entraram (ver "Pendencias desta entrega").
+- `claude.sessoes` (diretorio, opcional): caminho absoluto normalizado sob `/var/lib/` ou `/run/`; fora disso, `m.claude.sessoes` vira `{"erro": "n/d"}`. Producao: `/var/lib/claude-uso/sessoes`.
+- `github.resumo` (arquivo, opcional): mesma regra de caminho; fora disso, `m.github` vira `{"erro": "n/d"}`. Producao: `/var/lib/claude-uso/github.json`.
+
+Sem essas chaves, `m.aparelhos`, `m.rotinas`, `m.claude.sessoes` e `m.github` nao existem. No `config.exemplo.json` os quatro blocos estao comentados (chaves `_exemplo_*`, com `_comentario_*` ao lado). Servidor e executor validam pela mesma tabela (`tests/test_paridade_catalogos.py`); a unica diferenca e o icone, de proposito: o executor so confere o formato, porque nao importa nada de `server/`.
+
 ### I/O: como as taxas sao calculadas
 As taxas (bytes/s) saem da diferenca entre a amostra atual e a anterior, guardada em memoria, dividida pelo tempo (relogio monotonico) entre elas. Na primeira requisicao, ou se a amostra anterior tiver mais de 30 s, o servidor le duas vezes com `intervalo_io_s` entre as leituras. Se a ultima amostra tem menos de 0,5 s, a ultima taxa e reutilizada (nada e lido). Contador que voltou para tras (reboot, overflow) da `null` (`n/d` na tela) naquela amostra, nunca taxa negativa. Dispositivo ou interface que nao existe em `/proc` some da tela e do JSON; se o proprio arquivo de `/proc` nao puder ser lido, as linhas aparecem com `n/d`.
 
@@ -90,7 +97,7 @@ Regras, com os limiares da tabela de `limiares` (`disco_critico` e `disco_aviso`
 - **Aviso:** disco >= `disco_aviso`; RAM >= `ram`; swap >= `swap` (com swap configurada); temperatura da CPU >= `temp_cpu_c`; servico parado que nao e `opcional`; inventario de servicos velho ou ausente; rotina atrasada; limite de 5 h ou semanal do Claude >= `claude_limite` (sem `renovado`); CI da branch padrao em falha; porta do Ragnarok fechada; bateria do Kindle <= `kindle_bateria` e sem carregar; bateria do S10 <= `s10_bateria` e descarregando; fonte velha ("<fonte> sem atualizar ha N min").
 - **Leve:** sessao do Claude `esperando` ha pelo menos `sessao_esperando_min`.
 
-Fontes que so chegam na Entrega 2 (aparelhos, rotinas, sessoes e GitHub): as regras que dependem delas leem chaves que ainda nao existem em `m`, entao nao disparam nesta entrega. Os testes das regras estao em `tests/test_alertas.py` (54 testes, incluindo limiares e valores logo abaixo deles).
+As regras de aparelhos, rotinas, sessoes e GitHub leem `m["aparelhos"]`, `m["rotinas"]`, `m["claude"]["sessoes"]` e `m["github"]` (formatos na secao "Aparelhos, rotinas, sessoes e GitHub"). Sem inventario (`ausente`) ou com `erro`, nao ha alerta: a linha mostra "sem dados". Com inventario `velho` ou fonte velha, aparece o aviso "<fonte> sem atualizar ha N min". A regra das sessoes: so conta como aberta a sessao com batimento nos ultimos 10 min (`SESSAO_IDADE_MAX_S = 600` em `dev_fontes.py`); a mais velha sai da lista, do total e dos alertas. Os testes das regras estao em `tests/test_alertas.py`, com limiares e valores logo abaixo deles.
 
 ## Comandos (POST /comando)
 O servidor continua sem privilegio (`User=nobody`, `ProtectSystem=strict`). Para mudar o atheron a partir do Kindle (com confirmacao em dois toques na tela), o processo web so **registra um pedido**; quem executa e um **executor root separado**, com uma tabela fixa de acoes. Nunca ha shell nem comando montado a partir do pedido.
@@ -121,7 +128,7 @@ Lista no `config.json` (validada no web e no executor, que e root e le o mesmo a
 Argv montado pelo executor (fixo por tipo; so entram o `alvo` e o `projeto` do catalogo, nunca o pedido): `systemd` -> `systemctl restart|start|stop <alvo>` (40 s); `incus` -> `incus restart|start|stop <alvo> --project <projeto>` (90 s); `docker` -> `incus exec microservices --project core -- docker restart|start|stop <alvo>` (60 s); `rathena` -> `incus exec games --project core -- systemctl restart|start|stop <alvo>` (60 s). O web so aceita `svc:<id>:<verbo>` se o id existe e o verbo esta em `verbos`; o executor repete a checagem. Cooldown (30 s) e dedupe sao por acao (`svc:<id>:<verbo>`).
 
 ### Inventario de estados (root)
-`kindle-monitor-inventario.timer` (OnBootSec=20s, OnUnitInactiveSec=15s, AccuracySec=1s) dispara `kindle-monitor-inventario.service` (oneshot, root, mesmo endurecimento do executor) que roda `kindle-monitor-executor.py --inventario`. Sao 4 chamadas em lote, 10 s de timeout cada, nunca shell: `systemctl show -p Id,ActiveState,SubState <units...>`; `incus list --all-projects --format csv -c n,s,e`; `incus exec microservices --project core -- docker ps -a --format '{{.Names}} {{.State}}'`; `incus exec games --project core -- systemctl show -p Id,ActiveState,SubState <units...>`. Grava `status/servicos.json` (`{"gerado": epoch, "servicos": {id: {"estado": "ativo|parado|falha|desconhecido", "detalhe": curto}}}`; tmp `O_EXCL|O_NOFOLLOW` + rename via `dir_fd`, dirs conferidos como root; modo 0644 para o `nobody` ler). Chamada que falha deixa so os seus itens `desconhecido`. O web (`coletores.montar_servicos_kindle`) le o arquivo: com mais de 60 s, do futuro, ausente ou corrompido, todos viram `desconhecido`, nao ha botoes de comando e a tela avisa ("estados desatualizados" / "sem inventario de servicos"). Swarm (`prefixo`): todas as tarefas `running` = ativo (`N/N`), alguma nao = falha, nenhuma = parado.
+`kindle-monitor-inventario.timer` (OnBootSec=20s, OnUnitInactiveSec=15s, AccuracySec=1s) dispara `kindle-monitor-inventario.service` (oneshot, root, mesmo endurecimento do executor) que roda `kindle-monitor-executor.py --inventario`. Servicos: 4 chamadas em lote, 10 s de timeout cada, nunca shell (aparelhos e rotinas tem as suas, na secao "Aparelhos, rotinas, sessoes e GitHub"): `systemctl show -p Id,ActiveState,SubState <units...>`; `incus list --all-projects --format csv -c n,s,e`; `incus exec microservices --project core -- docker ps -a --format '{{.Names}} {{.State}}'`; `incus exec games --project core -- systemctl show -p Id,ActiveState,SubState <units...>`. Grava `status/servicos.json` (`{"gerado": epoch, "servicos": {id: {"estado": "ativo|parado|falha|desconhecido", "detalhe": curto}}}`; tmp `O_EXCL|O_NOFOLLOW` + rename via `dir_fd`, dirs conferidos como root; modo 0644 para o `nobody` ler). Chamada que falha deixa so os seus itens `desconhecido`. O web (`coletores.montar_servicos_kindle`) le o arquivo: com mais de 60 s, do futuro, ausente ou corrompido, todos viram `desconhecido`, nao ha botoes de comando e a tela avisa ("estados desatualizados" / "sem inventario de servicos"). Swarm (`prefixo`): todas as tarefas `running` = ativo (`N/N`), alguma nao = falha, nenhuma = parado.
 
 **Requisicao**: `POST /comando`, `Content-Type: application/json`, cabecalho `X-Kindle-Token: <64 hex>`, corpo `{"acao": "<id>"}` (ate 1 KB). Respostas: `202 {"estado":"aceito","acao","id"}`; `400` acao invalida/desligada ou JSON ruim; `401` token ausente/errado (sem detalhe); `403` IP de origem fora de `permitidos_de`; `413` corpo > 1 KB; `415` content-type; `429` mais de 1 pedido a cada 5 s no total (com `Retry-After`); `408` corpo nao chegou em 10 s; `503` comandos desligados (hash do token ou spool ausente; so e revelado a IPs permitidos, o IP e checado antes). O web guarda so o sha256 do token e compara `hmac.compare_digest(sha256(enviado).hexdigest(), hash)`; o corpo e lido com timeout de 10 s. Cada pedido, aceito ou recusado, vai para o journal (stderr) com hora, IP, acao e motivo, nunca o token.
 
@@ -139,24 +146,103 @@ Argv montado pelo executor (fixo por tipo; so entram o `alvo` e o `projeto` do c
 
 **Endurecimento do executor (validar no host)**: `kindle-monitor-executor.service` usa `ProtectSystem=strict`, `ReadWritePaths=/run/kindle-monitor`, `ReadWritePaths=-/var/lib/incus/unix.socket`, `ProtectKernelModules`, `ProtectControlGroups`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `PrivateTmp`, `NoNewPrivileges`. Isso nao foi testado no atheron: depois de instalar, dispare uma acao de cada tipo (`monitor-reiniciar`, um `svc:` de incus e um de docker) e confira `journalctl -u kindle-monitor-executor` e `journalctl -u kindle-monitor-inventario` (e `cat /run/kindle-monitor/status/servicos.json`) (`systemctl` precisa do D-Bus, `incus` do socket em `/var/lib/incus/unix.socket`). Se falhar, tire primeiro `ProtectSystem=strict` e as linhas `ReadWritePaths`, depois `ProtectKernelModules`/`ProtectControlGroups`; `RestrictAddressFamilies` nunca pode excluir `AF_UNIX`.
 
+## Aparelhos, rotinas, sessoes e GitHub
+
+Quatro fontes do painel do ecossistema (Entrega 2). Quem grava e o executor root (`--inventario`, para `aparelhos.json` e `rotinas.json`) ou o usuario `claude` (hooks e statusline, para as sessoes; timer, para o GitHub). O servidor (`nobody`) so le, valida e corta texto. O coletor le os arquivos na thread de coleta, nunca na requisicao.
+
+| Arquivo | Grava | Onde | Validade no servidor |
+|---|---|---|---|
+| `aparelhos.json` | executor root | `/run/kindle-monitor/status/` | 60 s (campo `gerado`) |
+| `rotinas.json` | executor root | `/run/kindle-monitor/status/` | 60 s |
+| `sessoes/<id>.json` | `claude-sessao` (usuario `claude`) | `/var/lib/claude-uso/sessoes/` | batimento ate 10 min |
+| `github.json` | `claude-github` (usuario `claude`) | `/var/lib/claude-uso/github.json` | `velho` acima de 20 min |
+
+### aparelhos.json (executor root)
+
+```
+{"versao":1,"gerado":<epoch>,"erro":null|"<texto curto>",
+ "aparelhos":{"<id>":{"online":true|false|null,"visto_em":<epoch>|null,"conexao":"direto"|"relay"|null}}}
+```
+
+- Origem: `tailscale status --json` (argv fixo, sem shell, timeout 10 s, saida ate 4 MiB). Cada peer casa pelo primeiro trecho do `DNSName` (minusculo) com o `nome` do catalogo. Nome repetido: vale o que estiver online.
+- `online` vem de `Online` (bool, ou null). `conexao`: `CurAddr` preenchido = `direto`; senao `Relay` = `relay`. `visto_em` vem de `LastSeen` em epoch (antes de 2000 = null).
+- Peer fora do catalogo nunca sai no arquivo. Peer do catalogo sem registro no tailnet sai com `online: null`.
+- `erro` (ate 40 caracteres): `saida vazia`, `saida grande demais`, `json invalido`, `formato inesperado`, `codigo N`, `tempo esgotado`, `comando indisponivel` ou `falha ao executar`. Com erro, todos saem com `online: null`.
+
+### rotinas.json (executor root)
+
+```
+{"versao":1,"gerado":<epoch>,
+ "rotinas":{"<id>":{"resultado":"ok"|"falha"|"desconhecido","ultima_em":<epoch>|null,"detalhe":"<ate 24>"}},
+ "unidades_falhas":{"n":<int>,"nomes":[<ate 5 nomes>]}}
+```
+
+- `timer`: `systemctl show -p Id,Result,LoadState,ExecMainStatus,ExecMainExitTimestamp --timestamp=unix -- <alvos>` (uma chamada). `Result=success` = `ok` com `ultima_em`. Outro resultado = `falha` (detalhe `exit N` ou o proprio resultado). Unidade inexistente = `desconhecido` ("sem unidade"). Nunca rodou = `desconhecido`.
+- `arquivo`: mtime do arquivo, ou o maior mtime das entradas diretas do diretorio (ate 2000 entradas; sem seguir symlink; sem ler conteudo). Resultado `ok` ou `desconhecido`, nunca `falha`: o atraso sai de `max_idade_h` (aviso).
+- `unidades_falhas`: `systemctl list-units --failed --plain --no-legend --no-pager`. `n` conta as linhas; `nomes` guarda as 5 primeiras que casam `^[A-Za-z0-9_.@:-]{1,40}$`.
+- Se o `systemctl` falhar (saida diferente de 0 ou excecao), todas as rotinas saem `desconhecido` e `unidades_falhas` zerado.
+
+### sessoes/<id>.json (claude-sessao)
+
+```
+{"versao":1,"id":"<id>","projeto":"<ate 40>","estado":"aberta"|"trabalhando"|"esperando","desde":<epoch>,"atualizado_em":<epoch>}
+```
+
+- `id`: `^[0-9a-f-]{8,64}$`; outro formato e recusado (sem barra, sem `..`). `projeto`: basename do `cwd`, so `[A-Za-z0-9._-]`, ate 40; vazio vira `sessao`.
+- Hooks: `UserPromptSubmit` = `trabalhando`; `Stop` e `Notification` = `esperando`; `SessionEnd` apaga o arquivo.
+- Statusline (batimento): cria como `aberta` se faltar; senao so renova `atualizado_em`, no maximo a cada 30 s. `desde` so muda quando o estado muda.
+- Poda: arquivo com `atualizado_em` de mais de 24 h e apagado na proxima gravacao.
+- Gravacao atomica, 0644, sem seguir symlink; cria `sessoes/` (0755) se faltar. So grava na conta pessoal (`CLAUDE_CONFIG_DIR` vazio ou `~/.claude`) e nunca com `cwd` contendo `/empresa-x`.
+- Leitor (`dev_fontes.py`): le ate 50 arquivos regulares de ate 4 KB com nome `<id>.json`. **Regra das sessoes: so conta como aberta a sessao com batimento nos ultimos 10 min** (`atualizado_em` com menos de 600 s). Sessao mais velha sai da lista, do total e dos alertas. `atualizado_em` mais de 5 min no futuro, estado fora dos tres valores ou `desde` invalido: sessao descartada. `esperando` ha `sessao_esperando_min` ou mais = alerta leve.
+
+### github.json (claude-github)
+
+```
+{"versao":1,"gerado_em":<epoch>,"dono":"<login>",
+ "prs":[{"repo","numero","titulo","rascunho","ci"}],     (ate 20)
+ "ci":[{"repo","branch","estado"}]}                      (ate 30)
+```
+
+- Uma chamada `gh api graphql` (argv em lista, timeout 60 s). Repos com afiliacao `OWNER` do login `brno01` (ate 30, por `PUSHED_AT`); arquivados e de outro dono sao descartados. PRs `OPEN` (ate 10 por repo). O `ci` do PR e o rollup do ultimo commit; o `ci` do repo e o rollup da branch padrao (so esta entra no alerta de CI).
+- Estado: `SUCCESS` = `ok`; `FAILURE` e `ERROR` = `falha`; `PENDING` e `EXPECTED` = `pendente`; outro valor = null (no PR) ou entrada omitida (no CI).
+- Titulos e nomes: NFKD, so ASCII imprimivel, sem controles, espacos colapsados. O gravador corta em 80 (titulo) e 40 (repo, branch); o leitor corta o titulo em 60.
+- Se o `gh` falhar, o gravador nao grava (o arquivo antigo fica) e sai com 1.
+- Leitor: ate 64 KB; `velho` acima de 1200 s (20 min). `abertos` conta so os PRs que cabem em `prs` (no maximo 20).
+
+### O que o servidor entrega
+
+- `m["aparelhos"]` (so com o catalogo): `{"inventario": "ok"|"velho"|"ausente", "idade_s", "itens": [{"id","rotulo","icone","online","offline_min","conexao","alerta_offline_min"}]}`.
+- `m["rotinas"]` (so com o catalogo): `{"inventario", "idade_s", "itens": [{"id","rotulo","resultado","ultima_em","idade_h","max_idade_h","atrasada"}], "unidades_falhas": {"n","nomes"}}`.
+- Com inventario `velho` ou `ausente`, os itens saem com `online: null` ou `desconhecido`, e nenhuma unidade em falha e contada.
+- `m["claude"]["sessoes"]` (so com `claude.sessoes`): `{"itens": [{"projeto","estado","desde_s"}] (ate 12, da menor `desde_s`), "total", "esperando", "idade_s"}`. `total` conta as sessoes validas lidas (ate 50 arquivos). Ou `{"erro": "n/d"}`.
+- `m["github"]` (so com `github.resumo`): `{"prs": [...], "ci": [...], "abertos", "ci_falhas", "idade_s", "velho"}`. Ou `{"erro": "n/d"}`.
+- `m["limiares"]`: sempre (tabela na secao "Config").
+
+### Privacidade (Entrega 2)
+
+- empresa-x: `nome` com `empresa-x` recusa a lista de aparelhos (servidor e executor). Peer fora do catalogo nunca vai para `aparelhos.json`. Sessao de `cwd` com `/empresa-x` nao e gravada, e so a conta pessoal grava. GitHub: so repos do dono pessoal (afiliacao `OWNER` e login `brno01`); PRs e CI de organizacao nao entram.
+- Limite conhecido: a checagem de `claude-sessao` e um substring em minusculas (`/empresa-x`), sem ignorar caixa. Um `cwd` com `empresa-x` nao e barrado, e o leitor nao filtra por nome de projeto.
+- Nenhum IP, chave ou e-mail nos JSON. `aparelhos.json` nao tem nome, IP, usuario nem SO. As sessoes guardam so o basename do projeto. `rotinas.json` guarda nomes de unidades systemd em falha (ate 5).
+- `github.json` guarda o login do dono (`dono`), nomes de repositorio, titulos de PR e estado de CI. Sao dados da conta pessoal, mostrados no Kindle; nao sao IP, chave nem e-mail.
+
 ## Testes
 ```
-cd server && (umask 022; python3 -I -m unittest discover -s tests)              # 739 testes
+cd server && (umask 022; python3 -I -m unittest discover -s tests)              # 1074 testes (19/11/2026)
 cd server && (umask 022; python3 -I -m unittest discover -s tests -p test_alertas.py -v)   # um modulo
 ```
 Os testes usam fixtures e fakes: nao precisam de rede, `nvidia-smi`, `systemctl` nem `/var/lib/cerberus`. Com `umask 0002` os testes do executor falham (ele recusa arquivo gravavel pelo grupo). Falha conhecida, anterior a esta branch e so neste servidor: `test_executor.FilaTest.test_limpeza_20_mais_novos` (21 != 20).
 
 ## Imagem (`/tela.png`)
 Retrato 1236x1648, seis abas na barra de navegacao fixa no rodape (96 px; icone de 30 px em cima e rotulo sempre em negrito 26: Inicio, Servicos, Aparelhos, Sistema, Dev, Acoes; a aba atual invertida). Cabecalho fino (~70 px): host, resumo dos servicos ("48 servicos · 41 ok · 5 parados"; ou o aviso de inventario velho) e hora (HH:MM, sem segundos). Visual e-ink: alto contraste, contornos finos, raios pequenos, sem sombras; fontes embutidas 26 e 34 (negrito tambem 48, 72 e 140). Estado de servico por forma antes da cor: cheia = ativo, vazia = parado, X = falha, ? = desconhecido.
-- **Inicio** (`resumo`): cartao ATENCAO no alto, so com os alertas do motor (criticos, avisos e leves; "Tudo em ordem" sem alertas), com a altura que ele precisa; faixa de historico (CPU e RAM) no espaco que sobrar. Abaixo, 8 linhas de sistema, cada uma com icone de 56 px, titulo, valor e detalhe: ATHERON (CPU, RAM, temperatura e `/`), NAS (os discos que nao sao `/`), APARELHOS (detalhe com bateria do Kindle e do S10; a tailnet ainda mostra "sem dados"), SERVICOS ("N de M ok" e o detalhe por grupo), ROTINAS ("sem dados"), CLAUDE (limites de 5 h e semanal), GITHUB ("sem dados") e RAGNAROK (jogadores e portas no detalhe). Tocar numa linha abre a aba de destino (`pagina:<destino>`, ver "Contrato com o Kindle"). Quando o estado da linha nao e `ok`, uma forma no canto direito mostra o estado: X (critico), ! (aviso), vazia (leve) ou ? (sem dados).
+- **Inicio** (`resumo`): cartao ATENCAO no alto, so com os alertas do motor (criticos, avisos e leves; "Tudo em ordem" sem alertas), com a altura que ele precisa; faixa de historico (CPU e RAM) no espaco que sobrar. Abaixo, 8 linhas de sistema, cada uma com icone de 56 px, titulo, valor e detalhe: ATHERON (CPU, RAM, temperatura e `/`), NAS (os discos que nao sao `/`), APARELHOS ("N de M online"; offline no detalhe, e bateria do Kindle e do S10), SERVICOS ("N de M ok" e o detalhe por grupo), ROTINAS ("N de M ok", ou "N unidades em falha", ou a rotina em problema), CLAUDE (limites de 5 h e semanal, e "N sessoes, M esperando"), GITHUB ("N PRs abertos", com o CI no detalhe) e RAGNAROK (jogadores e portas no detalhe). Tocar numa linha abre a aba de destino (`pagina:<destino>`, ver "Contrato com o Kindle"). Quando o estado da linha nao e `ok`, uma forma no canto direito mostra o estado: X (critico), ! (aviso), vazia (leve) ou ? (sem dados).
 - **servicos**: lista densa agrupada (HOST / CONTEINERES / DOCKER / RAGNAROK, com "N de M ativos"), uma linha por servico: forma do estado, rotulo (34 ou 26), estado e, a direita, botoes contextuais de 190x84 px com 16 px de espaco (ativo: Reiniciar e Parar; parado: Ligar; falha: Reiniciar; desconhecido ou sem verbos: nada; se o catalogo so permite `reiniciar`, ele tambem serve para ligar). Paginada: "Pagina X/N" e `< Anterior` / `Proxima >` no topo, so quando ha mais de uma pagina (o atheron real da 4). A divisao em paginas so depende do catalogo (linha de 100 px, ou 64 px se o item nao tem verbos), nao do estado.
-- **Sistema** (`detalhes`): discos completos, memoria (RAM, swap, VRAM), I/O, temperaturas (CPU e GPU), carga, uptime, historico (sparklines de ~15 min) e o cartao ROTINAS ("sem dados" nesta entrega). Kindle, grupos de servicos, Ragnarok e pares sairam daqui.
-- **Aparelhos** (`aparelhos`): cartao TAILNET ("sem dados" nesta entrega), cartao Kindle, cartao S10 (bateria, estado, temperatura, cinco caminhos com forma cheia/X/?, avisos; le `m["s10"]`, so se houver na config) e os pares.
-- **Dev** (`claude`, so leitura): cartao Claude (icone, janelas de 5 h e semanal com barra, % e quando volta; >= 90 % em negrito grande e preto; `renovado` mostra 0 %; dados velhos mostram "ha N min/h" em cinza; tokens de hoje e de 7 dias com custo), cartoes SESSOES e GITHUB ("sem dados" nesta entrega). Le `m["claude"]`; sem a chave: "Claude desligado na config".
+- **Sistema** (`detalhes`): discos completos, memoria (RAM, swap, VRAM), I/O, temperaturas (CPU e GPU), carga, uptime, historico (sparklines de ~15 min) e o cartao ROTINAS (forma, rotulo e "ha N h", "falhou" ou "atrasada" por rotina; linha de unidades em falha). Kindle, grupos de servicos, Ragnarok e pares sairam daqui.
+- **Aparelhos** (`aparelhos`): cartao TAILNET (uma linha por aparelho: forma de online, offline ou sem dado; "direto" ou "relay" quando online; "offline ha N min" quando offline), cartao Kindle, cartao S10 (bateria, estado, temperatura, cinco caminhos com forma cheia/X/?, avisos; le `m["s10"]`, so se houver na config) e os pares.
+- **Dev** (`claude`, so leitura): cartao Claude (icone, janelas de 5 h e semanal com barra, % e quando volta; >= 90 % em negrito grande e preto; `renovado` mostra 0 %; dados velhos mostram "ha N min/h" em cinza; tokens de hoje e de 7 dias com custo), cartoes SESSOES (uma linha por sessao: projeto, forma do estado e ha quanto tempo) e GITHUB (PRs como "repo#n titulo", CI por repo). Le `m["claude"]`; sem a chave: "Claude desligado na config".
 - **Acoes** (`comandos`): grade 2x2 das 4 acoes rapidas, bloco AJUSTES (os tres perfis de energia, com o ativo destacado) e "ULTIMOS COMANDOS" (ate 8; servico aparece como "Reiniciar <id>") no espaco que sobrar. Saiu daqui o ATENCAO, que ficou no Inicio.
 Nada e cortado, sobreposto ou desenhado fora da imagem (testado com canvas estrito em 1236x1648, 1072x1448 e 800x1300, inclusive 52 servicos com varios em falha e 8 comandos recentes). Textos sem acento (a fonte embutida e ASCII mais `°` e `·`). Botoes de linha e de acao tem no minimo 150x84 px e 16 px de folga entre si.
 
-Em producao so entram `alertas.py` (motor de alertas), `botoes.py` (layout dos botoes), `icones_dados.py` (icones), `png.py` (encoder PNG com `struct` + `zlib`), `canvas.py` (desenho) e `render_png.py` (layout). As fontes DejaVu vem **pre-rasterizadas** em `fonte_dados.py` (arquivo gerado, ~300 KB; licenca DejaVu/Bitstream Vera no topo do arquivo). Para regerar (ferramenta de desenvolvimento, usa Pillow so via `uv`, nada global):
+Em producao so entram `alertas.py` (motor de alertas), `botoes.py` (layout dos botoes), `ecossistema.py` (aparelhos e rotinas), `dev_fontes.py` (sessoes e GitHub), `icones_dados.py` (icones), `png.py` (encoder PNG com `struct` + `zlib`), `canvas.py` (desenho) e `render_png.py` (layout). As fontes DejaVu vem **pre-rasterizadas** em `fonte_dados.py` (arquivo gerado, ~300 KB; licenca DejaVu/Bitstream Vera no topo do arquivo). Para regerar (ferramenta de desenvolvimento, usa Pillow so via `uv`, nada global):
 ```
 uv run --with pillow python tools/gerar_fonte.py        # reescreve server/fonte_dados.py
 ```
@@ -184,6 +270,33 @@ Regerar (ferramenta de desenvolvimento; Pillow e svgelements so via `uv`):
 ```
 uv run --no-project --with pillow --with svgelements python tools/gerar_icones.py
 ```
+
+## Instalacao da Entrega 2
+
+**Estado: pendente.** Nada desta secao foi executado. A Entrega 2 nao esta instalada no atheron.
+
+Root (dono; R4 e R6 do plano `docs/superpowers/plans/2026-11-18-painel-ecossistema.md`):
+
+1. Backup (R4), em diretorio novo: `sudo bash -c 'D=/root/backup/kindle-monitor-antes-entrega2-$(date +%F-%H%M); install -d -m 0700 "$D"; cp -a /opt/kindle-monitor /etc/kindle-monitor /etc/systemd/system/kindle-monitor* /etc/tmpfiles.d/kindle-monitor*.conf "$D"/; ls -la "$D"'`. Verificar: a listagem mostra os quatro itens.
+2. Servidor, executor e units: o comando "Atualizar o atheron" do `CLAUDE.md`, com `R=~/development/worktrees/kindle-monitor-ecossistema`. Ele copia `server/` e `deploy/` e roda `instalar-atheron.sh` (daemon-reload e reinicio do monitor). A unit `kindle-monitor-inventario.service` ganha `ReadWritePaths=-/run/tailscale`. A unit do executor nao muda nesta entrega.
+3. O instalador grava `deploy/config.atheron.json` sobre `/etc/kindle-monitor/config.json`. Os catalogos `aparelhos` e `rotinas` vao junto por esse arquivo. Ajuste feito so no host se perde na proxima instalacao: edite no repo.
+4. Verificar: `sudo cat /run/kindle-monitor/status/{aparelhos,rotinas}.json` (o campo `gerado` deve andar a cada ~15 s); `journalctl -u kindle-monitor-inventario -n 20` sem erro; `systemctl is-active kindle-monitor`.
+5. Se o hardening bloquear o socket do Tailscale, afrouxar na ordem da secao "Endurecimento do executor" (`ProtectSystem=strict` e os `ReadWritePaths` primeiro). `RestrictAddressFamilies` nunca pode excluir `AF_UNIX`.
+6. Desfazer: restaurar o backup do R4 (`/opt/kindle-monitor`, `/etc/kindle-monitor/config.json`, units e tmpfiles); `systemctl daemon-reload && systemctl restart kindle-monitor.service kindle-monitor-inventario.timer`; e apagar `/run/kindle-monitor/status/{aparelhos,rotinas}.json`.
+
+Usuario `claude` (R7; passos da sessao principal):
+
+1. Pre-requisito: a branch `feat/bypass-e-painel-dev` do dotfiles precisa estar mesclada no master do checkout `~/development/dotfiles`. **Hoje nao esta**: a branch tem 4 commits a frente de `origin/master`. Decisao do dono: merge local ou PR.
+2. Depois do merge: `claude-mirror install` (cria os links `~/.local/bin/claude-sessao` e `claude-github`; o statusline chama `claude-sessao` pelo nome). Depois: `ln -sfn "$PWD/claude/painel/systemd/claude-github."{service,timer} ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now claude-github.timer`. O timer roda 1 min depois do boot e a cada 5 min. Abrir uma sessao nova do Claude.
+3. Verificar: `ls /var/lib/claude-uso/sessoes`; `jq '.prs|length' /var/lib/claude-uso/github.json` contra `gh pr list`.
+4. Desfazer: `systemctl --user disable --now claude-github.timer`; reverter o commit dos hooks e do statusline; `rm -r /var/lib/claude-uso/sessoes`.
+
+### Pendencias desta entrega
+
+- R5: alvos `arquivo` do Syncthing do cofre e do segundo cerebro ainda nao estao em `deploy/config.atheron.json`. Confirmar como root: `sudo ls -lt /srv/nas/vault | head` e `sudo systemctl status cerberus-syncthing --no-pager`. `/srv/nas/vault` e do grupo `cofre` (0770), e o `claude` nao lista. Depois, commit de ajuste na config.
+- Nao confirmado no host: a unit `cerberus-vault-backup.service` (rotina `senhas`), o caminho `/srv/nas/backups/vaultwarden`, o acesso do executor ao socket do Tailscale e a saida real de `tailscale status --json` nesse ambiente.
+- Pior caso do inventario: as quatro chamadas de servicos (10 s cada), mais `tailscale status` (10 s), `systemctl show` das rotinas (10 s) e `systemctl list-units` (10 s), somam ate 70 s. A unit tem `TimeoutStartSec=60`, e o comentario dela diz "ate 5 chamadas". Se o ciclo estourar, `aparelhos.json` e `rotinas.json` podem ficar sem renovar. Nao medido.
+- Paridade: a unica diferenca de validacao entre executor e servidor e o icone (`tests/test_paridade_catalogos.py`).
 
 ## Recuperacao: Kindle com a interface parada
 Enquanto o monitor roda, o supervisor para a interface do Kindle (`lab126_gui`) e desliga o toque; o botao de energia o encerra normalmente. Se o supervisor morrer sem limpar (SIGKILL, falta de memoria), o Kindle pode ficar com a tela congelada e sem toque. Recuperar: `ssh root@kindle-monitor 'start lab126_gui; lipc-set-prop com.lab126.deviced enable_touch 1'` (ou, sem rede, segurar o botao de energia por ~40 s para reiniciar o aparelho).
