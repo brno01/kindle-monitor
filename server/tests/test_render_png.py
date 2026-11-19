@@ -511,6 +511,27 @@ class LinhasResumoTest(unittest.TestCase):
         for i in ("atheron", "nas", "servicos", "claude", "ragnarok"):
             self.assertEqual(l[i]["estado"], "ok", i)
 
+    def test_inventario_velho_ou_ausente_vira_sem_dados_e_o_estado_vem_do_alerta(self):
+        for inv in ("velho", "ausente"):
+            m = completo(servicos_kindle={"inventario": inv, "itens": SERV})
+            al = [{"nivel": "aviso", "sistema": "servicos"}]
+            l = {x["id"]: x for x in render_png._linhas_resumo(m, SERV, None, al)}["servicos"]
+            self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("sem dados", "inventario sem atualizar", "aviso"))
+        m = completo(servicos_kindle={"inventario": "ok", "itens": SERV})
+        l = {x["id"]: x for x in render_png._linhas_resumo(m, SERV, None, [])}["servicos"]
+        self.assertEqual(l["valor"], "2 de 3 ok")
+
+    def _nas(self, *rotulos):
+        discos = [{"rotulo": r, "caminho": "/x%d" % i, "total_b": 10 ** 12, "usado_b": 10 ** 11 * (i + 1),
+                   "pct": 10.0 * (i + 1)} for i, r in enumerate(rotulos)]
+        return {x["id"]: x for x in render_png._linhas_resumo(completo(discos=discos), [], None, [])}["nas"]
+
+    def test_nas_tira_o_prefixo_so_sem_colisao(self):
+        self.assertEqual(self._nas("NAS HD", "NAS SSD")["valor"], "HD 10%  SSD 20%")
+        self.assertEqual(self._nas("NAS HD", "NAS SSD", "SSD")["valor"], "HD 10%  NAS SSD 20%  SSD 30%")
+        self.assertEqual(self._nas("NAS")["valor"], "NAS 10%")
+        self.assertTrue(self._nas("NAS HD", "NAS SSD")["detalhe"].startswith("SSD  "))
+
     def test_estado_e_o_pior_nivel_dos_alertas_do_sistema(self):
         al = [{"nivel": "leve", "sistema": "nas"}, {"nivel": "critico", "sistema": "nas"},
               {"nivel": "aviso", "sistema": "nas"}, {"nivel": "aviso", "sistema": "kindle"},
@@ -558,6 +579,27 @@ class DesenhoResumoTest(unittest.TestCase):
         finally:
             cv.Canvas.texto = orig
         return textos
+
+    def _com_faixa(self, m):
+        return "HISTORICO" in self._textos(m)
+
+    def test_faixa_de_historico_so_com_vao_suficiente(self):
+        self.assertTrue(self._com_faixa(completo(portas=[{"rotulo": "L", "aberto": True}], servicos=[])))  # 0 alertas
+        m6 = completo(servicos=[], servicos_kindle={"inventario": "ok", "itens": [
+            {"id": "s%d" % i, "rotulo": "svc%d" % i, "grupo": "host", "estado": "falha", "detalhe": "x",
+             "verbos": [], "protegido": False, "opcional": False} for i in range(6)]})
+        self.assertFalse(self._com_faixa(m6))  # 6 alertas
+        self.assertTrue(any(t.startswith("ATENCAO (") for t in self._textos(m6)))
+
+    def test_faixa_de_historico_sem_historico_nao_desenha(self):
+        textos = []
+        orig = cv.Canvas.texto
+        cv.Canvas.texto = lambda self, x, y, t, *a, **k: (textos.append(t), orig(self, x, y, t, *a, **k))[1]
+        try:
+            render_png.desenhar(cv.Canvas(1236, 1648, estrito=True), completo(servicos=[]), {})
+        finally:
+            cv.Canvas.texto = orig
+        self.assertNotIn("HISTORICO", textos)
 
     def test_com_12_alertas_aparecem_6_e_mais_6(self):
         m = completo(servicos=[], portas=[{"rotulo": "LOGIN", "aberto": True}], servicos_kindle={"inventario": "ok", "itens": [

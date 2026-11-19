@@ -869,16 +869,29 @@ def _l_atheron(m, kv, itens):
     return "  ".join(partes), SEP.join(det), bool(partes or det)
 
 
+def _rotulos_nas(infos):
+    """Rotulo de cada disco na linha NAS: sem o prefixo "NAS " (o titulo ja diz), salvo se colidir com outro."""
+    originais = [_limpar(i[0]) for i in infos]
+    cand = [r[4:].strip() if r.startswith("NAS ") and r[4:].strip() else r for r in originais]
+    saida = []
+    for k, (orig, novo) in enumerate(zip(originais, cand)):
+        outros = [o for j, o in enumerate(originais) if j != k] + [n for j, n in enumerate(cand) if j != k]
+        saida.append(novo if novo == orig or novo not in outros else orig)
+    return saida
+
+
 def _l_nas(m, kv, itens):
     discos = [d for d in (m.get("discos") if isinstance(m.get("discos"), list) else []) if isinstance(d, dict)
               and not _disco_raiz(d) and "erro" not in d]
     infos = [i for i in (_info_disco(d) for d in discos) if i and i[1] is not None]
-    valor = "  ".join("%s %s" % (_limpar(i[0]), _p(i[1])) for i in infos)
+    rots = _rotulos_nas(infos)
+    valor = "  ".join("%s %s" % (r, _p(i[1])) for r, i in zip(rots, infos))
     det = ""
     if infos:
-        rot, pct, usado, total, base, _ = max(infos, key=lambda i: i[1])
+        k = max(range(len(infos)), key=lambda j: infos[j][1])
+        _, _, usado, total, base, _ = infos[k]
         if usado is not None and total:
-            det = "%s  %s" % (_limpar(rot), _tamanho(usado, total, base))
+            det = "%s  %s" % (rots[k], _tamanho(usado, total, base))
     return valor, det, bool(infos)
 
 
@@ -895,6 +908,8 @@ def _l_aparelhos(m, kv, itens):
 
 
 def _l_servicos(m, kv, itens):
+    if _d(m.get("servicos_kindle")).get("inventario") in ("velho", "ausente"):
+        return SEM_DADOS, "inventario sem atualizar", True  # contagem de um inventario parado parece tudo caido
     itens = [i for i in itens if isinstance(i, dict)] if isinstance(itens, list) else []
     if not itens:
         return "", "", False
@@ -985,6 +1000,24 @@ def _linha_sistema(c, caixa, linha):
         c.texto(xv, base1 + 16 + cap_d, _ajustar(c, det, REG, 26, fim - xv), REG, 26, ESCURO)
 
 
+FAIXA_MIN = 150  # sobra minima (px) entre o fim do ATENCAO e o fim da caixa para desenhar o HISTORICO
+FAIXA_MAX = 230
+
+
+def _faixa_historico(c, hist, caixa, h_atencao):
+    """Faixa HISTORICO (CPU e RAM) no vao que sobra abaixo do ATENCAO. Nao e botao e nao mexe na geometria."""
+    fim = caixa["y"] + caixa["h"]
+    ini = caixa["y"] + h_atencao
+    if fim - ini < FAIXA_MIN or not isinstance(hist, dict):
+        return
+    series = _series_historico(hist, (("CPU", "cpu"), ("RAM", "ram")))
+    if not series:
+        return
+    y = ini + GAP
+    h = min(FAIXA_MAX, fim - y - botoes.LINHA_RESUMO_GAP)
+    _card_historico(c, hist, series, caixa["x"], y, caixa["w"], h, titulo_h=44)
+
+
 def _desenhar_resumo(c, m, hist, itens, kv=None):
     """Tela inicial so com excecoes: cartao ATENCAO no alto (so a altura que precisa) e uma linha por sistema."""
     geo = botoes.geometria_resumo(c.largura, c.altura)
@@ -993,6 +1026,7 @@ def _desenhar_resumo(c, m, hist, itens, kv=None):
     h = min(_h_atencao(len(atencao)), caixa["h"] - botoes.LINHA_RESUMO_GAP)
     if h >= ATENCAO_TITULO + ATENCAO_LINHA + 14:  # tela baixa demais (so fora do Kindle): sem espaco para o cartao
         _card_atencao(c, atencao, caixa["x"], caixa["y"], caixa["w"], h)
+        _faixa_historico(c, hist, caixa, h)
     linhas = _linhas_resumo(m, itens, kv, atencao)
     ultima = len(linhas) - 1
     for i, (cx, ln) in enumerate(zip(geo["linhas"], linhas)):
@@ -1059,6 +1093,30 @@ def _kv(c, x, yc, w, chave, valor, tam=34):
     _texto_c(c, x + kw, yc, _ajustar(c, valor, NEG, tam, w - kw), NEG, tam, PRETO)
 
 
+def _series_historico(hist, pares):
+    """[(rotulo, serie)] das chaves de `hist` com pelo menos 4 amostras validas."""
+    return [(r, hist.get(k)) for r, k in pares
+            if isinstance(hist.get(k), list) and sum(1 for v in hist[k] if _num(v) is not None) >= 4]
+
+
+def _card_historico(c, hist, series, x, y, w, h, titulo_h=52):
+    """Cartao HISTORICO: uma sparkline por serie, com rotulo a esquerda e o valor atual a direita. A altura de cada
+    linha sai de `h` (76 px na pagina Sistema)."""
+    _card(c, x, y, w, h)
+    c.texto(x + PAD, y + 14 + _cap(NEG, 26), "HISTORICO", NEG, 26, ESCURO)
+    minutos = int(round(len(series[0][1]) * (hist.get("intervalo_s") or 15) / 60.0))
+    c.texto(x + w - PAD, y + 14 + _cap(NEG, 26), "ultimos %d min" % minutos if minutos else "", REG, 26,
+            ESCURO, alinhar="dir")
+    lh = (h - titulo_h - 8) // len(series)
+    pad = 8 if lh >= 70 else 4  # linhas baixas (faixa da tela inicial) aproveitam mais a altura
+    for i, (rot, serie) in enumerate(series):
+        top = y + titulo_h + i * lh
+        _texto_c(c, x + PAD, top + (lh - pad) // 2, rot, NEG, 26, ESCURO)
+        ultimo = next((v for v in reversed(serie) if _num(v) is not None), None)
+        _texto_c(c, x + w - PAD, top + (lh - pad) // 2, "%d%%" % int(round(ultimo)), NEG, 34, PRETO, "dir")
+        _sparkline(c, x + PAD + 90, top + lh - pad, w - 2 * PAD - 90 - 90, lh - 2 * pad, serie)
+
+
 def _blocos_detalhes(c, m, itens, w, hist, kv=None):
     """[(altura, desenhar(c, x, y, h))] da pagina detalhes, de cima para baixo."""
     blocos = []
@@ -1123,22 +1181,10 @@ def _blocos_detalhes(c, m, itens, w, hist, kv=None):
     if kv:
         blocos.append((H_KINDLE, lambda c, x, y, h: _card_kindle(c, kv, x, y, w, h)))
     # historico (sparklines de ~15 min)
-    series = [(r, hist.get(k)) for r, k in (("CPU", "cpu"), ("RAM", "ram"), ("GPU", "gpu"))
-              if isinstance(hist.get(k), list) and sum(1 for v in hist[k] if _num(v) is not None) >= 4]
+    series = _series_historico(hist, (("CPU", "cpu"), ("RAM", "ram"), ("GPU", "gpu")))
     if series:
-        def historico(c, x, y, h):
-            _card(c, x, y, w, h)
-            c.texto(x + PAD, y + 14 + _cap(NEG, 26), "HISTORICO", NEG, 26, ESCURO)
-            minutos = int(round(len(series[0][1]) * (hist.get("intervalo_s") or 15) / 60.0))
-            c.texto(x + w - PAD, y + 14 + _cap(NEG, 26), "ultimos %d min" % minutos if minutos else "", REG, 26,
-                    ESCURO, alinhar="dir")
-            for i, (rot, serie) in enumerate(series):
-                top = y + 52 + i * 76
-                _texto_c(c, x + PAD, top + 34, rot, NEG, 26, ESCURO)
-                ultimo = next((v for v in reversed(serie) if _num(v) is not None), None)
-                _texto_c(c, x + w - PAD, top + 34, "%d%%" % int(round(ultimo)), NEG, 34, PRETO, "dir")
-                _sparkline(c, x + PAD + 90, top + 68, w - 2 * PAD - 90 - 90, 60, serie)
-        blocos.append((52 + len(series) * 76 + 8, historico))
+        blocos.append((52 + len(series) * 76 + 8,
+                       lambda c, x, y, h: _card_historico(c, hist, series, x, y, w, h)))
     # servicos por grupo
     if itens:
         blocos.append((H_GRUPOS, lambda c, x, y, h: _card_grupos(c, itens, x, y, w, h)))

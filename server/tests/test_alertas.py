@@ -289,15 +289,19 @@ class FonteVelhaTest(unittest.TestCase):
         a = alertas.avaliar(m)
         self.assertEqual([x["sistema"] for x in a], ["claude", "claude", "aparelhos", "github"])
         self.assertTrue(all(x["nivel"] == "aviso" for x in a))
-        self.assertEqual(a[0]["texto"], "dados de limites sem atualizar ha 20 min")
-        self.assertEqual(a[3]["texto"], "dados de github sem atualizar ha 120 min")
+        self.assertEqual(a[0]["texto"], "Limites do Claude sem atualizar ha 20 min")
+        self.assertEqual(a[1]["texto"], "Tokens do Claude sem atualizar ha 60 min")
+        self.assertEqual(a[2]["texto"], "S10 sem atualizar ha 5 min")
+        self.assertEqual(a[3]["texto"], "GitHub sem atualizar ha 120 min")
 
     def test_aparelhos_e_rotinas_inventario_velho(self):
         m = {"aparelhos": {"inventario": "velho", "itens": [], "idade_s": 600},
              "rotinas": {"inventario": "velho", "itens": [], "unidades_falhas": {"n": 0, "nomes": []}}}
         a = alertas.avaliar(m)
         self.assertEqual([x["sistema"] for x in a], ["aparelhos", "rotinas"])
-        self.assertIn("ha 10 min", a[0]["texto"])
+        self.assertEqual(a[0]["texto"], "Aparelhos sem atualizar ha 10 min")
+        self.assertEqual(a[1]["texto"], "Rotinas sem atualizar")  # sem idade_s
+        self.assertTrue(all(x["texto"].isascii() and len(x["texto"]) <= 48 for x in a))
 
     def test_ausente_nao_conta_como_velha_e_velho_false_nao_alerta(self):
         m = {"aparelhos": {"inventario": "ausente", "itens": []}, "claude": {"limites": {"velho": False}},

@@ -224,12 +224,17 @@ def _r_bateria_s10(m, lim, kv):
     return []
 
 
+_NOME_FONTE = {"limites": "Limites do Claude", "tokens": "Tokens do Claude", "s10": "S10", "github": "GitHub",
+               "aparelhos": "Aparelhos", "rotinas": "Rotinas"}
+
+
 def _fonte_velha(nome, sistema, bloco):
+    legivel = _NOME_FONTE.get(nome) or _ascii(nome).capitalize()
     idade = _num(_dict(bloco).get("idade_s"))
     if idade is not None and idade >= 0:
-        texto = _texto("dados de %s sem atualizar ha %s min" % (_ascii(nome), _pct(idade // 60)))
+        texto = _texto("%s sem atualizar ha %s min" % (legivel, _pct(idade // 60)))
     else:
-        texto = _texto("dados de %s desatualizados" % _ascii(nome))
+        texto = _texto("%s sem atualizar" % legivel)
     return _alerta("aviso", texto, sistema)
 
 
