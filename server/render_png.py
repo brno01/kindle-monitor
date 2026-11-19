@@ -1,6 +1,7 @@
 """Tela PNG (retrato, tons de cinza) do kindle-monitor. Funcoes puras: metricas -> bytes PNG.
 
-Seis paginas (resumo, servicos, aparelhos, detalhes, claude, comandos) mais a barra de navegacao fixa no rodape. Os botoes vem
+Sete paginas (resumo, servicos, aparelhos, detalhes, claude, comandos e jogos, que nao e aba) mais a barra de navegacao fixa
+no rodape. Os botoes vem
 sempre de `botoes.layout` (a mesma funcao que serve /botoes.json): aqui so se desenha o que ela devolve.
 Visual e-ink: alto contraste, contornos finos, raios pequenos, sem sombras; so os tamanhos de fonte embutidos
 (26 e 34; negrito tambem 48, 72 e 140). Estado de servico: forma antes da cor (cheia = ativo, vazia = parado,
@@ -50,6 +51,24 @@ def _ajustar(c, texto, fonte, tam, larg_max):
     while texto and c.medir(texto + "...", fonte, tam) > larg_max:
         texto = texto[:-1]
     return (texto + "...") if c.medir(texto + "...", fonte, tam) <= larg_max else ""
+
+
+_SEPARADORES_ITENS = ("  ", ", ")
+
+
+def _ajustar_itens(c, texto, fonte, tam, larg_max):
+    """Como `_ajustar`, mas corta so em fronteira de item (depois de um dos `separadores`) e termina em "...": a linha
+    JOGOS lista nomes de servidores, e "parado: V..." nao diz nada. Sem fronteira que caiba, cai no corte por caractere."""
+    texto = _limpar(texto)
+    if c.medir(texto, fonte, tam) <= larg_max:
+        return texto
+    cortes = sorted({i for sep in _SEPARADORES_ITENS for i in range(1, len(texto)) if texto.startswith(sep, i)},
+                    reverse=True)
+    for i in cortes:
+        cand = texto[:i].rstrip(" ,\u00b7") + "..."
+        if len(cand) > 3 and c.medir(cand, fonte, tam) <= larg_max:
+            return cand
+    return _ajustar(c, texto, fonte, tam, larg_max)
 
 
 def _ok(bloco):
@@ -605,7 +624,7 @@ _LINHAS = (("atheron", "servidor", "ATHERON", ("atheron",)), ("nas", "nas", "NAS
            ("aparelhos", "aparelhos", "APARELHOS", ("aparelhos", "kindle")),
            ("servicos", "servicos", "SERVICOS", ("servicos",)), ("rotinas", "rotinas", "ROTINAS", ("rotinas",)),
            ("claude", "claude", "CLAUDE", ("claude",)), ("github", "github", "GITHUB", ("github",)),
-           ("ragnarok", "jogo", "RAGNAROK", ("jogos",)))
+           ("jogos", "jogo", "JOGOS", ("jogos",)))
 SEM_DADOS = "sem dados"
 SEP = "  \u00b7  "
 GRUPOS_RESUMO = ("host", "docker", "incus", "ragnarok")
@@ -892,23 +911,86 @@ def _l_claude(m, kv, itens):
     return valor, det, True
 
 
-def _l_ragnarok(m, kv, itens):
+AMP_ESTADOS = ("rodando", "parado", "iniciando", "falha", "outro")
+AMP_MAX = 16
+
+
+def _portas_lista(m):
+    p = m.get("portas")
+    return [x for x in p if isinstance(x, dict)] if isinstance(p, list) else []
+
+
+def _item_amp(it):
+    """Instancia do bloco `amp` ja normalizada para o desenho (texto limpo, estado conhecido, contagens int)."""
+    nome = _limpar(it.get("nome")).strip()[:24] if isinstance(it.get("nome"), str) else ""
+    modulo = _limpar(it.get("modulo")).strip()[:16] if isinstance(it.get("modulo"), str) else ""
+    estado = it.get("estado") if it.get("estado") in AMP_ESTADOS else "outro"
+    jog, mx = _num(it.get("jogadores")), _num(it.get("max"))
+    jog = int(jog) if estado == "rodando" and jog is not None and jog >= 0 else None
+    mx = int(mx) if jog is not None and mx is not None and mx >= 0 else None
+    return {"nome": nome or "?", "modulo": modulo, "estado": estado, "jogadores": jog, "max": mx}
+
+
+def _amp_dados(m):
+    """(situacao, itens, bloco) do AMP em `m`. situacao: None = AMP fora da tela (sem a chave, credencial ausente/
+    desligado, arquivo ausente: "simplesmente nao aparece"); "sem_dados" = ligado mas sem coleta valida (erro ou
+    inventario velho: nunca verde); "ok". `itens` so existe em "ok": ligadas primeiro, depois por nome."""
+    b = m.get("amp") if isinstance(m, dict) else None
+    if not isinstance(b, dict) or b.get("ativo") is not True:
+        return None, [], b if isinstance(b, dict) else {}
+    erro = b.get("erro")
+    if b.get("inventario") != "ok" or (isinstance(erro, str) and erro.strip()) or not isinstance(b.get("instancias"), list):
+        return "sem_dados", [], b
+    itens = [_item_amp(i) for i in b["instancias"] if isinstance(i, dict)][:AMP_MAX]
+    itens.sort(key=lambda i: (i["estado"] != "rodando", i["nome"].lower()))
+    return "ok", itens, b
+
+
+def _contagem_amp(it):
+    """"2/20", "2" ou "" (sem numero) de uma instancia rodando."""
+    if it["jogadores"] is None:
+        return ""
+    return "%d/%d" % (it["jogadores"], it["max"]) if it["max"] is not None else "%d" % it["jogadores"]
+
+
+def _l_jogos(m, kv, itens):
+    """Linha JOGOS: valor = "Ragnarok 0  Minecraft 2/20" (so o que esta ligado, ligadas primeiro; o desenho corta com
+    "..."); detalhe = estado do Ragnarok ("MAP fechada" ou "login ok char ok map ok") seguido do que nao esta ligado
+    ("iniciando: ...", "falha: ...", "parado: ..."). O AMP so entra se estiver ligado (credencial); ligado sem dado vira
+    "AMP sem dados" e a forma "?", a menos que o Ragnarok tenha porta fechada (a forma e a dele). Instancia parada nao
+    muda a forma da linha."""
     rag = m.get("ragnarok")
-    portas = m.get("portas")
-    portas = [p for p in portas if isinstance(p, dict)] if isinstance(portas, list) else []
-    valor = ""
+    partes = []
     if _ok(rag) and _num(rag.get("jogadores")) is not None:
-        n = int(rag["jogadores"])
-        valor = "%d jogador%s" % (n, "" if n == 1 else "es")
-        if rag.get("parado"):
-            valor += "  parado"
-    det = "  ".join("%s %s" % (_limpar(p.get("rotulo", "?")).lower(), "ok" if p.get("aberto") else "fechada")
-                    for p in portas)
-    return valor, det, bool(valor or det)
+        partes.append("Ragnarok %d%s" % (int(rag["jogadores"]), "  parado" if rag.get("parado") else ""))
+    situacao, amp_itens, _ = _amp_dados(m)
+    for it in amp_itens:
+        if it["estado"] == "rodando":
+            partes.append(("%s %s" % (it["nome"], _contagem_amp(it))).strip())
+    valor = "  ".join(partes)
+    if not valor and situacao == "ok":
+        valor = "nenhum ligado"
+    portas = _portas_lista(m)
+    fechadas = [_limpar(p.get("rotulo", "?")) for p in portas if p.get("aberto") is False]
+    det = []
+    if fechadas:
+        det.append("%s %s" % (", ".join(fechadas), "fechada" if len(fechadas) == 1 else "fechadas"))
+    elif any(p.get("aberto") is True for p in portas):
+        det.append(" ".join("%s ok" % _limpar(p.get("rotulo", "?")).lower() for p in portas if p.get("aberto") is True))
+    if situacao == "sem_dados":
+        det.append("AMP sem dados")
+    for estado in ("iniciando", "falha", "outro", "parado"):
+        nomes = [it["nome"] for it in amp_itens if it["estado"] == estado]
+        if nomes:
+            det.append("%s: %s" % (estado, ", ".join(nomes)))
+    detalhe = SEP.join(det)
+    if situacao == "sem_dados" and not fechadas:
+        return valor, detalhe, None  # "?": o aviso leve "AMP sem dados" do motor nao troca a forma (so uma porta fechada)
+    return valor, detalhe, bool(valor or detalhe)
 
 
 _CONSTRUTORES = {"atheron": _l_atheron, "nas": _l_nas, "aparelhos": _l_aparelhos, "servicos": _l_servicos,
-                 "rotinas": _l_rotinas, "claude": _l_claude, "github": _l_github, "ragnarok": _l_ragnarok}
+                 "rotinas": _l_rotinas, "claude": _l_claude, "github": _l_github, "jogos": _l_jogos}
 
 
 _LINHAS_AVISADAS = set()  # (linha, tipo do erro) ja registrados: a tela redesenha a cada segundo
@@ -959,11 +1041,12 @@ def _linha_sistema(c, caixa, linha):
     cap_v, cap_d = _cap(NEG, 34), _cap(REG, 26)
     topo = y + (h - (cap_v + 16 + cap_d)) // 2
     base1 = topo + cap_v
+    ajustar = _ajustar_itens if linha.get("id") == "jogos" else _ajustar  # JOGOS lista nomes: so corta entre itens
     c.texto(xt, base1, _ajustar(c, linha.get("titulo", ""), NEG, 26, xv - xt - 8), NEG, 26, ESCURO)
-    c.texto(xv, base1, _ajustar(c, linha.get("valor", ""), NEG, 34, fim - xv), NEG, 34, MEDIO if sem else PRETO)
+    c.texto(xv, base1, ajustar(c, linha.get("valor", ""), NEG, 34, fim - xv), NEG, 34, MEDIO if sem else PRETO)
     det = linha.get("detalhe") or ""
     if det:
-        c.texto(xv, base1 + 16 + cap_d, _ajustar(c, det, REG, 26, fim - xv), REG, 26, ESCURO)
+        c.texto(xv, base1 + 16 + cap_d, ajustar(c, det, REG, 26, fim - xv), REG, 26, ESCURO)
 
 
 FAIXA_MIN = 150  # sobra minima (px) entre o fim do ATENCAO e o fim da caixa para desenhar o HISTORICO
@@ -1914,6 +1997,132 @@ def _desenhar_aparelhos(c, m, kv=None):
     _empilhar(c, blocos)
 
 
+# ----------------------------------------------------------------------- jogos
+
+JOGO_LINHA = 56
+# forma de cada estado do AMP: ligado = cheia; parado e iniciando = vazia; falha = X; outro = ? (o texto diz qual)
+_FORMA_AMP = {"rodando": "ativo", "parado": "parado", "iniciando": "parado", "falha": "falha", "outro": None}
+_TEXTO_AMP = {"parado": "parado", "iniciando": "iniciando", "falha": "FALHA", "outro": "outro"}
+
+
+def _ragnarok_dados(m):
+    """(jogadores|None, parado, portas) do Ragnarok, ou None sem nenhuma fonte (nem contagem nem portas)."""
+    rag = m.get("ragnarok")
+    n = int(rag["jogadores"]) if _ok(rag) and _num(rag.get("jogadores")) is not None else None
+    portas = [p for p in _portas_lista(m) if p.get("aberto") in (True, False)]
+    if n is None and not portas:
+        return None
+    return n, bool(_ok(rag) and rag.get("parado")), portas
+
+
+def _h_ragnarok(m):
+    d = _ragnarok_dados(m)
+    if d is None:
+        return H_SEM_DADOS
+    return 64 + 4 + (1 + min(len(d[2]), 8)) * JOGO_LINHA + 8
+
+
+def _card_ragnarok(c, m, x, y, w, h):
+    """Cartao RAGNAROK: jogadores (e "parado" se o balanceador parou de atualizar) e uma linha por porta com a forma de
+    estado (cheia = aberta, X = fechada)."""
+    d = _ragnarok_dados(m)
+    if d is None:
+        return _card_sem_dados(c, x, y, w, h, "RAGNAROK", "jogo")
+    n, parado, portas = d
+    _card(c, x, y, w, h)
+    yy = _cabecalho_card(c, x, y, w, "RAGNAROK", icone="jogo") + 4
+    yc = yy + JOGO_LINHA // 2
+    _texto_c(c, x + PAD, yc, "JOGADORES", NEG, 26, ESCURO)
+    xv = x + PAD + int(c.medir("JOGADORES", NEG, 26)) + 24
+    if n is None:
+        _texto_c(c, xv, yc, "n/d", NEG, 34, MEDIO)
+    else:
+        _texto_c(c, xv, yc, "%d" % n, NEG, 34, PRETO)
+        if parado:
+            _texto_c(c, x + w - PAD, yc, "parado", REG, 26, ESCURO, "dir")
+    for i, p in enumerate(portas[:8]):
+        yp = yy + (i + 1) * JOGO_LINHA + JOGO_LINHA // 2
+        aberta = p.get("aberto") is True
+        if not aberta:
+            c.retangulo_arredondado(x + 8, yp - JOGO_LINHA // 2 + 2, w - 16, JOGO_LINHA - 4, 8, TRILHO)
+        _forma(c, x + PAD, yp - 14, 28, "ativo" if aberta else "falha")
+        _texto_c(c, x + PAD + 28 + 16, yp, _ajustar(c, _limpar(p.get("rotulo", "?")), NEG, 34, w // 2), NEG, 34, PRETO)
+        _texto_c(c, x + w - PAD, yp, "aberta" if aberta else "FECHADA", REG if aberta else NEG, 26,
+                 ESCURO if aberta else PRETO, "dir")
+
+
+def _amp_visiveis(itens, max_linhas):
+    """(visiveis, resto): ate `max_linhas - 1` instancias mais a linha "+N" quando nao cabem todas; a ordem (ligadas
+    primeiro, depois por nome) vale tambem para o corte."""
+    if len(itens) <= max_linhas:
+        return itens, 0
+    vis = itens[:max(0, max_linhas - 1)]
+    return vis, len(itens) - len(vis)
+
+
+def _h_amp(m, max_linhas=AMP_MAX):
+    situacao, itens, _ = _amp_dados(m)
+    if situacao != "ok" or not itens:
+        return H_SEM_DADOS if situacao == "sem_dados" else 64 + 4 + JOGO_LINHA + 8
+    vis, resto = _amp_visiveis(itens, max_linhas)
+    return 64 + 4 + (len(vis) + (1 if resto else 0)) * JOGO_LINHA + 8
+
+
+def _card_amp(c, m, x, y, w, h, max_linhas=AMP_MAX):
+    """Cartao AMP: uma linha por instancia (forma, nome, modulo e, a direita, "N/MAX" jogadores se esta rodando, ou o
+    estado). Ligado sem dado: "sem dados" cinza com o motivo curto. Instancia parada nao e problema: nao ganha destaque."""
+    situacao, itens, b = _amp_dados(m)
+    if situacao != "ok":
+        velho = b.get("inventario") == "velho"
+        erro = _limpar(b.get("erro")).strip()[:40] if isinstance(b.get("erro"), str) else ""
+        return _card_sem_dados(c, x, y, w, h, "AMP", "servidor", INVENTARIO_SEM if velho else (erro or None),
+                               _num(b.get("idade_s")) if velho else None)
+    _card(c, x, y, w, h)
+    yy = _cabecalho_card(c, x, y, w, "AMP", icone="servidor") + 4
+    if not itens:
+        _texto_c(c, x + PAD, yy + JOGO_LINHA // 2, "nenhum servidor", REG, 26, ESCURO)
+        return
+    vis, resto = _amp_visiveis(itens, max_linhas)
+    ultima = len(vis) - 1 + (1 if resto else 0)
+    for i, it in enumerate(vis):
+        yc = yy + i * JOGO_LINHA + JOGO_LINHA // 2
+        estado = it["estado"]
+        if estado == "falha":
+            c.retangulo_arredondado(x + 8, yc - JOGO_LINHA // 2 + 2, w - 16, JOGO_LINHA - 4, 8, TRILHO)
+        _forma(c, x + PAD, yc - 14, 28, _FORMA_AMP[estado])
+        if estado == "rodando":
+            dir_txt, dir_fonte, dir_cor = _contagem_amp(it) or "ligado", NEG, PRETO
+            dir_tam = 34 if _contagem_amp(it) else 26
+        else:
+            dir_txt, dir_fonte, dir_cor, dir_tam = _TEXTO_AMP[estado], NEG if estado == "falha" else REG, ESCURO, 26
+        _texto_c(c, x + w - PAD, yc, dir_txt, dir_fonte, dir_tam, dir_cor, "dir")
+        xr = x + w - PAD - int(c.medir(dir_txt, dir_fonte, dir_tam)) - 24
+        tx = x + PAD + 28 + 16
+        cor = PRETO if estado == "rodando" or estado == "falha" else ESCURO
+        nome = _ajustar(c, it["nome"], NEG, 34, max(60, (xr - tx) * 3 // 5))
+        _texto_c(c, tx, yc, nome, NEG, 34, cor)
+        xm = tx + int(c.medir(nome, NEG, 34)) + 18
+        if it["modulo"] and it["modulo"].lower() != it["nome"].lower() and xr - xm > 80:  # "Minecraft Minecraft" nao diz nada
+            _texto_c(c, xm, yc, _ajustar(c, it["modulo"], REG, 26, xr - xm), REG, 26, MEDIO)
+        if i != ultima and estado != "falha":
+            c.retangulo(x + PAD, yc + JOGO_LINHA // 2 - 1, w - 2 * PAD, 2, TRILHO)
+    if resto:
+        yc = yy + len(vis) * JOGO_LINHA + JOGO_LINHA // 2
+        _texto_c(c, x + PAD + 44, yc, "+%d" % resto, NEG, 26, ESCURO)
+
+
+def _desenhar_jogos(c, m):
+    """Pagina Jogos (sem aba): cartao RAGNAROK e, se o AMP estiver ligado, o cartao AMP com todas as instancias."""
+    w = c.largura - 2 * MARGEM
+    h_rag = _h_ragnarok(m)
+    blocos = [(h_rag, lambda c, x, y, h: _card_ragnarok(c, m, x, y, w, h))]
+    if _amp_dados(m)[0] is not None:
+        disp = botoes.limite(c.altura) - botoes.TOPO - h_rag - GAP
+        max_linhas = max(2, min(AMP_MAX, (disp - 64 - 4 - 8) // JOGO_LINHA))
+        blocos.append((_h_amp(m, max_linhas), lambda c, x, y, h: _card_amp(c, m, x, y, w, h, max_linhas)))
+    _empilhar(c, blocos)
+
+
 # --------------------------------------------------------------------- entrada
 
 def desenhar(c, metricas, historico=None, pagina="resumo", armado=None, p=1, modo=None, kindle=None):
@@ -1937,6 +2146,8 @@ def desenhar(c, metricas, historico=None, pagina="resumo", armado=None, p=1, mod
         _desenhar_claude(c, m)
     elif pagina == "aparelhos":
         _desenhar_aparelhos(c, m, kv)
+    elif pagina == "jogos":
+        _desenhar_jogos(c, m)
     else:
         _desenhar_comandos(c, m, modo)
     _desenhar_botoes(c, pagina, armado, p, itens, modo)

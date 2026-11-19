@@ -8,7 +8,8 @@ Uso (so biblioteca padrao):
     python3 -I tools/preview.py --saida /tmp/cheia.png --cheia                 # 52 servicos, varios em falha, 8 comandos
     python3 -I tools/preview.py --saida /tmp/a.png --estado alertas            # disco 91 %, 2 servicos em falha, bateria 12 %
     python3 -I tools/preview.py --saida /tmp/v.png --estado velho              # inventario e limites do Claude velhos
-    python3 -I tools/preview.py --todas /tmp/prev                               # <pagina>-<estado>.png, 6 paginas x 3 estados
+    python3 -I tools/preview.py --saida /tmp/j.png --pagina jogos              # pagina Jogos (sem aba): Ragnarok + 4 instancias do AMP
+    python3 -I tools/preview.py --todas /tmp/prev                               # <pagina>-<estado>.png, 7 paginas x 3 estados
     python3 -I tools/preview.py --saida /tmp/x.png --porta 8765 --pagina servicos --p 2   # baixa de um servidor
 """
 import argparse
@@ -133,7 +134,20 @@ def exemplo(cheia=False, estado="ok"):
         m["gpu"] = {"util_pct": 61, "mem_usada_mb": 5300, "mem_total_mb": 8192, "temp_c": 71}
         hist["gpu"] = [(i * 13) % 80 for i in range(n)]
     m["comandos"] = cmds
+    # painel de jogos: o AMP com 4 instancias (2 rodando, 1 iniciando, 1 parada); em `alertas` a porta MAP do Ragnarok
+    # fecha; em `velho` o AMP esta ligado mas sem dados (inventario velho)
+    if estado == "velho":
+        m["amp"] = {"ativo": True, "inventario": "velho", "idade_s": 300, "erro": None, "instancias": []}
+    else:
+        m["amp"] = {"ativo": True, "inventario": "ok", "idade_s": 6, "erro": None, "instancias": [
+            {"id": "5e1f0a21", "nome": "Minecraft", "modulo": "Minecraft", "estado": "rodando", "jogadores": 2, "max": 20},
+            {"id": "b7c3d9e4", "nome": "Terraria", "modulo": "Terraria", "estado": "rodando", "jogadores": 0, "max": 8},
+            {"id": "09a8f6c2", "nome": "Palworld", "modulo": "Palworld", "estado": "iniciando", "jogadores": None,
+             "max": None},
+            {"id": "c4d2e7b1", "nome": "Valheim", "modulo": "Valheim", "estado": "parado", "jogadores": None, "max": None},
+        ]}
     if estado == "alertas":
+        m["portas"][2]["aberto"] = False
         total = 63 * 1024 ** 3
         m["discos"][0].update({"total_b": total, "usado_b": total - int(5.7 * 1024 ** 3), "pct": 91.0})  # 5,7 GB livres
     elif estado == "velho":

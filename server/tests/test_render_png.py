@@ -425,7 +425,7 @@ if __name__ == "__main__":
 
 # ------------------------------------------------------------- tela inicial (linhas por sistema)
 
-IDS_LINHAS = ["atheron", "nas", "aparelhos", "servicos", "rotinas", "claude", "github", "ragnarok"]
+IDS_LINHAS = ["atheron", "nas", "aparelhos", "servicos", "rotinas", "claude", "github", "jogos"]
 SERV = [{"id": "a", "rotulo": "a", "grupo": "host", "estado": "ativo"},
         {"id": "b", "rotulo": "b", "grupo": "host", "estado": "falha"},
         {"id": "c", "rotulo": "c", "grupo": "docker", "estado": "ativo"}]
@@ -457,8 +457,8 @@ class LinhasResumoTest(unittest.TestCase):
         self.assertEqual((l["rotinas"]["valor"], l["github"]["valor"]), ("sem dados", "sem dados"))
         self.assertEqual(l["claude"]["valor"], "5h 14%  sem 2%")
         self.assertTrue(l["claude"]["detalhe"].startswith("5h volta "))
-        self.assertEqual((l["ragnarok"]["valor"], l["ragnarok"]["detalhe"]), ("3 jogadores", "login ok  char ok  map fechada"))
-        for i in ("atheron", "nas", "servicos", "claude", "ragnarok"):
+        self.assertEqual((l["jogos"]["valor"], l["jogos"]["detalhe"]), ("Ragnarok 3", "MAP fechada"))
+        for i in ("atheron", "nas", "servicos", "claude", "jogos"):
             self.assertEqual(l[i]["estado"], "ok", i)
 
     def test_inventario_velho_ou_ausente_vira_sem_dados_e_o_estado_vem_do_alerta(self):

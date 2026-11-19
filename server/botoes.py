@@ -5,7 +5,8 @@
 
 Pagina comandos tambem tem o bloco AJUSTES (botoes locais `modo:<perfil>`, ver perfis.py).
 Paginas: resumo (aba "Inicio"), servicos (paginada, parametro `p`), aparelhos, detalhes (aba "Sistema"), claude (aba
-"Dev"; limites e tokens do Claude Code + estado do S10; so leitura) e comandos (aba "Acoes").
+"Dev"; limites e tokens do Claude Code + estado do S10; so leitura), comandos (aba "Acoes") e jogos (Ragnarok e AMP; sem
+aba, abre pela linha JOGOS da tela inicial).
 Botoes invisiveis (`visivel: False`) entram no /botoes.txt mas nao sao desenhados: as 8 linhas da tela inicial e o
 `atualizar` (relogio do cabecalho, em todas as paginas).
 Os botoes da pagina servicos dependem do estado dos itens (ativo: Reiniciar e Parar; parado: Ligar...);
@@ -14,7 +15,9 @@ a divisao em paginas so depende do catalogo.
 import perfis
 import servicos
 
-PAGINAS = ("resumo", "servicos", "aparelhos", "detalhes", "claude", "comandos")
+# `jogos` (Ragnarok + servidores do AMP) tem pagina propria, mas nao e aba: so abre pelo toque na linha JOGOS da tela inicial,
+# e a barra de navegacao aparece sem nenhuma aba destacada. O Kindle aceita qualquer id [a-z]{1,16} (tap.sh e loop.sh).
+PAGINAS = ("resumo", "servicos", "aparelhos", "detalhes", "claude", "comandos", "jogos")
 PAGINA_PADRAO = "resumo"
 
 # (id, rotulo); sem acento (a fonte embutida e ASCII mais o grau e o ponto medio).
@@ -58,7 +61,7 @@ ATENCAO_MIN_H = 108    # altura minima do cartao ATENCAO (titulo + 1 linha + fol
 # (id da linha, pagina de destino ao tocar), na ordem de cima para baixo
 LINHAS_RESUMO = (
     ("atheron", "detalhes"), ("nas", "detalhes"), ("aparelhos", "aparelhos"), ("servicos", "servicos"),
-    ("rotinas", "detalhes"), ("claude", "claude"), ("github", "claude"), ("ragnarok", "servicos"),
+    ("rotinas", "detalhes"), ("claude", "claude"), ("github", "claude"), ("jogos", "jogos"),
 )
 
 
