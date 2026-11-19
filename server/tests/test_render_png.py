@@ -175,7 +175,7 @@ S10 = {"versao": 1, "gerado_em": "2026-11-15T14:32:10-03:00",
        "avisos": [], "idade_s": 20, "velho": False}
 
 
-class LinhaClaudeS10Test(unittest.TestCase):
+class CartoesClaudeS10Test(unittest.TestCase):
     def test_estados_degradados_nao_quebram(self):
         estados = [{"claude": {"limites": {"erro": "n/d"}, "tokens": {"erro": "n/d"}}},
                    {"claude": {"limites": {"cinco_horas": None, "semanal": None, "idade_s": 1, "velho": False}}},
@@ -189,49 +189,8 @@ class LinhaClaudeS10Test(unittest.TestCase):
             m = completo(**e)
             self.assertEqual(ihdr(render_png.render_png(m, historico())), (1236, 1648))
             c = cv.Canvas(1236, 1648, estrito=True)
-            render_png._linha_claude_s10(c, m, 24, 1400, 1188, 60)  # a funcao continua valida (limpeza na Tarefa 8)
-
-    def _espiar_linha(self, m):
-        textos, formas = [], []
-        orig_t, orig_f = cv.Canvas.texto, render_png._forma
-
-        def espia_t(self, x, y, t, *a, **k):
-            textos.append((t, a[2] if len(a) > 2 else None))
-            return orig_t(self, x, y, t, *a, **k)
-
-        def espia_f(c, x, y, lado, estado):
-            formas.append(estado)
-            return orig_f(c, x, y, lado, estado)
-        cv.Canvas.texto, render_png._forma = espia_t, espia_f
-        try:
-            c = cv.Canvas(1236, 1648, estrito=True)
-            render_png._linha_claude_s10(c, m, 24, 1400, 1188, 60)
-        finally:
-            cv.Canvas.texto, render_png._forma = orig_t, orig_f
-        return textos, formas
-
-    def test_limites_velhos_em_cinza_medio_com_a_idade(self):
-        velho = dict(CL, limites=dict(CL["limites"], idade_s=3 * 3600 + 5, velho=True))
-        textos, _ = self._espiar_linha({"claude": velho, "s10": S10})
-        parte = [(t, cor) for t, cor in textos if "5h 42%" in t]
-        self.assertEqual(len(parte), 1)
-        self.assertEqual(parte[0][1], render_png.MEDIO)
-        self.assertIn("ha 3 h", parte[0][0])
-        textos, _ = self._espiar_linha({"claude": CL, "s10": S10})
-        parte = [(t, cor) for t, cor in textos if "5h 42%" in t]
-        self.assertEqual(parte[0][1], render_png.PRETO)
-        self.assertNotIn("ha ", parte[0][0])
-
-    def test_marcas_com_bateria_nula_usb_falso_mostram_falha(self):
-        textos, formas = self._espiar_linha({"claude": CL, "s10": dict(
-            S10, bateria=None, caminhos={"usb": False, "adb_sem_fio": None, "vnc": "x"})})
-        self.assertEqual(formas, [None, None, "falha"])  # VNC, sem fio, USB (ordem de desenho)
-        self.assertIn("S10 n/d", "".join(t for t, _ in textos))
-
-    def test_marcas_velho_ou_erro_sao_interrogacao(self):
-        for s in (dict(S10, velho=True), {"erro": "n/d"}):
-            _, formas = self._espiar_linha({"claude": CL, "s10": s})
-            self.assertEqual(formas, [None, None, None], s)
+            render_png._card_claude(c, m.get("claude"), 24, 100, 1188, render_png.CLAUDE_H)
+            render_png._card_s10(c, m.get("s10"), 24, 640, 1188, render_png._h_s10(m.get("s10")))
 
     def test_inteiro_gigante_vira_nd_sem_estourar(self):
         self.assertEqual(render_png._tokens_txt(10 ** 400), "n/d")
@@ -268,21 +227,20 @@ class LinhaClaudeS10Test(unittest.TestCase):
         cv.Canvas.texto = espia
         try:
             c = cv.Canvas(1236, 1648, estrito=True)
-            render_png._linha_claude_s10(c, {"claude": CL, "s10": S10}, 24, 1400, 1188, 60)
+            render_png._card_claude(c, CL, 24, 100, 1188, render_png.CLAUDE_H)
+            render_png._card_s10(c, S10, 24, 640, 1188, render_png._h_s10(S10))
         finally:
             cv.Canvas.texto = orig
-        txt = "".join(textos)
-        self.assertIn("5h 42%", txt)
-        self.assertIn("sem 18%", txt)
-        self.assertIn("S10 87% carreg.", txt)
+        txt = "|".join(textos)
+        self.assertIn("42%", txt)
+        self.assertIn("87%", txt)
+        self.assertIn("carregando", txt)
         self.assertTrue(all(ord(ch) < 128 or ch in "\u00b0\u00b7" for ch in txt))
 
-    def test_renovado_mostra_zero_e_carga_curta(self):
+    def test_renovado_mostra_zero(self):
         self.assertEqual(render_png._pct_txt({"pct": 0.0, "renovado": True}), "0%")
         self.assertEqual(render_png._pct_txt({"pct": 77.0, "renovado": True}), "0%")
         self.assertEqual(render_png._pct_txt(None), "n/d")
-        self.assertEqual(render_png.CARGA_CURTA, {"charging": "carreg.", "full": "cheia",
-                                                  "discharging": "bat.", "not_charging": "bat."})
 
 
 def _detalhe_atheron(m):
@@ -403,7 +361,7 @@ class CartaoAtencaoAlertasTest(unittest.TestCase):
         cv.Canvas.texto, render_png._card_atencao = espia_t, espia_c
         try:
             c = cv.Canvas(1236, 1648, estrito=True)
-            render_png.desenhar(c, m, historico())
+            render_png.desenhar(c, m, historico(), pagina=pagina)
         finally:
             cv.Canvas.texto, render_png._card_atencao = orig_t, orig_c
         return c, textos, cartoes
@@ -450,23 +408,15 @@ class CartaoAtencaoAlertasTest(unittest.TestCase):
         self.assertEqual(len(set(hashes)), 3)
         self.assertEqual(render_png._FORMA_NIVEL, {"critico": "falha", "aviso": "aviso", "leve": "parado"})
 
-    def test_comandos_tambem_usa_o_motor(self):
-        itens = [{"id": "a", "rotulo": "A", "grupo": "host", "estado": "ativo"}]
+    def test_acoes_nao_repete_o_atencao_nem_a_grade_de_servicos(self):
+        itens = [{"id": "a", "rotulo": "A", "grupo": "host", "estado": "falha"}]
         m = self._sem_problemas(discos=[{"rotulo": "/", "caminho": "/", "total_b": 10**12, "usado_b": 9 * 10**11,
-                                         "pct": 90.0}])
-        textos = []
-        orig = cv.Canvas.texto
-
-        def espia(self, x, y, t, *a, **k):
-            textos.append(t)
-            return orig(self, x, y, t, *a, **k)
-        cv.Canvas.texto = espia
-        try:
-            render_png._desenhar_comandos(cv.Canvas(1236, 1648, estrito=True), m, itens)
-        finally:
-            cv.Canvas.texto = orig
-        self.assertIn("ATENCAO (1)", textos)
-        self.assertNotIn("Tudo em ordem", textos)
+                                         "pct": 90.0}], servicos_kindle={"inventario": "ok", "itens": itens})
+        _, textos, cartoes = self._desenhar(m, "comandos")
+        self.assertEqual(cartoes, [])
+        for t in ("ATENCAO", "Tudo em ordem", "TODOS OS SERVICOS", "SERVICOS POR GRUPO"):
+            self.assertNotIn(t, textos)
+        self.assertIn("ACOES RAPIDAS", textos)
 
 
 if __name__ == "__main__":
@@ -616,8 +566,7 @@ class DesenhoResumoTest(unittest.TestCase):
 
     def test_nao_desenha_o_que_saiu_da_tela_inicial(self):
         chamadas = []
-        nomes = ("_tiles", "_tile", "_card_chips", "_card_grupos", "_linha_claude_s10", "_linha_ragnarok",
-                 "_card_discos", "_card_io")
+        nomes = ("_card_discos", "_card_io", "_card_rotinas", "_card_kindle", "_card_par")
         antigos = {n: getattr(render_png, n) for n in nomes}
         try:
             for n in nomes:

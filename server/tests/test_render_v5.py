@@ -216,8 +216,10 @@ class ConteudoTest(unittest.TestCase):
 
     def test_detalhes_tem_discos_io_temperaturas(self):
         tx = self.textos(caso52(), "detalhes")
-        for t in ("DISCOS", "MEMORIA", "SERVICOS POR GRUPO", "HISTORICO"):
+        for t in ("DISCOS", "MEMORIA", "ROTINAS", "HISTORICO"):
             self.assertIn(t, tx)
+        for t in ("SERVICOS POR GRUPO", "WHISPERSYNC", "RAGNAROK"):  # saem da pagina Sistema
+            self.assertNotIn(t, tx)
         self.assertTrue(any(t.startswith("DISCO") or t == "DISCO" for t in tx))
         self.assertTrue(any("°C" in t for t in tx))
 
