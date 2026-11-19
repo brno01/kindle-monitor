@@ -7,7 +7,7 @@ Ferramenta de DESENVOLVIMENTO (usa Pillow + svgelements). O servidor so le o arq
 
 Entrada: tools/icones/<nome>.svg, com <nome> em ^[a-z]{2,16}$ (os outros arquivos sao ignorados).
 Os SVGs sao tratados como dado nao confiavel: so os atributos `d` (de todos os <path>), `fill-rule` e
-`viewBox` sao lidos, por regex; nenhum parser XML e usado e nada e executado.
+`viewBox` sao lidos por busca linear (arquivo de ate 256 KB, `d` somado de ate 64 KB); nenhum parser XML e usado e nada e executado.
 """
 import base64
 import os
@@ -39,38 +39,80 @@ Formato: ICONES[nome][tamanho_px] = {"w": int, "h": int, "dados": (<base64 de zl
 '''
 
 _NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+TAM_MAX_SVG = 256 * 1024  # SVG maior que isso e recusado antes de ler
+D_MAX = 64 * 1024         # soma dos atributos d de um icone
+# dentro de UMA tag ja delimitada (sem `>`); classes negadas, sem quantificador aninhado
+_ATTR_D = re.compile(r'\sd="([^"]+)"')
+_ATTR_REGRA = re.compile(r'\sfill-rule="(evenodd|nonzero)"')
+_ATTR_VIEWBOX = re.compile(r'\sviewBox="([^"]+)"')
 
 
 def _fonte(txt):
-    m = re.search(r"<!--\s*Source:(.*?)-->", txt, re.S)
-    if not m:
-        return ""
-    s = " ".join(m.group(1).split())
-    return s.replace('"""', "'''").replace("\\", "/")
+    """Texto do primeiro comentario `<!-- Source: ... -->`, em ASCII imprimivel e seguro para um docstring.
+    Busca linear (str.find), sem regex com backtracking: o SVG e dado nao confiavel."""
+    i = txt.find("<!--")
+    while i != -1:
+        j = i + 4
+        while j < len(txt) and txt[j].isspace():
+            j += 1
+        if txt.startswith("Source:", j):
+            fim = txt.find("-->", j + 7)
+            if fim == -1:
+                return ""
+            bruto = txt[j + 7:fim]
+            s = "".join(ch if " " <= ch <= "~" else (" " if ch.isspace() else "?") for ch in bruto)
+            s = " ".join(s.split())
+            return s.replace('"""', "'''").replace("\\", "/")
+        i = txt.find("<!--", i + 4)
+    return ""
+
+
+def _tags(txt, nome):
+    """Texto de cada tag `<nome ...>` (ate o primeiro `>`), em tempo linear; tag sem `>` encerra a busca."""
+    marca = "<" + nome
+    i = txt.find(marca)
+    while i != -1:
+        k = i + len(marca)
+        if k < len(txt) and (txt[k].isalnum() or txt[k] == "_"):  # `<pathx`, `<svgs`: outra tag (como \b)
+            i = txt.find(marca, k)
+            continue
+        fim = txt.find(">", k)
+        if fim == -1:
+            return
+        yield txt[i:fim + 1]
+        i = txt.find(marca, fim + 1)
 
 
 def ler_svg(caminho):
-    """-> {"paths": [(d, regra)], "viewbox": (x, y, w, h) | None, "fonte": str}. So regex."""
-    with open(caminho, encoding="utf-8") as f:
-        txt = f.read()
+    """-> {"paths": [(d, regra)], "viewbox": (x, y, w, h) | None, "fonte": str}. So busca linear, sem parser XML."""
+    if os.path.getsize(caminho) > TAM_MAX_SVG:
+        sys.exit("%s: arquivo grande demais (maximo %d KB)" % (caminho, TAM_MAX_SVG // 1024))
+    with open(caminho, encoding="utf-8", errors="replace") as f:
+        txt = f.read(TAM_MAX_SVG + 1)
     paths = []
-    for tag in re.finditer(r"<path\b[^>]*>", txt, re.S):
-        t = tag.group(0)
-        d = re.search(r'\sd="([^"]+)"', t)
+    total_d = 0
+    for t in _tags(txt, "path"):
+        d = _ATTR_D.search(t)
         if not d:
             continue
-        regra = re.search(r'\sfill-rule="(evenodd|nonzero)"', t)
+        total_d += len(d.group(1))
+        if total_d > D_MAX:
+            sys.exit("%s: atributos d somam mais de %d KB" % (caminho, D_MAX // 1024))
+        regra = _ATTR_REGRA.search(t)
         paths.append((d.group(1), regra.group(1) if regra else "nonzero"))
     if not paths:
         sys.exit("nenhum <path> com atributo d em %s" % caminho)
     vb = None
-    m = re.search(r'<svg\b[^>]*?\sviewBox="([^"]+)"', txt, re.S)
-    if m:
+    for t in _tags(txt, "svg"):
+        m = _ATTR_VIEWBOX.search(t)
+        if not m:
+            continue
         nums = re.findall(_NUM, m.group(1))
         if len(nums) == 4:
             x, y, w, h = (float(n) for n in nums)
             if w > 0 and h > 0:
                 vb = (x, y, w, h)
+        break
     return {"paths": paths, "viewbox": vb, "fonte": _fonte(txt)}
 
 
