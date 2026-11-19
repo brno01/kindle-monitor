@@ -856,7 +856,7 @@ def _l_rotinas(m, kv, itens):
         return valor, "%s %s" % (_rotulo(prob), _estado_rotina(prob)[1]), True
     n, _ = _unidades_falhas(m)
     if n:
-        return valor, "%d unidades em falha" % n, True
+        return valor, "%d %s em falha" % (n, "unidade" if n == 1 else "unidades"), True
     datadas = [i for i in its if _num(i.get("ultima_em")) is not None]
     rec = max(datadas, key=lambda i: _num(i["ultima_em"]), default=None)
     if rec is None:
@@ -1101,7 +1101,7 @@ def _card_rotinas(c, rot, x, y, w, h):
     if n:
         yc = y + ROTINA_TOPO + linha * ROTINA_LINHA + ROTINA_LINHA // 2
         _forma(c, x + PAD, yc - 14, 28, "falha")
-        txt = "%d unidades em falha" % n + (": " + ", ".join(nomes) if nomes else "")
+        txt = "%d %s em falha" % (n, "unidade" if n == 1 else "unidades") + (": " + ", ".join(nomes) if nomes else "")
         _texto_c(c, x + PAD + 44, yc, _ajustar(c, txt, NEG, 26, w - 2 * PAD - 44), NEG, 26, PRETO)
 
 

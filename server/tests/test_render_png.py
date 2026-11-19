@@ -981,7 +981,7 @@ class CartaoRotinasTest(unittest.TestCase):
         self.assertEqual(len(resto), 1)
         self.assertEqual(len(mostradas) + int(resto[0][1:]), 16)
         self.assertIn("Rotina 13", mostradas)
-        self.assertIn("1 unidades em falha: a.service", tx)
+        self.assertIn("1 unidade em falha: a.service", tx)
 
     def test_sem_espaco_o_historico_sai_antes_do_rotinas(self):
         its = [rot("r%d" % k, "Rotina %02d" % k) for k in range(8)]
