@@ -191,14 +191,32 @@ def exemplo(cheia=False, estado="ok"):
         {"projeto": "dotfiles", "estado": "trabalhando", "desde_s": 60},
         {"projeto": "cerberus", "estado": "aberta", "desde_s": 7200},
     ], "total": 3, "esperando": 1 if em_alerta else 0, "idade_s": 12}
+    def pr(repo, n, titulo, ci, revisao="nenhuma", conflito=False, idade=1, atualizado=0, rascunho=False):
+        return {"repo": repo, "numero": n, "titulo": titulo, "rascunho": rascunho, "ci": ci, "revisao": revisao,
+                "conflito": conflito, "idade_d": idade, "atualizado_d": atualizado}
     m["github"] = {"prs": [
-        {"repo": "kindle-monitor", "numero": 14, "titulo": "Painel do ecossistema", "rascunho": False, "ci": "ok"},
-        {"repo": "dotfiles", "numero": 7, "titulo": "Roteamento de modelos", "rascunho": True, "ci": "pendente"},
+        pr("kindle-monitor", 14, "Painel do ecossistema", "ok", "aprovado", False, 4, 0),
+        pr("dotfiles", 7, "Roteamento de modelos", "pendente", rascunho=True, idade=9, atualizado=2),
+        pr("cerberus", 31, "Chatter dos bots com banco de frases", "falha" if em_alerta else "ok", "mudancas",
+           False, 12, 3),
+        pr("dotfiles", 8, "Seleção do ECC por máquina", "ok", "pendente", em_alerta, 2, 1),
+        pr("galaxy-s10", 3, "Vigia do S10 sem tela", "ok", "nenhuma", False, 21, 9),
+        pr("kindle-monitor", 15, "Painel de jogos e AMP", "ok", "pendente", False, 1, 0),
+        pr("vaultwarden", 2, "Backup às 03:10 com verificação", None, "aprovado", False, 45, 30),
     ], "ci": [
         {"repo": "kindle-monitor", "branch": "feat/painel-ecossistema", "estado": "ok"},
         {"repo": "dotfiles", "branch": "main", "estado": "ok"},
         {"repo": "cerberus", "branch": "main", "estado": "falha" if em_alerta else "ok"},
-    ], "abertos": 2, "ci_falhas": 1 if em_alerta else 0, "idade_s": 30, "velho": False}
+    ], "issues": {"n": 6, "itens": [
+        {"repo": "kindle-monitor", "numero": 9, "titulo": "Tela branca depois de parar a interface", "idade_d": 2},
+        {"repo": "cerberus", "numero": 22, "titulo": "Bot trava no mapa de Prontera", "idade_d": 11},
+        {"repo": "dotfiles", "numero": 5, "titulo": "claude-uso-painel sem timer", "idade_d": 30},
+        {"repo": "galaxy-s10", "numero": 1, "titulo": "Tailscale SSH ignora authorized_keys", "idade_d": 120},
+    ]}, "repos": [
+        {"repo": "kindle-monitor", "push_d": 0}, {"repo": "dotfiles", "push_d": 0}, {"repo": "cerberus", "push_d": 2},
+        {"repo": "galaxy-s10", "push_d": 9}, {"repo": "vaultwarden", "push_d": 30},
+        {"repo": "obsidian-cofre", "push_d": 61},
+    ], "abertos": 7, "ci_falhas": 1 if em_alerta else 0, "idade_s": 30, "velho": False}
     return m, hist
 
 
