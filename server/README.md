@@ -295,7 +295,7 @@ Usuario `claude` (R7; passos da sessao principal):
 
 - R5: alvos `arquivo` do Syncthing do cofre e do segundo cerebro ainda nao estao em `deploy/config.atheron.json`. Confirmar como root: `sudo ls -lt /srv/nas/vault | head` e `sudo systemctl status cerberus-syncthing --no-pager`. `/srv/nas/vault` e do grupo `cofre` (0770), e o `claude` nao lista. Depois, commit de ajuste na config.
 - Nao confirmado no host: a unit `cerberus-vault-backup.service` (rotina `senhas`), o caminho `/srv/nas/backups/vaultwarden`, o acesso do executor ao socket do Tailscale e a saida real de `tailscale status --json` nesse ambiente.
-- Pior caso do inventario: as quatro chamadas de servicos (10 s cada), mais `tailscale status` (10 s), `systemctl show` das rotinas (10 s) e `systemctl list-units` (10 s), somam ate 70 s. A unit tem `TimeoutStartSec=60`, e o comentario dela diz "ate 5 chamadas". Se o ciclo estourar, `aparelhos.json` e `rotinas.json` podem ficar sem renovar. Nao medido.
+- Pior caso do inventario: as quatro chamadas de servicos (10 s cada), mais `tailscale status` (10 s), `systemctl show` das rotinas (10 s) e `systemctl list-units` (10 s), somam ate 70 s; a unit tem `TimeoutStartSec=120` para isso caber com folga.
 - Paridade: a unica diferenca de validacao entre executor e servidor e o icone (`tests/test_paridade_catalogos.py`).
 
 ## Recuperacao: Kindle com a interface parada

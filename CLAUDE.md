@@ -66,7 +66,7 @@ Kindle: Tailscale userspace (SOCKS5 localhost:1055) + /mnt/us/kindle-monitor/loo
 
 ## Pendências
 - Entrega 2 do painel (não instalada): R4 (backup), R6 (servidor e units, root) e R7 (publicadores `claude-sessao` e `claude-github`, usuário `claude`). Passos e desfazer em `server/README.md`. R7 espera a branch `feat/bypass-e-painel-dev` do dotfiles estar mesclada no master; hoje não está.
-- Entrega 2, depois de instalada: confirmar no host o pior caso do inventário (até ~70 s, contra o `TimeoutStartSec=60` da unit) e o acesso ao socket do Tailscale (`ReadWritePaths=-/run/tailscale`).
+- Entrega 2, depois de instalada: confirmar no host o acesso ao socket do Tailscale (`ReadWritePaths=-/run/tailscale`); o pior caso do inventário (até ~70 s) cabe no `TimeoutStartSec=120` da unit (`ReadWritePaths=-/run/tailscale`).
 - Alvos `arquivo` do Syncthing do cofre e do segundo cérebro (R5): ainda fora de `deploy/config.atheron.json`. `/srv/nas/vault` é do grupo `cofre` (0770) e o `claude` não lista; o dono confirma o caminho como root.
 - Página Claude no ar desde 17/11/2026 (atheron e Kindle), mas com "n/d" até os produtores rodarem no atheron: `claude-uso-painel` (branch `feat/claude-uso-painel` do dotfiles; grava `/var/lib/claude-uso/*.json`) e `cerberus-s10` (projeto `galaxy-s10`; grava `/run/cerberus-s10-publico/resumo.json`).
 - Cartão do nomad na tela (rodar o servidor no nomad e listar como par em `config.atheron.json`).

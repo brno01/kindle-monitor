@@ -13,8 +13,8 @@ NoNewPrivileges=yes
 # incus reads its client config under /root/.config: read-only keeps /root unwritable but readable
 ProtectHome=read-only
 PrivateTmp=yes
-# up to 5 calls (4 batched + tailscale status) with a 10 s timeout each
-TimeoutStartSec=60
+# worst case: 4 batched service calls + tailscale status + 2 routine calls, 10 s timeout each (70 s), plus margin
+TimeoutStartSec=120
 # Same hardening as the executor. VALIDATE ON THE HOST (see server/README.md): systemctl needs D-Bus, incus its unix socket.
 ProtectSystem=strict
 ReadWritePaths=/run/kindle-monitor
