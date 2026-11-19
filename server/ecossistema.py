@@ -27,6 +27,7 @@ RE_ROTULO_APARELHO = re.compile(r"^[\x20-\x7e]{1,16}\Z")
 RE_ROTULO_ROTINA = re.compile(r"^[\x20-\x7e]{1,20}\Z")
 RE_ALVO_TIMER = re.compile(r"^[A-Za-z0-9_.@-]{1,64}\.service\Z")
 PREFIXOS_ARQUIVO = ("/srv/", "/var/lib/", "/var/backups/")
+NEGADOS_ARQUIVO = ("/var/lib/claude-uso",)  # igual ao executor (paridade)
 CONEXOES = ("direto", "relay")
 RESULTADOS = ("ok", "falha", "desconhecido")
 NOMES_FALHAS_MAX = 5
@@ -102,7 +103,8 @@ def _rotina(it):
             return None
     elif tipo == "arquivo":
         if (not isinstance(alvo, str) or not os.path.isabs(alvo) or os.path.normpath(alvo) != alvo
-                or not alvo.startswith(PREFIXOS_ARQUIVO)):
+                or not alvo.startswith(PREFIXOS_ARQUIVO)
+                or any(alvo == n or alvo.startswith(n + "/") for n in NEGADOS_ARQUIVO)):
             return None
     else:
         return None

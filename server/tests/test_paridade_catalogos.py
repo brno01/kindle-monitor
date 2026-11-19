@@ -40,7 +40,7 @@ def ro(**k):
 
 
 def ra(**k):
-    return ro(id="painel", tipo="arquivo", alvo="/var/lib/claude-uso/tokens.json", max_idade_h=1, **k)
+    return ro(id="painel", tipo="arquivo", alvo="/var/lib/painel/tokens.json", max_idade_h=1, **k)
 
 
 def cheio(fab, n):
@@ -145,6 +145,10 @@ ROTINAS = [
     ("timer alvo nulo", [ro(alvo=None)], False),
     ("arquivo em /srv/", [ra(), ro(id="b", tipo="arquivo", alvo="/srv/x")], True),
     ("arquivo em /var/backups/", [ro(tipo="arquivo", alvo="/var/backups/a/b")], True),
+    ("arquivo em /var/lib/claude-uso/", [ro(tipo="arquivo", alvo="/var/lib/claude-uso/tokens.json")], False),
+    ("arquivo em /var/lib/claude-uso/sessoes", [ro(tipo="arquivo", alvo="/var/lib/claude-uso/sessoes/a")], False),
+    ("arquivo /var/lib/claude-uso (o proprio)", [ro(tipo="arquivo", alvo="/var/lib/claude-uso")], False),
+    ("arquivo em /var/lib/claude-usox/", [ro(tipo="arquivo", alvo="/var/lib/claude-usox/a")], True),
     ("arquivo relativo", [ro(tipo="arquivo", alvo="var/lib/x")], False),
     ("arquivo com ..", [ro(tipo="arquivo", alvo="/var/lib/../etc/x")], False),
     ("arquivo fora dos prefixos", [ro(tipo="arquivo", alvo="/etc/passwd")], False),

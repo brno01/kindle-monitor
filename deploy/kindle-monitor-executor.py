@@ -30,7 +30,7 @@ import datetime
 import time
 import urllib.request
 
-_stat = stat  # `stat` e nome de parametro em coletar_rotinas (injetavel)
+_stat = stat
 
 ACOES = ("gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar")
 GRUPOS = ("host", "incus", "docker", "ragnarok")
@@ -82,6 +82,7 @@ RE_ROTINA_ALVO_TIMER = re.compile(r"^[A-Za-z0-9_.@-]{1,64}\.service\Z")
 RE_UNIDADE_FALHA = re.compile(r"^[A-Za-z0-9_.@:-]{1,40}\Z")
 RE_RESULTADO_UNIT = re.compile(r"^[a-z-]{1,24}\Z")
 PREFIXOS_ARQUIVO = ("/srv/", "/var/lib/", "/var/backups/")
+NEGADOS_ARQUIVO = ("/var/lib/claude-uso",)  # fonte do painel, nao e alvo de rotina (o web ja le por outro caminho)
 CHAVES_ROTINA = {"id", "rotulo", "tipo", "alvo", "max_idade_h"}
 RE_PROJETO = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}\Z")
 CHAVES_CATALOGO = {"id", "rotulo", "grupo", "tipo", "alvo", "projeto", "prefixo", "verbos", "protegido", "opcional"}
@@ -271,7 +272,8 @@ def validar_rotinas(lista):
                 raise ValueError("%s: alvo invalido" % r)
         elif tipo == "arquivo":
             if (not isinstance(alvo, str) or not os.path.isabs(alvo) or os.path.normpath(alvo) != alvo
-                    or not alvo.startswith(PREFIXOS_ARQUIVO)):
+                    or not alvo.startswith(PREFIXOS_ARQUIVO)
+                    or any(alvo == n or alvo.startswith(n + "/") for n in NEGADOS_ARQUIVO)):
                 raise ValueError("%s: alvo invalido" % r)
         else:
             raise ValueError("%s: tipo invalido" % r)
@@ -1098,24 +1100,65 @@ def _resultado_timer(info):
     return r("falha", ultima, res)
 
 
-def _mtime_arquivo(alvo, stat, listar):
-    """(ultima_em|None, detalhe). Sem seguir symlink, sem ler conteudo, sem recursao."""
+_O_CAMINHO = getattr(os, "O_PATH", 0)  # Linux: fd so para caminho (sem permissao de leitura, nao bloqueia em FIFO)
+_FLAGS_COMPONENTE = _O_CAMINHO | os.O_NOFOLLOW | os.O_CLOEXEC
+_FLAGS_LISTAR = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0)
+
+
+class _SemLink(Exception):
+    """Componente do alvo e um link simbolico."""
+
+
+def _abrir_componente(nome, dir_fd):
+    """Abre `nome` dentro de `dir_fd` sem seguir link (O_PATH|O_NOFOLLOW); devolve (fd, fstat). Link vira _SemLink."""
+    fd = os.open(nome, _FLAGS_COMPONENTE, dir_fd=dir_fd)
     try:
-        st = stat(alvo, follow_symlinks=False)
-    except FileNotFoundError:
-        return None, "sem arquivo"
-    except OSError:
+        st = os.fstat(fd)
+        if _stat.S_ISLNK(st.st_mode):
+            raise _SemLink()
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, st
+
+
+def _mtime_arquivo(alvo):
+    """(ultima_em|None, detalhe). Sem seguir symlink em NENHUM componente, sem ler conteudo, sem recursao.
+
+    Roda como root sobre caminhos que outros usuarios podem alterar: desce de "/" por descritores
+    (openat com O_NOFOLLOW em cada componente), decide o tipo com fstat no descritor final e lista o
+    diretorio pelo proprio descritor, entao trocar um componente por link entre as etapas nao desvia a leitura."""
+    partes = alvo.split("/") if isinstance(alvo, str) and alvo.startswith("/") else []
+    partes = partes[1:]
+    if not partes or any(p in ("", ".", "..") or "\0" in p for p in partes):
         return None, "erro de leitura"
-    modo = st.st_mode
-    if _stat.S_ISLNK(modo):
-        return None, "link ignorado"
-    if _stat.S_ISREG(modo):
-        return _mtime_valido(st.st_mtime)
-    if not _stat.S_ISDIR(modo):
-        return None, "tipo inesperado"
-    melhor, vistas = None, 0
+    abertos = []
+
+    def abre(nome, base):
+        fd, st = _abrir_componente(nome, base)
+        abertos.append(fd)
+        return fd, st
+
     try:
-        with listar(alvo) as it:
+        atual = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        abertos.append(atual)
+        for nome in partes[:-1]:
+            atual, st = abre(nome, atual)
+            if not _stat.S_ISDIR(st.st_mode):
+                return None, "erro de leitura"
+        fd, st = abre(partes[-1], atual)
+        modo = st.st_mode
+        if _stat.S_ISREG(modo):
+            return _mtime_valido(st.st_mtime)
+        if not _stat.S_ISDIR(modo):
+            return None, "tipo inesperado"
+        # reabre "." a partir do proprio descritor (mesmo inodo, agora listavel); confere o tipo de novo
+        dfd = os.open(".", _FLAGS_LISTAR, dir_fd=fd)
+        abertos.append(dfd)
+        if not _stat.S_ISDIR(os.fstat(dfd).st_mode):
+            return None, "tipo inesperado"
+        melhor, vistas = None, 0
+        with os.scandir(dfd) as it:
             for e in it:
                 vistas += 1
                 if vistas > ARQUIVO_ENTRADAS_MAX:
@@ -1128,11 +1171,21 @@ def _mtime_arquivo(alvo, stat, listar):
                     continue
                 if melhor is None or m > melhor:
                     melhor = m
-    except OSError:
+        if melhor is None:
+            return None, "vazio"
+        return _mtime_valido(melhor)
+    except _SemLink:
+        return None, "link ignorado"
+    except FileNotFoundError:
+        return None, "sem arquivo"
+    except (OSError, ValueError):
         return None, "erro de leitura"
-    if melhor is None:
-        return None, "vazio"
-    return _mtime_valido(melhor)
+    finally:
+        for fd in abertos:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _mtime_valido(m):
@@ -1162,7 +1215,7 @@ def parse_falhas(texto):
     return {"n": min(n, FALHAS_N_MAX), "nomes": nomes}
 
 
-def coletar_rotinas(catalogo, executar, stat=os.stat, listar=os.scandir, agora=time.time):
+def coletar_rotinas(catalogo, executar, agora=time.time):
     """Catalogo validado -> rotinas.json (E7). Dependencias injetadas; so o argv fixo e os alvos ja validados
     (argumentos separados, depois de `--`) chegam ao systemctl. Comando com saida != 0 ou que levanta: a excecao
     sobe e o chamador grava tudo `desconhecido`. Erro em arquivo vira `desconhecido` so naquela rotina."""
@@ -1185,7 +1238,7 @@ def coletar_rotinas(catalogo, executar, stat=os.stat, listar=os.scandir, agora=t
         if r["tipo"] == "timer":
             rotinas[r["id"]] = _resultado_timer(infos.get(r["alvo"]))
         else:
-            ultima, det = _mtime_arquivo(r["alvo"], stat, listar)
+            ultima, det = _mtime_arquivo(r["alvo"])
             rotinas[r["id"]] = {"resultado": "ok" if ultima is not None else "desconhecido",
                                 "ultima_em": ultima, "detalhe": _curto(det, 24)}
     return {"versao": 1, "gerado": _agora_int(agora), "rotinas": rotinas, "unidades_falhas": falhas}

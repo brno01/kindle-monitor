@@ -74,7 +74,7 @@ class ValidarAparelhosTest(unittest.TestCase):
 
 class ValidarRotinasTest(unittest.TestCase):
     def test_validos(self):
-        arq = rotina(id="painel", tipo="arquivo", alvo="/var/lib/claude-uso/tokens.json", max_idade_h=1)
+        arq = rotina(id="painel", tipo="arquivo", alvo="/var/lib/painel/tokens.json", max_idade_h=1)
         self.assertEqual(eco.validar_rotinas([rotina(), arq]), [rotina(), arq])
         for alvo in ("/srv/x", "/var/backups/a/b"):
             self.assertEqual(len(eco.validar_rotinas([rotina(tipo="arquivo", alvo=alvo)])), 1)
@@ -86,6 +86,8 @@ class ValidarRotinasTest(unittest.TestCase):
                  rotina(tipo="arquivo", alvo="relativo/x"), rotina(tipo="arquivo", alvo="/etc/passwd"),
                  rotina(tipo="arquivo", alvo="/var/lib/../etc/x"), rotina(tipo="arquivo", alvo="/var/lib//x"),
                  rotina(tipo="arquivo", alvo="/var/lib/x/"), rotina(tipo="arquivo", alvo="/var/libx/a"),
+                 rotina(tipo="arquivo", alvo="/var/lib/claude-uso"),
+                 rotina(tipo="arquivo", alvo="/var/lib/claude-uso/tokens.json"),
                  rotina(max_idade_h=0.05), rotina(max_idade_h=721), rotina(max_idade_h=True),
                  rotina(max_idade_h="26"), rotina(max_idade_h=None), rotina(max_idade_h=float("nan")),
                  "x", None]

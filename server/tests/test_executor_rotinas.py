@@ -4,6 +4,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import _caminho  # noqa: F401
 from test_executor import Base, ex
@@ -22,7 +23,7 @@ def timer(**k):
 
 
 def arq(**k):
-    d = {"id": "painel", "rotulo": "Tokens Claude", "tipo": "arquivo", "alvo": "/var/lib/claude-uso/tokens.json",
+    d = {"id": "painel", "rotulo": "Tokens Claude", "tipo": "arquivo", "alvo": "/var/lib/painel/tokens.json",
          "max_idade_h": 1}
     d.update(k)
     return d
@@ -104,8 +105,11 @@ class ValidarTest(unittest.TestCase):
         for ok in ("/srv/x", "/var/lib/a/b.json", "/var/backups/pg", "/srv/nas/dir"):
             self.assertEqual(len(ex.validar_rotinas([arq(alvo=ok)])), 1)
         for ruim in ("srv/x", "/srv", "/etc/passwd", "/srv/../etc/passwd", "/srv//x", "/srv/./x", "/srv/x/",
-                     "/var/libx/y", "~/x", "/tmp/srv/x", 3, None, ""):
+                     "/var/libx/y", "~/x", "/tmp/srv/x", 3, None, "",
+                     "/var/lib/claude-uso", "/var/lib/claude-uso/tokens.json", "/var/lib/claude-uso/sessoes/a"):
             self.ruim([arq(alvo=ruim)], "alvo")
+        for ok in ("/var/lib/claude-usox/a", "/var/lib/claude-us/a", "/srv/claude-uso/a"):
+            self.assertEqual(len(ex.validar_rotinas([arq(alvo=ok)])), 1)
 
     def test_max_idade_h(self):
         for ok in (0.1, 1, 26, 720, 720.0, 0.5):
@@ -388,50 +392,194 @@ class ColetarArquivosTest(unittest.TestCase):
         finally:
             os.chmod(cam, 0o600)
 
-    def test_stat_sem_seguir_symlink(self):
-        vistos = []
-
-        def stat(p, **kw):
-            vistos.append(kw)
-            return os.stat_result((0o100644, 0, 0, 1, 0, 0, 0, 0, 1699990000, 0))
-        r = ex.coletar_rotinas([arq()], FakeSys(), stat=stat, agora=lambda: NS)["rotinas"]["painel"]
-        self.assertEqual(vistos, [{"follow_symlinks": False}])
-        self.assertEqual(r["ultima_em"], 1699990000)
-
-    def test_erro_de_permissao_ou_de_leitura(self):
-        def stat(p, **kw):
-            raise PermissionError("x")
-        r = ex.coletar_rotinas([arq()], FakeSys(), stat=stat, agora=lambda: NS)["rotinas"]["painel"]
-        self.assertEqual((r["resultado"], r["ultima_em"]), ("desconhecido", None))
-
-        def stat_dir(p, **kw):
-            return os.stat_result((0o040755, 0, 0, 1, 0, 0, 0, 0, 5, 0))
-
-        def listar(p):
-            raise PermissionError("x")
-        r = ex.coletar_rotinas([arq()], FakeSys(), stat=stat_dir, listar=listar, agora=lambda: NS)["rotinas"]["painel"]
+    def test_erro_de_permissao_ao_listar(self):
+        os.mkdir(os.path.join(self.d, "sub"))
+        with mock.patch.object(ex.os, "scandir", side_effect=PermissionError("x")):
+            r = self.um(os.path.join(self.d, "sub"))
         self.assertEqual((r["resultado"], r["detalhe"]), ("desconhecido", "erro de leitura"))
 
+    def test_erro_de_permissao_no_caminho(self):
+        if os.geteuid() == 0:
+            self.skipTest("root atravessa qualquer permissao")
+        sub = os.path.join(self.d, "fechado")
+        os.mkdir(sub)
+        self.f("fechado/x", 1699990000)
+        os.chmod(sub, 0)
+        try:
+            r = self.um(os.path.join(sub, "x"))
+        finally:
+            os.chmod(sub, 0o700)
+        self.assertEqual((r["resultado"], r["ultima_em"], r["detalhe"]), ("desconhecido", None, "erro de leitura"))
+
     def test_entrada_com_erro_e_pulada_e_limite_de_2000(self):
-        def stat_dir(p, **kw):
-            return os.stat_result((0o040755, 0, 0, 1, 0, 0, 0, 0, 5, 0))
         entradas = [FakeEntrada(1699000000, erro=True), FakeEntrada(1699500000, link=True),
                     FakeEntrada(1699200000)] + [FakeEntrada(1699100000)] * 3000
         entradas.insert(2500, FakeEntrada(1699999999))  # alem do limite: nem e visto
         fd = FakeDir(entradas)
-        r = ex.coletar_rotinas([arq()], FakeSys(), stat=stat_dir, listar=lambda p: fd, agora=lambda: NS)
-        self.assertEqual(r["rotinas"]["painel"]["ultima_em"], 1699200000)
+        os.mkdir(os.path.join(self.d, "sub"))
+        with mock.patch.object(ex.os, "scandir", lambda _fd: fd):
+            r = self.um(os.path.join(self.d, "sub"))
+        self.assertEqual(r["ultima_em"], 1699200000)
         self.assertLessEqual(fd.consumidas, 2001)
 
     def test_mtime_invalido(self):
-        for m in (0, -5, 1e30, float("nan")):
-            def stat(p, m=m, **kw):
-                return os.stat_result((0o100644, 0, 0, 1, 0, 0, 0, 0, m, 0))
+        for m in (0, -5, 1e30, float("nan"), float("inf")):
             try:
-                r = ex.coletar_rotinas([arq()], FakeSys(), stat=stat, agora=lambda: NS)["rotinas"]["painel"]
+                self.assertEqual(ex._mtime_valido(m), (None, "data invalida"), m)
             except Exception:
                 self.fail("nao pode levantar para mtime %r" % (m,))
-            self.assertEqual(r["resultado"], "desconhecido", m)
+        cam = self.f("velho", 0)
+        self.assertEqual(self.um(cam), {"resultado": "desconhecido", "ultima_em": None, "detalhe": "data invalida"})
+        cam = self.f("futuro", 4102444801)
+        self.assertEqual(self.um(cam)["detalhe"], "data invalida")
+
+    def test_nao_ha_stat_por_caminho_completo(self):
+        # nenhum stat/lstat/open de caminho absoluto do alvo: so descritores (dir_fd) a partir de "/"
+        alvo = self.f("a.json", 1699990000)
+        vistos = []
+        orig_open, orig_stat = os.open, os.stat
+
+        def aberto(p, *a, **k):
+            vistos.append(("open", p, k.get("dir_fd") is not None))
+            return orig_open(p, *a, **k)
+
+        def estat(p, *a, **k):
+            vistos.append(("stat", p, k.get("dir_fd") is not None))
+            return orig_stat(p, *a, **k)
+        with mock.patch.object(ex.os, "open", aberto), mock.patch.object(ex.os, "stat", estat):
+            self.assertEqual(self.um(alvo)["ultima_em"], 1699990000)
+        self.assertTrue(vistos)
+        for tipo, p, relativo in vistos:
+            if p == "/":
+                continue
+            self.assertTrue(relativo, "%s %r sem dir_fd" % (tipo, p))
+            self.assertNotIn("/", p)
+
+
+class ArquivoSemSeguirLinksTest(unittest.TestCase):
+    """O executor roda como root: link em qualquer componente do alvo nao pode levar a lugar nenhum."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.d = os.path.realpath(self._tmp.name)
+        self.pub = os.path.join(self.d, "pub")
+        self.secret = os.path.join(self.d, "secret")
+        os.mkdir(self.pub)
+        os.mkdir(self.secret)
+        os.mkdir(os.path.join(self.secret, "dir"))
+        self.toque(os.path.join(self.secret, "dir", "x"), 1699999999)
+
+    @staticmethod
+    def toque(cam, mtime):
+        with open(cam, "w") as fh:
+            fh.write("x")
+        os.utime(cam, (mtime, mtime))
+
+    def mtime(self, alvo):
+        return ex._mtime_arquivo(alvo)
+
+    def test_link_intermediario_para_diretorio(self):
+        os.symlink("../secret", os.path.join(self.pub, "link"))
+        self.assertEqual(self.mtime(os.path.join(self.pub, "link", "dir")), (None, "link ignorado"))
+        self.assertEqual(self.mtime(os.path.join(self.pub, "link", "dir", "x")), (None, "link ignorado"))
+
+    def test_link_intermediario_no_alto_do_caminho(self):
+        os.symlink(self.secret, os.path.join(self.d, "atalho"))
+        self.assertEqual(self.mtime(os.path.join(self.d, "atalho", "dir", "x")), (None, "link ignorado"))
+
+    def test_link_final_para_arquivo_e_para_diretorio(self):
+        os.symlink(os.path.join(self.secret, "dir", "x"), os.path.join(self.pub, "f"))
+        os.symlink(os.path.join(self.secret, "dir"), os.path.join(self.pub, "d"))
+        self.assertEqual(self.mtime(os.path.join(self.pub, "f")), (None, "link ignorado"))
+        self.assertEqual(self.mtime(os.path.join(self.pub, "d")), (None, "link ignorado"))
+
+    def test_componente_intermediario_que_e_arquivo(self):
+        self.toque(os.path.join(self.pub, "arq"), 1699990000)
+        self.assertEqual(self.mtime(os.path.join(self.pub, "arq", "x")), (None, "erro de leitura"))
+
+    def test_componente_ausente(self):
+        self.assertEqual(self.mtime(os.path.join(self.d, "nada", "x")), (None, "sem arquivo"))
+        self.assertEqual(self.mtime(os.path.join(self.pub, "nada")), (None, "sem arquivo"))
+
+    def test_caso_normal_arquivo_e_diretorio(self):
+        self.toque(os.path.join(self.pub, "a.json"), 1699990000)
+        self.assertEqual(self.mtime(os.path.join(self.pub, "a.json")), (1699990000, "ok"))
+        self.toque(os.path.join(self.pub, "b"), 1699000000)
+        os.symlink(os.path.join(self.secret, "dir", "x"), os.path.join(self.pub, "link-no-dir"))
+        self.assertEqual(self.mtime(self.pub), (1699990000, "ok"))  # o link dentro do diretorio nao conta
+        self.assertEqual(self.mtime(os.path.join(self.secret, "dir")), (1699999999, "ok"))
+
+    def test_diretorio_vazio_e_tipo_inesperado(self):
+        self.assertEqual(self.mtime(self.pub), (None, "vazio"))
+        fifo = os.path.join(self.pub, "fifo")
+        os.mkfifo(fifo)
+        self.assertEqual(self.mtime(fifo), (None, "tipo inesperado"))
+
+    def test_alvo_malformado_nao_levanta(self):
+        for alvo in ("relativo/x", "", "/", "/a/../b", "/a//b", "/a/./b", "/a\0b"):
+            with self.subTest(alvo=alvo):
+                r = self.mtime(alvo)
+                self.assertIsNone(r[0])
+
+    def test_troca_de_componente_por_symlink_depois_de_aberto(self):
+        # corrida: depois de abrir `pub` por descritor, `pub` vira link para `secret`; o resto do caminho
+        # continua a partir do descritor ja aberto (o diretorio original), nunca pelo nome
+        self.toque(os.path.join(self.pub, "x"), 1699990000)
+        self.toque(os.path.join(self.secret, "x"), 1699999999)
+        orig = os.open
+        trocado = []
+
+        def aberto(p, *a, **k):
+            fd = orig(p, *a, **k)
+            if p == "pub" and not trocado:
+                trocado.append(1)
+                os.rename(self.pub, self.pub + ".velho")
+                os.symlink(self.secret, self.pub)
+            return fd
+        with mock.patch.object(ex.os, "open", aberto):
+            r = self.mtime(os.path.join(self.pub, "x"))
+        self.assertTrue(trocado)
+        self.assertEqual(r, (1699990000, "ok"))  # o arquivo do diretorio original, nao o de `secret`
+
+    def test_troca_do_alvo_por_link_antes_de_listar(self):
+        # corrida: o diretorio alvo vira link para `secret` entre a decisao de tipo e a listagem
+        alvo = os.path.join(self.pub, "dados")
+        os.mkdir(alvo)
+        self.toque(os.path.join(alvo, "a"), 1699000000)
+        orig = os.scandir
+
+        def lista(fd):
+            os.rename(alvo, alvo + ".velho")
+            os.symlink(os.path.join(self.secret, "dir"), alvo)
+            return orig(fd)
+        with mock.patch.object(ex.os, "scandir", lista):
+            r = self.mtime(alvo)
+        self.assertEqual(r, (1699000000, "ok"))  # listou o diretorio original, nao o de `secret/dir`
+
+    def test_alvo_trocado_por_link_antes_de_abrir(self):
+        alvo = os.path.join(self.pub, "dados")
+        self.toque(alvo, 1699000000)
+        orig = os.open
+
+        def aberto(p, *a, **k):
+            if p == "dados":
+                os.unlink(alvo)
+                os.symlink(os.path.join(self.secret, "dir", "x"), alvo)
+            return orig(p, *a, **k)
+        with mock.patch.object(ex.os, "open", aberto):
+            r = self.mtime(alvo)
+        self.assertEqual(r, (None, "link ignorado"))
+
+    def test_descritores_nao_vazam(self):
+        antes = len(os.listdir("/proc/self/fd"))
+        self.toque(os.path.join(self.pub, "a"), 1699990000)
+        for alvo in (os.path.join(self.pub, "a"), self.pub, os.path.join(self.pub, "nada"),
+                     os.path.join(self.pub, "a", "x"), self.d + "/pub/../x"):
+            self.mtime(alvo)
+        os.symlink(self.secret, os.path.join(self.d, "l"))
+        self.mtime(os.path.join(self.d, "l", "dir"))
+        self.assertEqual(len(os.listdir("/proc/self/fd")), antes)
 
 
 class ColetarFalhasTest(unittest.TestCase):
