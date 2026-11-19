@@ -24,6 +24,7 @@ from datetime import datetime
 from urllib.parse import urlsplit
 
 import alertas
+import ecossistema
 import servicos
 
 Snapshot = namedtuple("Snapshot", "id t metricas")
@@ -727,6 +728,10 @@ class Coletor:
         self._catalogo = servicos.validar_catalogo(config.get("servicos_kindle") or [])
         estado = (config.get("comandos") or {}).get("estado") or INVENTARIO_ESTADO_PADRAO
         self._inventario_caminho = os.path.join(estado, INVENTARIO_ARQ)
+        self._aparelhos = ecossistema.validar_aparelhos(config.get("aparelhos"))
+        self._rotinas = ecossistema.validar_rotinas(config.get("rotinas"))
+        self._aparelhos_caminho = os.path.join(estado, ecossistema.APARELHOS_ARQ)
+        self._rotinas_caminho = os.path.join(estado, ecossistema.ROTINAS_ARQ)
         self._lock_pares = threading.Lock()
         self._pares_t = None
         self._pares_v = None
@@ -757,6 +762,26 @@ class Coletor:
         except Exception:
             texto = None
         return montar_servicos_kindle(self._catalogo, texto, self._agora())
+
+    def _ler_inventario(self, caminho):
+        try:
+            return self._ler(caminho)
+        except Exception:
+            return None
+
+    def aparelhos_inventario(self):
+        """Aparelhos do catalogo com o estado do inventario root; None sem catalogo."""
+        if not self._aparelhos:
+            return None
+        return ecossistema.montar_aparelhos(self._aparelhos, self._ler_inventario(self._aparelhos_caminho),
+                                            self._agora())
+
+    def rotinas_inventario(self):
+        """Rotinas do catalogo com o estado do inventario root; None sem catalogo."""
+        if not self._rotinas:
+            return None
+        return ecossistema.montar_rotinas(self._rotinas, self._ler_inventario(self._rotinas_caminho),
+                                          self._agora())
 
     def servicos_itens(self):
         """Itens da tela Servicos, na ordem de exibicao (mesma lista que o render usa).
@@ -946,6 +971,9 @@ class Coletor:
         sk = self.servicos_kindle()
         if sk is not None:
             m["servicos_kindle"] = sk
+        for chave, valor in (("aparelhos", self.aparelhos_inventario()), ("rotinas", self.rotinas_inventario())):
+            if valor is not None:
+                m[chave] = valor
         if cfg.get("portas"):
             try:
                 m["portas"] = self._portas()

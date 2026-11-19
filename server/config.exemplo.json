@@ -66,6 +66,12 @@
     {"id": "rathena-web", "rotulo": "rAthena web", "grupo": "ragnarok", "tipo": "rathena", "alvo": "rathena-web.service", "verbos": ["reiniciar"], "protegido": true}
   ],
 
+  "_comentario_aparelhos": "Catalogo de aparelhos da pagina Aparelhos (inventario root aparelhos.json, validade 60 s). Exemplo comentado; renomeie _exemplo_aparelhos para aparelhos para ligar. id a-z0-9 e '-' (1 a 24); nome: nome do peer no Tailscale (sem empresa-x); rotulo ASCII ate 16; icone: nome de icones_dados.ICONES; alerta_offline_min opcional (1 a 10080): alerta critico se ficar offline por tanto tempo. Maximo 16. Lista invalida e descartada inteira.",
+  "_exemplo_aparelhos": [{"id": "gw", "nome": "cerberus-gw", "rotulo": "Gateway", "icone": "rede", "alerta_offline_min": 10}],
+
+  "_comentario_rotinas": "Catalogo de rotinas (inventario root rotinas.json, validade 60 s). Exemplo comentado; renomeie _exemplo_rotinas para rotinas para ligar. tipo timer: alvo = unit .service; tipo arquivo: alvo = caminho absoluto sob /srv/, /var/lib/ ou /var/backups/ (vale o mtime). rotulo ASCII ate 20; max_idade_h de 0.1 a 720: acima disso a rotina fica atrasada (aviso). Maximo 16. Lista invalida e descartada inteira.",
+  "_exemplo_rotinas": [{"id": "senhas", "rotulo": "Backup senhas", "tipo": "timer", "alvo": "cerberus-vault-backup.service", "max_idade_h": 26}],
+
   "_comentario_balanceador": "Arquivo JSON do balanceador do Ragnarok (campo players_by.ragnarok; chave ausente = 0 jogadores; 'updated' com mais de 120 s = dado PARADO). Use null para desligar (ex.: no nomad).",
   "_comentario_claude": "Arquivos do claude-uso (limites de 5 h/semanal e tokens). Sem a chave 'claude' a secao some. Arquivo ausente, invalido ou velho (limites > 15 min, tokens > 20 min) mostra n/d ou aviso.",
   "claude": {"limites": "/var/lib/claude-uso/limites.json", "tokens": "/var/lib/claude-uso/tokens.json"},
