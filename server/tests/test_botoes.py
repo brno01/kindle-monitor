@@ -1,3 +1,8 @@
+import os
+import re
+import shlex
+import shutil
+import subprocess
 import unittest
 
 import _caminho  # noqa: F401
@@ -28,6 +33,10 @@ def itens_cheios(n=52):
 class LayoutTest(unittest.TestCase):
     TAMANHOS = ((1236, 1648), (800, 1300), (1072, 1448))
 
+    @staticmethod
+    def visiveis(bs):
+        return [b for b in bs if b["visivel"]]
+
     def todos(self):
         its = itens_cheios()
         for pagina in botoes.PAGINAS:
@@ -38,7 +47,7 @@ class LayoutTest(unittest.TestCase):
 
     def test_tamanho_minimo(self):
         for pagina, _, larg, alt, p, bs in self.todos():
-            for b in bs:
+            for b in self.visiveis(bs):
                 nav = b["tipo"] == "local" and b["id"].startswith("pagina:") or b["id"] == "atualizar"
                 self.assertGreaterEqual(b["w"], 100 if nav and larg < 1100 else 150, (pagina, b["id"], larg))
                 self.assertGreaterEqual(b["h"], 84, (pagina, b["id"]))
@@ -50,8 +59,9 @@ class LayoutTest(unittest.TestCase):
                 self.assertGreaterEqual(b["y"], 0)
                 self.assertLessEqual(b["x"] + b["w"], larg)
                 self.assertLessEqual(b["y"] + b["h"], alt)
-            for i, a in enumerate(bs):
-                for b in bs[i + 1:]:
+            vis = self.visiveis(bs)
+            for i, a in enumerate(vis):
+                for b in vis[i + 1:]:
                     self.assertFalse(_sobrepoe(a, b, 16), (pagina, p, larg, a["id"], b["id"]))
 
     def test_conteudo_nunca_invade_a_navegacao(self):
@@ -62,22 +72,46 @@ class LayoutTest(unittest.TestCase):
 
     def test_ids_unicos_e_chaves(self):
         for pagina, _, _, _, _, bs in self.todos():
-            ids = [b["id"] for b in bs]
+            ids = [b["id"] for b in self.visiveis(bs)]  # as linhas invisiveis repetem destinos (3 vao a detalhes)
             self.assertEqual(len(ids), len(set(ids)))
             for b in bs:
-                self.assertEqual(set(b), {"id", "rotulo", "x", "y", "w", "h", "tipo", "armado"})
+                self.assertEqual(set(b), {"id", "rotulo", "x", "y", "w", "h", "tipo", "armado", "visivel"})
                 self.assertIn(b["tipo"], ("local", "comando"))
                 self.assertRegex(b["id"], r"^[a-z0-9:-]+$")  # o que o Kindle aceita
 
     def test_barra_de_navegacao_em_todas_as_paginas(self):
-        esperado = [("atualizar", "Atualizar"), ("pagina:resumo", "Resumo"), ("pagina:servicos", "Servicos"),
-                    ("pagina:detalhes", "Detalhes"), ("pagina:comandos", "Acoes")]
+        esperado = [("pagina:resumo", "Inicio"), ("pagina:servicos", "Servicos"), ("pagina:aparelhos", "Aparelhos"),
+                    ("pagina:detalhes", "Sistema"), ("pagina:claude", "Dev"), ("pagina:comandos", "Acoes")]
+        self.assertEqual([(b, r) for b, r, _ in botoes.NAV], esperado)
+        self.assertEqual([i for _, _, i in botoes.NAV], ["inicio", "servicos", "aparelhos", "sistema", "dev", "acoes"])
+        self.assertNotIn("atualizar", [b for b, _, _ in botoes.NAV])
         for pagina in botoes.PAGINAS:
-            nav = [b for b in botoes.layout(pagina) if b["id"] in dict(esperado)]
+            nav = [b for b in botoes.layout(pagina) if b["visivel"] and b["id"] in dict(esperado)]
             self.assertEqual([(b["id"], b["rotulo"]) for b in nav], esperado)
             self.assertEqual(len({b["y"] for b in nav}), 1)
             self.assertFalse(any(b["armado"] for b in nav))
             self.assertTrue(all(b["tipo"] == "local" and b["h"] == 96 for b in nav))
+
+    def test_paginas_do_desenho(self):
+        self.assertEqual(botoes.PAGINAS, ("resumo", "servicos", "aparelhos", "detalhes", "claude", "comandos"))
+
+    def test_atualizar_invisivel_sobre_o_relogio_em_todas_as_paginas(self):
+        for pagina in botoes.PAGINAS:
+            for larg, alt in self.TAMANHOS:
+                a = [b for b in botoes.layout(pagina, None, larg, alt) if b["id"] == "atualizar"]
+                self.assertEqual(len(a), 1, pagina)
+                a = a[0]
+                self.assertFalse(a["visivel"])
+                self.assertEqual((a["x"], a["y"], a["w"], a["h"], a["tipo"]),
+                                 (larg - botoes.MARGEM - 200, botoes.BARRA_KINDLE_H, 200, 70, "local"))
+
+    def test_so_o_resumo_tem_linhas_invisiveis_para_pagina(self):
+        for pagina in botoes.PAGINAS:
+            inv = [b for b in botoes.layout(pagina) if not b["visivel"] and b["id"] != "atualizar"]
+            self.assertEqual(len(inv), 8 if pagina == "resumo" else 0, pagina)
+            vis = [b for b in botoes.layout(pagina, None, 1236, 1648, 1, itens_cheios()) if b["visivel"]]
+            self.assertTrue(all(b["id"] != "atualizar" for b in vis), pagina)
+
 
     def test_nav_mais_baixa_que_antes(self):
         self.assertLess(botoes.NAV_H, 130)
@@ -220,36 +254,95 @@ class ServicosLayoutTest(unittest.TestCase):
         self.assertIsNone(botoes.armado_valido(None))
 
 
-class TapShTest(unittest.TestCase):
-    def test_todas_as_paginas_do_nav_estao_no_case_do_tap_sh(self):
-        import os
-        caminho = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "kindle", "kindle-monitor", "tap.sh")
-        with open(caminho, encoding="utf-8") as f:
-            linhas = [l for l in f if l.lstrip().startswith("pagina:") and l.rstrip().endswith(")")]
-        self.assertEqual(len(linhas), 1)
-        for bid, _ in botoes.NAV:
-            if bid.startswith("pagina:"):
-                self.assertIn(bid, linhas[0].replace(")", " ").split(), bid)
-        self.assertIn("claude", botoes.PAGINAS)
+class ResumoGeometriaTest(unittest.TestCase):
+    def test_oito_linhas_fixas_ancoradas_acima_da_navegacao(self):
+        g = botoes.geometria_resumo(1236, 1648)
+        self.assertEqual([l["id"] for l in g["linhas"]],
+                         ["atheron", "nas", "aparelhos", "servicos", "rotinas", "claude", "github", "ragnarok"])
+        self.assertEqual([l["destino"] for l in g["linhas"]],
+                         ["detalhes", "detalhes", "aparelhos", "servicos", "detalhes", "claude", "claude", "servicos"])
+        self.assertEqual(g["linhas"][0]["y"], 532)
+        for a, b in zip(g["linhas"], g["linhas"][1:]):
+            self.assertEqual(b["y"] - (a["y"] + a["h"]), 12)
+        for l in g["linhas"]:
+            self.assertEqual((l["x"], l["w"], l["h"]), (48, 1236 - 96, 112))
+        ult = g["linhas"][-1]
+        self.assertEqual(ult["y"] + ult["h"], botoes.limite(1648))
+        self.assertLessEqual(ult["y"] + ult["h"], botoes.nav_topo(1648) - 16)
+        self.assertEqual(g["atencao"], {"x": 48, "y": botoes.TOPO, "w": 1236 - 96, "h": 532 - botoes.TOPO})
 
-    def test_todo_case_de_pagina_dos_scripts_do_kindle_conhece_todas_as_paginas(self):
-        import glob
-        import os
-        import re
-        pasta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "kindle", "kindle-monitor")
-        encontrados = 0
-        for caminho in sorted(glob.glob(os.path.join(pasta, "*.sh"))):
-            with open(caminho, encoding="utf-8") as f:
-                texto = f.read()
-            for m in re.finditer(r'PAGINA\) case "\$v" in ([^)]*)\)', texto):
-                encontrados += 1
-                valores = set(m.group(1).split("|"))
-                self.assertEqual(valores, set(botoes.PAGINAS), caminho)
-            for m in re.finditer(r'^\s*(pagina:[^)]*)\)', texto, re.M):
-                encontrados += 1
-                ids = {x.strip() for x in m.group(1).split("|")}
-                self.assertEqual(ids, {"pagina:" + p for p in botoes.PAGINAS}, caminho)
-        self.assertGreaterEqual(encontrados, 3)
+    def test_tela_baixa_nao_emite_linhas_com_y_negativo(self):
+        for altura in (600, 800, 1000, 1200):
+            g = botoes.geometria_resumo(1236, altura)
+            self.assertEqual(g["linhas"], [], altura)
+            lay = botoes.layout("resumo", None, 1236, altura)
+            self.assertEqual([b for b in lay if b["id"].startswith("pagina:") and not b["visivel"]], [], altura)
+            for b in lay:
+                self.assertGreaterEqual(b["y"], 0, (altura, b["id"]))
+            self.assertGreaterEqual(g["atencao"]["h"], 0)
+        g = botoes.geometria_resumo(1236, 1648)
+        self.assertEqual(len(g["linhas"]), 8)
+        self.assertGreaterEqual(g["linhas"][0]["y"] - botoes.TOPO, botoes.ATENCAO_MIN_H)
+
+    def test_independe_das_metricas_e_aparece_no_layout(self):
+        g = botoes.geometria_resumo(1236, 1648)
+        inv = [b for b in botoes.layout("resumo") if not b["visivel"] and b["id"] != "atualizar"]
+        self.assertEqual([(b["id"], b["x"], b["y"], b["w"], b["h"], b["tipo"]) for b in inv],
+                         [("pagina:" + l["destino"], l["x"], l["y"], l["w"], l["h"], "local") for l in g["linhas"]])
+        self.assertEqual(botoes.layout("resumo", None, 1236, 1648, 1, itens_cheios()), botoes.layout("resumo"))
+
+
+class TapShTest(unittest.TestCase):
+    PASTA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "kindle", "kindle-monitor")
+    PADRAO_READ = 'PAGINA) case "$v" in \'\'|*[!a-z]*) ;; *) [ ${#v} -le 16 ] && PAGINA=$v ;; esac ;;'
+
+    def ler(self, nome):
+        with open(os.path.join(self.PASTA, nome), encoding="utf-8") as f:
+            return f.read()
+
+    def test_todo_id_de_pagina_casa_com_o_padrao_generico(self):
+        for p in botoes.PAGINAS:
+            self.assertRegex(p, r"^[a-z]{1,16}$")
+        for bid, _, _ in botoes.NAV:
+            self.assertRegex(bid, r"^pagina:[a-z]{1,16}$")
+            self.assertIn(bid[len("pagina:"):], botoes.PAGINAS)
+
+    def test_os_dois_case_sao_o_padrao_generico(self):
+        for nome in ("tap.sh", "loop.sh"):
+            texto = self.ler(nome)
+            self.assertEqual(texto.count("PAGINA) case"), 1, nome)
+            self.assertIn(self.PADRAO_READ, texto, nome)
+            # nenhuma lista fixa de paginas sobrou
+            for p in botoes.PAGINAS:
+                self.assertNotIn("pagina:%s |" % p, texto, nome)
+                self.assertNotIn("%s|" % p, texto.replace("pagina:", ""), nome)
+        tap = self.ler("tap.sh")
+        self.assertEqual(len(re.findall(r"^\s*pagina:\*\)", tap, re.M)), 1)
+
+    @unittest.skipUnless(shutil.which("busybox"), "sem busybox")
+    def test_trecho_do_read_state_rodado_no_busybox(self):
+        casos = {"aparelhos": "aparelhos", "resumo": "resumo", "abcdefghijklmnop": "abcdefghijklmnop",
+                 "Aparelhos": "resumo", "a1": "resumo", "../x": "resumo", "abcdefghijklmnopq": "resumo", "": "resumo",
+                 "a b": "resumo"}
+        for v, esperado in casos.items():
+            script = 'PAGINA=resumo\nv=%s\ncase "$k" in\n  %s\nesac\nprintf %%s "$PAGINA"\n' % (
+                shlex.quote(v), self.PADRAO_READ)
+            r = subprocess.run(["busybox", "sh", "-c", 'k=PAGINA; ' + script], capture_output=True, text=True, timeout=10)
+            self.assertEqual(r.stdout, esperado, (v, r.stderr))
+
+    @unittest.skipUnless(shutil.which("busybox"), "sem busybox")
+    def test_ramo_pagina_do_tap_sh_no_busybox(self):
+        tap = self.ler("tap.sh")
+        ini = tap.index("  pagina:*)")
+        fim = tap.index("  modo:desempenho")
+        ramo = tap[ini:fim]
+        casos = {"pagina:aparelhos": "aparelhos", "pagina:Aparelhos": "resumo", "pagina:a1": "resumo",
+                 "pagina:../x": "resumo", "pagina:abcdefghijklmnopq": "resumo", "pagina:": "resumo"}
+        for bid, esperado in casos.items():
+            script = 'PAGINA=resumo\nlog() { :; }\nid=%s\ncase "$id" in\n%s  *) ;;\nesac\nprintf %%s "$PAGINA"\n' % (
+                shlex.quote(bid), ramo)
+            r = subprocess.run(["busybox", "sh", "-c", script], capture_output=True, text=True, timeout=10)
+            self.assertEqual(r.stdout, esperado, (bid, r.stderr))
 
 
 if __name__ == "__main__":

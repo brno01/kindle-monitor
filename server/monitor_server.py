@@ -187,7 +187,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/tela.txt":
                 _, m = self.server.metricas(True)
                 pagina, _, p = _parametros(url.query, servicos.itens_de(m))
-                linhas = render.render_texto(m, self.server.colunas, pagina, p)  # o modo (perfil) so vale no PNG e nos botoes
+                kv = self.server.kindle.vista(_hora_snapshot(m))
+                # o modo (perfil) so vale no PNG e nos botoes
+                linhas = render.render_texto(m, self.server.colunas, pagina, p, kindle=kv)
                 self._responder(200, "\n".join(linhas) + "\n")
             elif url.path == "/tela.png":
                 sid, m = self.server.metricas(True)

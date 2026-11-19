@@ -33,13 +33,33 @@ class UnidadesTest(unittest.TestCase):
     def test_servico_do_inventario_tem_o_mesmo_endurecimento_do_executor(self):
         inv, exe = linhas(ler("kindle-monitor-inventario.service")), linhas(ler("kindle-monitor-executor.service"))
         for l in ("Type=oneshot", "User=root", "NoNewPrivileges=yes", "ProtectHome=read-only", "PrivateTmp=yes",
-                  "ProtectSystem=strict", "ReadWritePaths=/run/kindle-monitor", "ReadWritePaths=-/var/lib/incus/unix.socket",
+                  "ProtectSystem=strict", "ReadWritePaths=-/var/lib/incus/unix.socket",
                   "ProtectKernelModules=yes", "ProtectControlGroups=yes",
                   "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6"):
             self.assertIn(l, inv)
             self.assertIn(l, exe)
         self.assertTrue(any(l.startswith("ExecStart=") and "--inventario" in l and "--config /etc/kindle-monitor/config.json" in l
                             for l in inv))
+
+    def test_inventario_so_grava_em_status(self):
+        # o inventario so escreve em status/ (os fds do spool e do pai sao so leitura); o executor precisa do
+        # diretorio todo (spool e status)
+        inv, exe = linhas(ler("kindle-monitor-inventario.service")), linhas(ler("kindle-monitor-executor.service"))
+        rw = lambda ls: {l for l in ls if l.startswith("ReadWritePaths=")}
+        self.assertEqual(rw(inv), {"ReadWritePaths=/run/kindle-monitor/status", "ReadWritePaths=-/var/lib/incus/unix.socket"})
+        self.assertEqual(rw(exe), {"ReadWritePaths=/run/kindle-monitor", "ReadWritePaths=-/var/lib/incus/unix.socket"})
+        # status/ e criado pelo tmpfiles.d antes de qualquer unit subir (ReadWritePaths sem "-" exige o caminho)
+        self.assertIn("d /run/kindle-monitor/status 0755 root root -", linhas(ler("kindle-monitor.tmpfiles")))
+        inst = ler("instalar-atheron.sh")
+        self.assertLess(inst.index("systemd-tmpfiles --create /etc/tmpfiles.d/kindle-monitor.conf"),
+                        inst.index("daemon-reload"))
+
+    def test_socket_do_tailscale_nao_precisa_de_escrita(self):
+        # connect() em socket unix funciona com o mount somente leitura: nenhuma unit abre /run/tailscale
+        for nome in ("kindle-monitor-inventario.service", "kindle-monitor-executor.service"):
+            self.assertNotIn("/run/tailscale", ler(nome))
+        # AF_UNIX (socket do tailscaled, D-Bus, incus) continua permitido
+        self.assertIn("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6", linhas(ler("kindle-monitor-inventario.service")))
 
     def test_instalador_instala_e_habilita_o_timer(self):
         s = ler("instalar-atheron.sh")

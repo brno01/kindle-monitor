@@ -163,7 +163,8 @@ class ServicosHttpTest(Base):
     def test_tela_txt_resumo_mostra_contagem_e_atencao(self):
         txt = self.req("/tela.txt")[1].decode()
         self.assertIn("Servicos: 48 servicos | ", txt)
-        self.assertIn("FALHA", txt)
+        self.assertIn("ATENCAO (", txt)
+        self.assertIn("[X] Servico 2 em falha", txt)
 
     def test_metricas_json_inclui_catalogo_sem_alvos(self):
         d = json.loads(self.req("/metricas.json")[1])

@@ -7,6 +7,7 @@ para os testes nao dependerem de nvidia-smi, systemctl, rede nem /var/lib/cerber
 Convencao de falha: cada coletor falha isolado. Na classe `Coletor`, qualquer excecao
 vira `{"erro": "n/d"}` naquela metrica; coletor "ausente" (sem GPU, sem sensor) omite a chave.
 """
+import errno
 import glob
 import ipaddress
 import json
@@ -14,6 +15,7 @@ import math
 import os
 import re
 import socket
+import stat
 import subprocess
 import threading
 import time
@@ -23,6 +25,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from urllib.parse import urlsplit
 
+import alertas
+import dev_fontes
+import ecossistema
 import servicos
 
 Snapshot = namedtuple("Snapshot", "id t metricas")
@@ -502,6 +507,16 @@ def coletar_claude(cfg, ler, agora):
     return r
 
 
+PREFIXOS_DEV = ("/var/lib/", "/run/")
+
+
+def _caminho_dev(v):
+    """Caminho de fonte do painel Dev: absoluto, normalizado, sob /var/lib/ ou /run/. Senao ValueError."""
+    if not isinstance(v, str) or "\0" in v or os.path.normpath(v) != v or not v.startswith(PREFIXOS_DEV):
+        raise ValueError("caminho invalido")
+    return v
+
+
 def coletar_s10(caminho, ler, agora):
     """Resumo publico do S10 (resumo.json). Ausente, invalido ou com tipos errados -> {"erro": "n/d"}."""
     try:
@@ -689,9 +704,35 @@ def executar_padrao(args, timeout=3):
     return p.returncode, p.stdout
 
 
-def ler_arquivo_padrao(caminho):
-    with open(caminho, "r", encoding="utf-8", errors="replace") as f:
-        return f.read()
+LIMITE_ARQUIVO_PADRAO = 256 * 1024
+_FLAGS_LEITURA = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_NOCTTY", 0) | getattr(os, "O_CLOEXEC", 0)
+
+
+def ler_arquivo_padrao(caminho, limite=LIMITE_ARQUIVO_PADRAO):
+    """Texto de um arquivo regular de ate `limite` bytes; senao OSError (como arquivo ausente).
+
+    Os arquivos vem de outros usuarios: o ultimo componente nao pode ser link (O_NOFOLLOW), O_NONBLOCK evita
+    travar a thread de coleta num FIFO, e tipo e tamanho sao conferidos no descritor ja aberto (sem corrida).
+    /proc e /sys declaram tamanho 0, por isso o limite tambem vale para o que foi lido."""
+    fd = os.open(caminho, _FLAGS_LEITURA)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(errno.EINVAL, "nao e arquivo regular")
+        if st.st_size > limite:
+            raise OSError(errno.EFBIG, "arquivo grande demais")
+        partes, total = [], 0
+        while total <= limite:
+            parte = os.read(fd, limite + 1 - total)
+            if not parte:
+                break
+            partes.append(parte)
+            total += len(parte)
+        if total > limite:
+            raise OSError(errno.EFBIG, "arquivo grande demais")
+        return b"".join(partes).decode("utf-8", errors="replace")
+    finally:
+        os.close(fd)
 
 
 def _isolado(fn):
@@ -704,8 +745,9 @@ def _isolado(fn):
 class Coletor:
     def __init__(self, config, leitor_arquivo=ler_arquivo_padrao, executar=executar_padrao,
                  buscar=buscar_http, statvfs=os.statvfs, relogio=time.monotonic, agora=time.time,
-                 dormir=time.sleep, raiz_sys="/sys", conectar=CONECTAR_PADRAO):
+                 dormir=time.sleep, raiz_sys="/sys", conectar=CONECTAR_PADRAO, listar_dir=os.scandir):
         self.config = config
+        self._listar_dir = listar_dir
         self._ler = leitor_arquivo
         self._executar = executar
         self._buscar = buscar
@@ -726,6 +768,11 @@ class Coletor:
         self._catalogo = servicos.validar_catalogo(config.get("servicos_kindle") or [])
         estado = (config.get("comandos") or {}).get("estado") or INVENTARIO_ESTADO_PADRAO
         self._inventario_caminho = os.path.join(estado, INVENTARIO_ARQ)
+        self._aparelhos = ecossistema.validar_aparelhos(config.get("aparelhos"))
+        self._rotinas = ecossistema.validar_rotinas(config.get("rotinas"))
+        self._aparelhos_caminho = os.path.join(estado, ecossistema.APARELHOS_ARQ)
+        self._rotinas_caminho = os.path.join(estado, ecossistema.ROTINAS_ARQ)
+        self._offline_desde = {}  # {id do aparelho: 1o instante visto offline sem `visto_em`}; ver montar_aparelhos
         self._lock_pares = threading.Lock()
         self._pares_t = None
         self._pares_v = None
@@ -756,6 +803,26 @@ class Coletor:
         except Exception:
             texto = None
         return montar_servicos_kindle(self._catalogo, texto, self._agora())
+
+    def _ler_inventario(self, caminho):
+        try:
+            return self._ler(caminho)
+        except Exception:
+            return None
+
+    def aparelhos_inventario(self):
+        """Aparelhos do catalogo com o estado do inventario root; None sem catalogo."""
+        if not self._aparelhos:
+            return None
+        return ecossistema.montar_aparelhos(self._aparelhos, self._ler_inventario(self._aparelhos_caminho),
+                                            self._agora(), self._offline_desde)
+
+    def rotinas_inventario(self):
+        """Rotinas do catalogo com o estado do inventario root; None sem catalogo."""
+        if not self._rotinas:
+            return None
+        return ecossistema.montar_rotinas(self._rotinas, self._ler_inventario(self._rotinas_caminho),
+                                          self._agora())
 
     def servicos_itens(self):
         """Itens da tela Servicos, na ordem de exibicao (mesma lista que o render usa).
@@ -945,6 +1012,9 @@ class Coletor:
         sk = self.servicos_kindle()
         if sk is not None:
             m["servicos_kindle"] = sk
+        for chave, valor in (("aparelhos", self.aparelhos_inventario()), ("rotinas", self.rotinas_inventario())):
+            if valor is not None:
+                m[chave] = valor
         if cfg.get("portas"):
             try:
                 m["portas"] = self._portas()
@@ -959,8 +1029,15 @@ class Coletor:
             m["io"] = _isolado(self._io.medir)
         if cfg.get("claude"):
             m["claude"] = _isolado(lambda: coletar_claude(cfg["claude"], self._ler, self._agora()))
+            if isinstance(cfg["claude"], dict) and cfg["claude"].get("sessoes") and "erro" not in m["claude"]:
+                m["claude"]["sessoes"] = _isolado(lambda: caro("sessoes", lambda: dev_fontes.coletar_sessoes(
+                    _caminho_dev(cfg["claude"]["sessoes"]), self._listar_dir, self._ler, self._agora())))
+        if isinstance(cfg.get("github"), dict) and cfg["github"].get("resumo"):
+            m["github"] = _isolado(lambda: dev_fontes.coletar_github(
+                _caminho_dev(cfg["github"]["resumo"]), self._ler, self._agora()))
         if cfg.get("s10"):
             m["s10"] = _isolado(lambda: coletar_s10(cfg["s10"]["resumo"], self._ler, self._agora()))
+        m["limiares"] = alertas.limiares(cfg.get("limiares"))
         m["historico"] = self.historico()
         if com_pares and cfg.get("pares"):
             try:

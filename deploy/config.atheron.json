@@ -57,7 +57,22 @@
     {"id": "rathena-map", "rotulo": "rAthena map", "grupo": "ragnarok", "tipo": "rathena", "alvo": "rathena-map.service", "verbos": ["reiniciar"], "protegido": true},
     {"id": "rathena-web", "rotulo": "rAthena web", "grupo": "ragnarok", "tipo": "rathena", "alvo": "rathena-web.service", "verbos": ["reiniciar"], "protegido": true}
   ],
-  "claude": {"limites": "/var/lib/claude-uso/limites.json", "tokens": "/var/lib/claude-uso/tokens.json"},
+  "claude": {"limites": "/var/lib/claude-uso/limites.json", "tokens": "/var/lib/claude-uso/tokens.json", "sessoes": "/var/lib/claude-uso/sessoes"},
+  "github": {"resumo": "/var/lib/claude-uso/github.json"},
+  "limiares": {"disco_aviso": 85, "disco_critico": 93, "ram": 90, "swap": 50, "temp_cpu_c": 85, "kindle_bateria": 15, "s10_bateria": 20, "claude_limite": 90, "sessao_esperando_min": 10},
+  "aparelhos": [
+    {"id": "nomad", "nome": "nomad", "rotulo": "Notebook", "icone": "notebook"},
+    {"id": "s22", "nome": "galaxy-s22", "rotulo": "S22", "icone": "celular"},
+    {"id": "s10", "nome": "galaxy-s10", "rotulo": "S10", "icone": "celular"},
+    {"id": "iphone", "nome": "iphone-12", "rotulo": "iPhone", "icone": "celular"},
+    {"id": "kindle", "nome": "kindle-monitor", "rotulo": "Kindle", "icone": "leitor"},
+    {"id": "gw", "nome": "cerberus-gw", "rotulo": "Gateway", "icone": "rede", "alerta_offline_min": 10},
+    {"id": "games", "nome": "games", "rotulo": "Games", "icone": "jogo"}
+  ],
+  "rotinas": [
+    {"id": "senhas", "rotulo": "Backup senhas", "tipo": "timer", "alvo": "cerberus-vault-backup.service", "max_idade_h": 26},
+    {"id": "senhas-arq", "rotulo": "Arquivo senhas", "tipo": "arquivo", "alvo": "/srv/nas/backups/vaultwarden", "max_idade_h": 26}
+  ],
   "s10": {"resumo": "/run/cerberus-s10-publico/resumo.json"},
   "balanceador": "/var/lib/cerberus/memory-balancer.json",
   "pares": [],

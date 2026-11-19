@@ -4,6 +4,7 @@ import time
 import unittest
 
 import _caminho  # noqa: F401
+import alertas
 import botoes
 import canvas as cv
 import coletores
@@ -122,6 +123,8 @@ class NadaForaNemSobrepostoTest(unittest.TestCase):
             bs = botoes.layout(pagina, None, w, h, p, servicos.ordenar(servicos.itens_de(m)))
             for x0, x1, y0, y1, t, tam in c.textos:
                 for b in bs:
+                    if not b["visivel"]:  # so toque, nada desenhado
+                        continue
                     caixa_b = (b["x"], b["x"] + b["w"], b["y"], b["y"] + b["h"])
                     dentro = x0 >= caixa_b[0] and x1 <= caixa_b[1] and y0 >= caixa_b[2] and y1 <= caixa_b[3]
                     self.assertTrue(dentro or not inter((x0, x1, y0, y1), caixa_b), (nome, pagina, p, w, t, b["id"]))
@@ -170,38 +173,38 @@ class ConteudoTest(unittest.TestCase):
         for g in ("HOST", "CONTEINERES", "DOCKER", "RAGNAROK"):
             self.assertIn(g, todos)
 
-    def test_resumo_tem_resumo_no_cabecalho_e_ragnarok_em_uma_linha(self):
+    def test_resumo_tem_uma_linha_por_sistema_e_o_cabecalho_so_host_e_hora(self):
         m = caso52()
         tx = self.textos(m, "resumo")
-        itens = servicos.itens_de(m)
-        self.assertIn(servicos.texto_resumo(itens), tx)
-        rag = [t for t in tx if t.startswith("RAGNAROK")]
-        self.assertEqual(len(rag), 1)
-        self.assertIn("jogadores", rag[0])
-        for rot in ("CPU", "RAM", "GPU"):
-            self.assertIn(rot, tx)
-        self.assertTrue(any(t.startswith("DISCO") for t in tx))
-        self.assertIn("ATENCAO", tx)
+        self.assertNotIn(servicos.texto_resumo(servicos.itens_de(m)), tx)  # saiu do cabecalho
+        self.assertEqual([t for t in tx if t in ("ATHERON", "NAS", "APARELHOS", "SERVICOS", "ROTINAS", "CLAUDE",
+                                                  "GITHUB", "RAGNAROK")],
+                         ["ATHERON", "NAS", "APARELHOS", "SERVICOS", "ROTINAS", "CLAUDE", "GITHUB", "RAGNAROK"])
+        self.assertTrue(any(t.endswith("jogadores") for t in tx))
+        self.assertTrue(any(t.startswith("CPU ") for t in tx))
+        self.assertTrue(any(t.startswith("ATENCAO (") for t in tx))
+        for velho in ("TODOS OS SERVICOS", "SERVICOS POR GRUPO"):  # chips e grupos so existem em outras paginas
+            self.assertNotIn(velho, tx)
 
     def test_tudo_em_ordem(self):
         todos_ok = servicos_kindle(12, 1)
         for i in todos_ok["itens"]:
             i["estado"] = "ativo"
-        m = caso52(servicos_kindle=todos_ok)
+        portas = [dict(p, aberto=True) for p in caso_cheio()["portas"]]
+        m = caso52(servicos_kindle=todos_ok, portas=portas)
         self.assertIn("Tudo em ordem", self.textos(m, "resumo"))
 
     def test_atencao_lista_falhas_e_nao_opcionais_parados(self):
         m = caso52()
-        r = servicos.resumo(servicos.itens_de(m))
-        self.assertTrue(r["atencao"])
+        lista = alertas.avaliar(m)
+        self.assertTrue(lista)
         tx = self.textos(m, "resumo")
-        self.assertIn("ATENCAO", tx)
-        self.assertTrue(any(t.startswith(r["atencao"][0]["rotulo"][:8]) for t in tx))
+        self.assertIn("ATENCAO (%d)" % len(lista), tx)
+        self.assertIn(lista[0]["texto"], tx)
 
     def test_aviso_de_inventario_velho(self):
         m = caso52(servicos_kindle=servicos_kindle(gerado=AGORA - 500))
-        for pagina in ("resumo", "servicos"):
-            self.assertIn("estados desatualizados", self.textos(m, pagina))
+        self.assertIn("Inventario de servicos velho", self.textos(m, "resumo"))  # vira alerta no ATENCAO
         self.assertNotIn("estados desatualizados", self.textos(caso52(), "resumo"))
 
     def test_acoes_tem_ate_8_comandos_e_rotulo_de_servico(self):
@@ -213,8 +216,10 @@ class ConteudoTest(unittest.TestCase):
 
     def test_detalhes_tem_discos_io_temperaturas(self):
         tx = self.textos(caso52(), "detalhes")
-        for t in ("DISCOS", "MEMORIA", "SERVICOS POR GRUPO", "HISTORICO"):
+        for t in ("DISCOS", "MEMORIA", "ROTINAS", "HISTORICO"):
             self.assertIn(t, tx)
+        for t in ("SERVICOS POR GRUPO", "WHISPERSYNC", "RAGNAROK"):  # saem da pagina Sistema
+            self.assertNotIn(t, tx)
         self.assertTrue(any(t.startswith("DISCO") or t == "DISCO" for t in tx))
         self.assertTrue(any("°C" in t for t in tx))
 
@@ -226,6 +231,8 @@ class PixelsTest(unittest.TestCase):
         for p in (1, 2):
             c = desenha(m, "servicos", None, p)
             for b in botoes.layout("servicos", None, 1236, 1648, p, itens):
+                if not b["visivel"]:
+                    continue
                 px = lambda x, y: c.pixels[y * c.largura + x]
                 self.assertLess(px(b["x"] + b["w"] // 2, b["y"] + 1), 100, b["id"])
                 self.assertLess(px(b["x"] + 1, b["y"] + b["h"] // 2), 100, b["id"])
@@ -246,7 +253,7 @@ class PixelsTest(unittest.TestCase):
         for pagina in botoes.PAGINAS:
             c = desenha(caso52(), pagina)
             for b in botoes.layout(pagina):
-                if b["id"].startswith("pagina:"):
+                if b["id"].startswith("pagina:") and b.get("visivel", True):
                     miolo = c.pixels[(b["y"] + 12) * c.largura + b["x"] + 12]
                     self.assertEqual(miolo < 50, b["id"] == "pagina:" + pagina, (pagina, b["id"]))
 
@@ -258,7 +265,7 @@ class PixelsTest(unittest.TestCase):
                 self.assertEqual(min(linhas[y][larg - 40:]), 255, (pagina, y))
 
     def test_sem_grandes_vazios_no_resumo(self):
-        # nenhuma faixa em branco com mais de 60 px entre o cabecalho e a navegacao
+        # com o ATENCAO cheio (6 itens + "+N") nenhuma faixa em branco passa de 60 px entre o cabecalho e a navegacao
         larg, alt, linhas = pixels(render_png.render_png(caso52(), historico(), pagina="resumo"))
         corrida = maior = 0
         for y in range(botoes.CAB_PX, botoes.nav_topo(alt)):

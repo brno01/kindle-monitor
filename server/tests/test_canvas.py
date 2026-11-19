@@ -177,5 +177,27 @@ class IconeTest(unittest.TestCase):
         self.assertEqual(set(c.pixels), {255})
 
 
+class ConjuntoIconesTest(unittest.TestCase):
+    NOMES = {
+        "acoes", "alerta", "aparelhos", "backup", "celular", "claude", "conteiner", "dev",
+        "docker", "github", "inicio", "jogo", "leitor", "nas", "notebook", "ok", "rede",
+        "rotinas", "servicos", "servidor", "sistema", "tailscale", "temperatura",
+    }
+
+    def test_nomes_do_conjunto(self):
+        self.assertEqual(len(icones_dados.ICONES), 23)
+        self.assertEqual(set(icones_dados.ICONES), self.NOMES)
+
+    def test_cada_icone_tem_pixels_cheios_e_vazios(self):
+        for nome in sorted(self.NOMES):
+            for tam in (30, 40, 56):
+                with self.subTest(nome=nome, tam=tam):
+                    ic = cv.carregar_icone(nome, tam)
+                    self.assertIsNotNone(ic)
+                    self.assertEqual(len(ic["bitmap"]), ic["w"] * ic["h"])
+                    self.assertTrue(any(b >= 128 for b in ic["bitmap"]))
+                    self.assertTrue(any(b == 0 for b in ic["bitmap"]))
+
+
 if __name__ == "__main__":
     unittest.main()

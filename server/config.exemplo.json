@@ -66,9 +66,23 @@
     {"id": "rathena-web", "rotulo": "rAthena web", "grupo": "ragnarok", "tipo": "rathena", "alvo": "rathena-web.service", "verbos": ["reiniciar"], "protegido": true}
   ],
 
+  "_comentario_aparelhos": "Catalogo de aparelhos da pagina Aparelhos (inventario root aparelhos.json, validade 60 s). Exemplo comentado; renomeie _exemplo_aparelhos para aparelhos para ligar. id a-z0-9 e '-' (1 a 24); nome: nome do peer no Tailscale (sem empresa-x); rotulo ASCII ate 16; icone: nome de icones_dados.ICONES; alerta_offline_min opcional (1 a 10080): alerta critico se ficar offline por tanto tempo. Maximo 16. Lista invalida e descartada inteira.",
+  "_exemplo_aparelhos": [{"id": "gw", "nome": "cerberus-gw", "rotulo": "Gateway", "icone": "rede", "alerta_offline_min": 10}],
+
+  "_comentario_rotinas": "Catalogo de rotinas (inventario root rotinas.json, validade 60 s). Exemplo comentado; renomeie _exemplo_rotinas para rotinas para ligar. tipo timer: alvo = unit .service; tipo arquivo: alvo = caminho absoluto sob /srv/, /var/lib/ ou /var/backups/ (vale o mtime). rotulo ASCII ate 20; max_idade_h de 0.1 a 720: acima disso a rotina fica atrasada (aviso). Maximo 16. Lista invalida e descartada inteira.",
+  "_exemplo_rotinas": [{"id": "senhas", "rotulo": "Backup senhas", "tipo": "timer", "alvo": "cerberus-vault-backup.service", "max_idade_h": 26}],
+
   "_comentario_balanceador": "Arquivo JSON do balanceador do Ragnarok (campo players_by.ragnarok; chave ausente = 0 jogadores; 'updated' com mais de 120 s = dado PARADO). Use null para desligar (ex.: no nomad).",
   "_comentario_claude": "Arquivos do claude-uso (limites de 5 h/semanal e tokens). Sem a chave 'claude' a secao some. Arquivo ausente, invalido ou velho (limites > 15 min, tokens > 20 min) mostra n/d ou aviso.",
   "claude": {"limites": "/var/lib/claude-uso/limites.json", "tokens": "/var/lib/claude-uso/tokens.json"},
+  "_comentario_claude_sessoes": "Sessoes abertas do Claude Code (aba Dev, alerta leve de sessao esperando). Exemplo comentado; para ligar, acrescente \"sessoes\" dentro de 'claude' com o diretorio (absoluto, sob /var/lib/ ou /run/) onde o claude-sessao grava <id>.json. Le ate 50 arquivos regulares de ate 4 KB; sessao com atualizado_em de mais de 10 min e ignorada. Sem a chave, m.claude.sessoes nao existe.",
+  "_exemplo_claude_sessoes": "/var/lib/claude-uso/sessoes",
+
+  "_comentario_github": "PRs abertos e CI dos repositorios pessoais (aba Dev, alerta de CI falhando), do github.json do claude-github. Exemplo comentado; renomeie _exemplo_github para github para ligar. resumo: caminho absoluto sob /var/lib/ ou /run/. Arquivo com mais de 20 min fica marcado como velho; ausente ou invalido mostra n/d. Sem a chave, m.github nao existe.",
+  "_exemplo_github": {"resumo": "/var/lib/claude-uso/github.json"},
+
+  "_comentario_limiares": "Limiares dos alertas do cartao ATENCAO (todos opcionais; valor invalido volta ao padrao): disco_aviso/disco_critico (% usado), ram, swap (%), temp_cpu_c (40 a 120), kindle_bateria, s10_bateria (%), claude_limite (% do limite de 5 h/semanal), sessao_esperando_min (1 a 1440).",
+  "limiares": {"disco_aviso": 85, "disco_critico": 93, "ram": 90, "swap": 50, "temp_cpu_c": 85, "kindle_bateria": 15, "s10_bateria": 20, "claude_limite": 90, "sessao_esperando_min": 10},
 
   "_comentario_s10": "Resumo publico do S10 gerado pelo Cerberus (bateria, caminhos de acesso, avisos). Sem a chave 's10' a secao some; resumo com mais de 2 min fica marcado como velho.",
   "s10": {"resumo": "/run/cerberus-s10-publico/resumo.json"},

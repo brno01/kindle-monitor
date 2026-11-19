@@ -72,6 +72,8 @@ class BotoesDesenhadosTest(unittest.TestCase):
         for pagina in botoes.PAGINAS:
             c = tela(caso_cheio(), pagina, "gpu-descarregar")
             for b in botoes.layout(pagina, "gpu-descarregar"):
+                if not b["visivel"]:
+                    continue
                 cx = b["x"] + b["w"] // 2
                 self.assertLess(px(c, cx, b["y"] + 1), 100, (pagina, b["id"], "borda de cima"))
                 self.assertLess(px(c, cx, b["y"] + b["h"] - 2), 100, (pagina, b["id"], "borda de baixo"))
@@ -85,11 +87,23 @@ class BotoesDesenhadosTest(unittest.TestCase):
         for pagina in botoes.PAGINAS:
             c = tela(completo(), pagina)
             for b in botoes.layout(pagina):
-                if b["tipo"] != "local" or b["id"].startswith("modo:"):
+                if not b["visivel"] or b["tipo"] != "local" or b["id"].startswith("modo:"):
                     continue
                 miolo = px(c, b["x"] + 12, b["y"] + 12)  # canto interno, longe do texto
                 esperado_escuro = b["id"] == "pagina:" + pagina
                 self.assertEqual(miolo < 50, esperado_escuro, (pagina, b["id"]))
+
+    def test_barra_com_seis_abas_sem_atualizar(self):
+        for pagina in botoes.PAGINAS:
+            abas = [b for b in botoes.layout(pagina) if b["visivel"] and b["id"].startswith("pagina:")]
+            self.assertEqual(len(abas), 6, pagina)
+            self.assertNotIn("atualizar", [b["id"] for b in botoes.layout(pagina) if b["visivel"]])
+
+    def test_invisiveis_nao_sao_desenhados(self):
+        c = tela(completo(), "aparelhos")
+        for b in botoes.layout("aparelhos"):
+            if not b["visivel"]:
+                self.assertEqual(px(c, b["x"] + 1, b["y"] + 1), 255, b["id"])
 
     def test_botao_armado_invertido_e_demais_claros(self):
         c = tela(completo(), "comandos", "gpu-descarregar")
@@ -138,18 +152,20 @@ class ResumoTest(unittest.TestCase):
                 self.assertEqual(min(linhas[y][:40]), 255, (pagina, y))
                 self.assertEqual(min(linhas[y][larg - 40:]), 255, (pagina, y))
 
-    def test_resumo_tem_numeros_grandes(self):
-        # o numero do CPU (72 px na v5) ocupa muita altura contigua de tinta
-        larg, alt, linhas = pixels(render_png.render_png(completo(cpu={"pct": 56.0}), historico()))
-        topo = None
-        seq = 0
-        for y in range(100, 600):
-            if min(linhas[y][70:200]) < 100:
-                seq += 1
-                topo = max(topo or 0, seq)
-            else:
-                seq = 0
-        self.assertGreater(topo, 48)
+    def test_resumo_valores_em_negrito_34_e_titulos_em_26(self):
+        usados = []
+        orig = cv.Canvas.texto
+
+        def espia(self, x, y, t, fonte, tam, *a, **k):
+            usados.append((t, fonte, tam))
+            return orig(self, x, y, t, fonte, tam, *a, **k)
+        cv.Canvas.texto = espia
+        try:
+            tela(completo(cpu={"pct": 56.0}), "resumo")
+        finally:
+            cv.Canvas.texto = orig
+        self.assertIn(("CPU 56%  RAM 38%", "sans-bold", 34), usados)
+        self.assertIn(("ATHERON", "sans-bold", 26), usados)
 
     def test_servicos_com_falha_aparecem(self):
         a = render_png.render_png(completo(servicos=[{"nome": "a.service", "ativo": True}]), None)
@@ -184,7 +200,7 @@ def dados_claude(**extra):
 
 
 def textos(m, w=1236, h=1648):
-    """Textos desenhados na pagina claude (canvas estrito: nada fora da imagem)."""
+    """Textos desenhados nas paginas Dev (claude) e Aparelhos, onde o S10 mora (canvas estrito: nada fora da imagem)."""
     caps = []
     original = cv.Canvas.texto
 
@@ -195,6 +211,7 @@ def textos(m, w=1236, h=1648):
     cv.Canvas.texto = espia
     try:
         tela(m, "claude", w=w, h=h)
+        tela(m, "aparelhos", w=w, h=h)
     finally:
         cv.Canvas.texto = original
     return caps
@@ -307,16 +324,17 @@ class HelpersClaudeTest(unittest.TestCase):
 
 class NavClaudeTest(unittest.TestCase):
     def test_seis_botoes_dentro_da_barra_sem_sobreposicao(self):
-        nav = [b for b in botoes.layout("resumo") if b["y"] == botoes.nav_topo()]
+        nav = [b for b in botoes.layout("resumo") if b["visivel"] and b["y"] == botoes.nav_topo()]
         self.assertEqual(len(nav), 6)
-        self.assertEqual(nav[-1]["id"], "pagina:claude")
+        self.assertEqual(nav[-1]["id"], "pagina:comandos")
+        self.assertIn("pagina:claude", [b["id"] for b in nav])
         for a, b in zip(nav, nav[1:]):
             self.assertLessEqual(a["x"] + a["w"], b["x"])
         self.assertLessEqual(nav[-1]["x"] + nav[-1]["w"], 1236 - botoes.MARGEM)
 
     def test_rotulo_cabe_no_botao(self):
-        nav = [b for b in botoes.layout("resumo") if b["id"] == "pagina:claude"][0]
-        self.assertLessEqual(cv.Canvas.medir(nav["rotulo"], "sans-bold", 26), nav["w"] - 16)
+        for nav in (b for b in botoes.layout("resumo") if b["visivel"] and b["y"] == botoes.nav_topo()):
+            self.assertLessEqual(cv.Canvas.medir(nav["rotulo"], "sans-bold", 26), nav["w"] - 16, nav["id"])
 
 
 class NaoFinitosClaudeTest(unittest.TestCase):
@@ -350,3 +368,50 @@ class NaoFinitosClaudeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NavIconesTest(unittest.TestCase):
+    def _nav(self):
+        return [b for b in botoes.layout("resumo") if b["visivel"] and b["y"] == botoes.nav_topo()]
+
+    def test_todos_os_rotulos_da_nav_em_negrito_26(self):
+        for pagina in botoes.PAGINAS:
+            usados = []
+            orig = cv.Canvas.texto
+
+            def espia(self, x, y, t, fonte, tam, *a, **k):
+                if y > botoes.nav_topo():  # so o que e desenhado na barra de navegacao
+                    usados.append((t, fonte, tam))
+                return orig(self, x, y, t, fonte, tam, *a, **k)
+            cv.Canvas.texto = espia
+            try:
+                tela(completo(), pagina)
+            finally:
+                cv.Canvas.texto = orig
+            for _bid, rotulo, _ic in botoes.NAV:
+                self.assertEqual([u for u in usados if u[0] == rotulo], [(rotulo, "sans-bold", 26)], (pagina, rotulo))
+
+    def test_cada_aba_tem_icone_na_metade_de_cima(self):
+        for pagina in botoes.PAGINAS:
+            c = tela(completo(), pagina)
+            for b in self._nav():
+                ativa = b["id"] == "pagina:" + pagina
+                fundo = 0 if ativa else 255
+                topo = [px(c, x, y) for y in range(b["y"] + 4, b["y"] + b["h"] // 2)
+                        for x in range(b["x"] + b["w"] // 2 - 15, b["x"] + b["w"] // 2 + 15)]
+                self.assertGreater(sum(1 for v in topo if abs(v - fundo) > 100), 30, (pagina, b["id"]))
+
+    def test_aba_atual_invertida_com_icone_e_rotulo_brancos(self):
+        c = tela(completo(), "servicos")
+        b = [n for n in self._nav() if n["id"] == "pagina:servicos"][0]
+        self.assertEqual(px(c, b["x"] + 12, b["y"] + 12), 0)
+        area = [px(c, x, y) for y in range(b["y"] + 8, b["y"] + b["h"] - 8) for x in range(b["x"] + 8, b["x"] + b["w"] - 8)]
+        self.assertGreater(sum(1 for v in area if v > 200), 100)  # icone e rotulo em branco sobre o preto
+
+    def test_nav_igual_em_todas_as_paginas_exceto_a_atual(self):
+        a = tela(completo(), "resumo")
+        b = tela(completo(), "claude")
+        n = [x for x in self._nav() if x["id"] not in ("pagina:resumo", "pagina:claude")][0]
+        for y in range(n["y"], n["y"] + n["h"]):
+            self.assertEqual(a.pixels[y * 1236 + n["x"]:y * 1236 + n["x"] + n["w"]],
+                             b.pixels[y * 1236 + n["x"]:y * 1236 + n["x"] + n["w"]])

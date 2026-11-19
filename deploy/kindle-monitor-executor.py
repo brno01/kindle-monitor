@@ -12,7 +12,10 @@ cada um e aberto com O_DIRECTORY|O_NOFOLLOW e conferido com fstat (dono, permiss
 usa dir_fd, nunca caminho, entao trocar um diretorio por symlink nao leva o root para fora. Se algo nao
 bater, recusa tudo (excecao Recusa, saida 1). Se os diretorios nao existem, sai 0 sem criar nada.
 Com --inventario, em vez de processar o spool, coleta o estado de todos os servicos do catalogo (em lote, sem
-shell) e grava status/servicos.json para o web ler. Biblioteca padrao apenas.
+shell) e grava status/servicos.json para o web ler; com o catalogo "aparelhos" tambem le `tailscale status --json`
+(saida tratada como dado nao confiavel; so id/online/visto_em/conexao sai) e grava status/aparelhos.json; com o
+catalogo "rotinas" le `systemctl show` dos timers, o mtime dos arquivos (sem seguir symlink, sem ler conteudo) e
+`systemctl list-units --failed`, e grava status/rotinas.json. Biblioteca padrao apenas.
 """
 import argparse
 import grp
@@ -23,8 +26,11 @@ import signal
 import stat
 import subprocess
 import sys
+import datetime
 import time
 import urllib.request
+
+_stat = stat
 
 ACOES = ("gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar")
 GRUPOS = ("host", "incus", "docker", "ragnarok")
@@ -32,6 +38,17 @@ TIPOS = ("systemd", "incus", "docker", "rathena")
 VERBOS = ("reiniciar", "ligar", "parar")
 VERBO_CLI = {"reiniciar": "restart", "ligar": "start", "parar": "stop"}
 INVENTARIO_ARQ = "servicos.json"
+APARELHOS_ARQ = "aparelhos.json"
+TIMEOUT_TAILSCALE = 10
+TAILSCALE_MAX = 4 << 20   # bytes lidos de `tailscale status --json`; acima disso e erro
+APARELHOS_MAX = 16
+ROTINAS_ARQ = "rotinas.json"
+ROTINAS_MAX = 16
+TIMEOUT_ROTINAS = 10      # por comando (systemctl show; systemctl list-units)
+ARQUIVO_ENTRADAS_MAX = 2000   # entradas diretas de um diretorio lidas para achar o maior mtime
+FALHAS_NOMES_MAX = 5
+FALHAS_N_MAX = 9999
+SAIDA_ROTINAS_MAX = 1 << 20   # bytes de saida do systemctl considerados; o resto e ignorado
 TIMEOUT_INVENTARIO = 10
 TIMEOUT_INCUS = 90
 TIMEOUT_EXEC = 60
@@ -56,11 +73,28 @@ RE_SVC_ARQ = re.compile(r"^svc--([a-z0-9-]{1,40})--(reiniciar|ligar|parar)\Z")
 RE_ACAO_ARQ = re.compile(r"^[a-z-]{3,32}\Z")
 RE_ID = re.compile(r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?\Z")
 RE_ALVO = re.compile(r"^[A-Za-z0-9_.@-]{1,64}\Z")
+RE_APARELHO_ID = re.compile(r"^[a-z0-9-]{1,24}\Z")
+RE_APARELHO_NOME = re.compile(r"^[a-z0-9-]{1,63}\Z")
+RE_APARELHO_ICONE = re.compile(r"^[a-z]{2,16}\Z")
+CHAVES_APARELHO = {"id", "nome", "rotulo", "icone", "alerta_offline_min"}
+RE_ROTINA_ID = re.compile(r"^[a-z0-9-]{1,24}\Z")
+RE_ROTINA_ALVO_TIMER = re.compile(r"^[A-Za-z0-9_.@-]{1,64}\.service\Z")
+RE_UNIDADE_FALHA = re.compile(r"^[A-Za-z0-9_.@:-]{1,40}\Z")
+RE_RESULTADO_UNIT = re.compile(r"^[a-z-]{1,24}\Z")
+PREFIXOS_ARQUIVO = ("/srv/", "/var/lib/", "/var/backups/")
+NEGADOS_ARQUIVO = ("/var/lib/claude-uso",)  # fonte do painel, nao e alvo de rotina (o web ja le por outro caminho)
+CHAVES_ROTINA = {"id", "rotulo", "tipo", "alvo", "max_idade_h"}
 RE_PROJETO = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}\Z")
 CHAVES_CATALOGO = {"id", "rotulo", "grupo", "tipo", "alvo", "projeto", "prefixo", "verbos", "protegido", "opcional"}
 RE_BOT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}\Z")  # nunca comeca com "-" (viraria opcao)
 PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+# `--` antes dos alvos: nome do catalogo que comece com "-" nunca vira opcao. LoadState distingue unit inexistente
+# (o systemd devolve Result=success para ela); ExecMainStatus da o "exit N". --timestamp=unix da "@epoch".
+SHOW_ROTINAS = ["systemctl", "show", "-p", "Id", "-p", "Result", "-p", "LoadState", "-p", "ExecMainStatus",
+                "-p", "ExecMainExitTimestamp", "--timestamp=unix", "--"]
+LISTA_FALHAS = ["systemctl", "list-units", "--failed", "--plain", "--no-legend", "--no-pager"]
+TAILSCALE = ["tailscale", "status", "--json"]  # PATH fixo (PATH do executar_padrao), como systemctl/incus
 INCUS = ["incus", "exec", "games", "--project", "core", "--"]
 TIMER = "ro-bot-scheduler.timer"
 # is-active e fail-open (oneshot sem RemainAfterExit fica "activating", rc 3): le o valor e so libera inactive/failed.
@@ -170,6 +204,89 @@ def validar_catalogo(lista):
     return saida
 
 
+def validar_aparelhos(lista):
+    """Valida `aparelhos` (E8; mesmas regras do web). ValueError com a causa; devolve copias novas.
+
+    `icone` so tem o formato conferido aqui: o executor (-I, root) nao importa nada de server/, e a lista
+    de icones vive la; o web descarta o aparelho cujo icone nao existe.
+    """
+    if lista is None:
+        return []
+    if not isinstance(lista, list):
+        raise ValueError("aparelhos deve ser uma lista")
+    if len(lista) > APARELHOS_MAX:
+        raise ValueError("aparelhos: no maximo %d itens" % APARELHOS_MAX)
+    ids, nomes, saida = set(), set(), []
+    for i, it in enumerate(lista):
+        r = "aparelhos[%d]" % i
+        if not isinstance(it, dict):
+            raise ValueError("%s deve ser um objeto" % r)
+        if set(it) - CHAVES_APARELHO:
+            raise ValueError("%s: chave desconhecida" % r)
+        aid, nome, rot, ico = it.get("id"), it.get("nome"), it.get("rotulo"), it.get("icone")
+        if not isinstance(aid, str) or not RE_APARELHO_ID.match(aid):
+            raise ValueError("%s: id invalido" % r)
+        if not isinstance(nome, str) or not RE_APARELHO_NOME.match(nome) or "empresa-x" in nome.lower():
+            raise ValueError("%s: nome invalido" % r)
+        if not isinstance(rot, str) or not 1 <= len(rot) <= 16 or not rot.isascii() or not rot.isprintable():
+            raise ValueError("%s: rotulo invalido" % r)
+        if not isinstance(ico, str) or not RE_APARELHO_ICONE.match(ico):
+            raise ValueError("%s: icone invalido" % r)
+        if aid in ids or nome in nomes:
+            raise ValueError("%s: id ou nome repetido" % r)
+        ids.add(aid)
+        nomes.add(nome)
+        item = {"id": aid, "nome": nome, "rotulo": rot, "icone": ico}
+        if "alerta_offline_min" in it:
+            m = it["alerta_offline_min"]
+            if type(m) is not int or not 1 <= m <= 10080:
+                raise ValueError("%s: alerta_offline_min invalido" % r)
+            item["alerta_offline_min"] = m
+        saida.append(item)
+    return saida
+
+
+def validar_rotinas(lista):
+    """Valida `rotinas` (E8; mesmas regras do web). ValueError com a causa; devolve copias novas."""
+    if lista is None:
+        return []
+    if not isinstance(lista, list):
+        raise ValueError("rotinas deve ser uma lista")
+    if len(lista) > ROTINAS_MAX:
+        raise ValueError("rotinas: no maximo %d itens" % ROTINAS_MAX)
+    ids, saida = set(), []
+    for i, it in enumerate(lista):
+        r = "rotinas[%d]" % i
+        if not isinstance(it, dict):
+            raise ValueError("%s deve ser um objeto" % r)
+        if set(it) - CHAVES_ROTINA:
+            raise ValueError("%s: chave desconhecida" % r)
+        rid, rot, tipo, alvo, idade = (it.get("id"), it.get("rotulo"), it.get("tipo"), it.get("alvo"),
+                                       it.get("max_idade_h"))
+        if not isinstance(rid, str) or not RE_ROTINA_ID.match(rid):
+            raise ValueError("%s: id invalido" % r)
+        if not isinstance(rot, str) or not 1 <= len(rot) <= 20 or not rot.isascii() or not rot.isprintable():
+            raise ValueError("%s: rotulo invalido" % r)
+        if tipo == "timer":
+            if not isinstance(alvo, str) or not RE_ROTINA_ALVO_TIMER.match(alvo):
+                raise ValueError("%s: alvo invalido" % r)
+        elif tipo == "arquivo":
+            if (not isinstance(alvo, str) or not os.path.isabs(alvo) or os.path.normpath(alvo) != alvo
+                    or not alvo.startswith(PREFIXOS_ARQUIVO)
+                    or any(alvo == n or alvo.startswith(n + "/") for n in NEGADOS_ARQUIVO)):
+                raise ValueError("%s: alvo invalido" % r)
+        else:
+            raise ValueError("%s: tipo invalido" % r)
+        if (isinstance(idade, bool) or not isinstance(idade, (int, float)) or idade != idade
+                or not 0.1 <= idade <= 720):
+            raise ValueError("%s: max_idade_h invalido" % r)
+        if rid in ids:
+            raise ValueError("%s: id repetido" % r)
+        ids.add(rid)
+        saida.append({"id": rid, "rotulo": rot, "tipo": tipo, "alvo": alvo, "max_idade_h": idade})
+    return saida
+
+
 def acao_valida(acao):
     return acao in ACOES or bool(RE_SVC_ACAO.match(acao))
 
@@ -186,9 +303,11 @@ def validar_cfg(c):
     """Valida a secao "comandos" da config. ValueError com a causa."""
     if not isinstance(c, dict):
         raise ValueError("comandos deve ser um objeto")
-    r = {"spool": SPOOL_PADRAO, "estado": ESTADO_PADRAO, "acoes": list(ACOES), "catalogo": []}
+    r = {"spool": SPOOL_PADRAO, "estado": ESTADO_PADRAO, "acoes": list(ACOES), "catalogo": [], "aparelhos": [], "rotinas": []}
     r.update({k: v for k, v in c.items() if k in r})
     r["catalogo"] = validar_catalogo(r["catalogo"])
+    r["aparelhos"] = validar_aparelhos(r["aparelhos"])
+    r["rotinas"] = validar_rotinas(r["rotinas"])
     for k in ("spool", "estado"):
         if not isinstance(r[k], str) or not os.path.isabs(r[k]):
             raise ValueError("comandos.%s deve ser um caminho absoluto (texto)" % k)
@@ -245,6 +364,8 @@ class Executor:
         self.estado = cfg["estado"]
         self.habilitadas = list(cfg["acoes"])
         self.catalogo = {i["id"]: i for i in cfg["catalogo"]}
+        self.aparelhos = list(cfg["aparelhos"])
+        self.rotinas = list(cfg["rotinas"])
         self.agora_inv = time.time
         self.executar = executar
         self.http = http
@@ -345,11 +466,50 @@ class Executor:
             dados = coletar_inventario(list(self.catalogo.values()), self.executar)
             doc = {"gerado": int(self.agora_inv()), "servicos": dados}
             self._gravar_arquivo(INVENTARIO_ARQ, json.dumps(doc, separators=(",", ":")).encode("utf-8"))
+            # depois dos servicos; um nao quebra o outro (cada um grava o seu arquivo, e falha vira log)
+            if self.aparelhos:
+                self._isolado("aparelhos", self._inventariar_aparelhos)
+            if self.rotinas:
+                self._isolado("rotinas", self._inventariar_rotinas)
             return 1
         finally:
             self._fechar(self._pai_fds)
             self._pai_fds = []
             self.fd_spool = self.fd_estado = None
+
+    def _isolado(self, nome, fn):
+        try:
+            fn()
+        except Exception as e:  # BaseException (SIGTERM) continua subindo
+            self.log("inventario de %s falhou: %s" % (nome, _curto(type(e).__name__, 40)))
+
+    def _inventariar_rotinas(self):
+        """Coleta timers, arquivos e unidades em falha e grava status/rotinas.json. Comando que falha, estoura o
+        tempo ou qualquer excecao: todas as rotinas `desconhecido` e `unidades_falhas` zerado. Nunca levanta."""
+        try:
+            doc = coletar_rotinas(self.rotinas, self.executar, agora=self.agora_inv)
+        except Exception as e:
+            self.log("rotinas: coleta falhou (%s)" % _curto(type(e).__name__, 40))
+            doc = rotinas_desconhecidas(self.rotinas, agora=self.agora_inv)
+        self._gravar_arquivo(ROTINAS_ARQ, json.dumps(doc, separators=(",", ":")).encode("utf-8"))
+
+    def _inventariar_aparelhos(self):
+        """Roda `tailscale status --json` (argv fixo, sem shell) e grava status/aparelhos.json. Nunca levanta."""
+        texto = None
+        try:
+            rc, out, _ = self.executar(list(TAILSCALE), TIMEOUT_TAILSCALE)
+            texto = out if rc == 0 else None
+            erro = "codigo %s" % rc if rc != 0 else None
+        except subprocess.TimeoutExpired:
+            erro = "tempo esgotado"
+        except OSError:
+            erro = "comando indisponivel"
+        except Exception:  # saida do executor e dado nao confiavel; nada daqui derruba o inventario
+            erro = "falha ao executar"
+        doc = parse_tailscale(texto, self.aparelhos, agora=self.agora_inv)
+        if erro is not None:
+            doc["erro"] = _curto(erro, 40)
+        self._gravar_arquivo(APARELHOS_ARQ, json.dumps(doc, separators=(",", ":")).encode("utf-8"))
 
     def _passada(self):
         agora = self.agora_ns()
@@ -800,6 +960,323 @@ def coletar_inventario(catalogo, executar):
     return saida
 
 
+_RE_FRACAO = re.compile(r"(\.\d{1,9})(?=Z|[+-]\d{2}:?\d{2}|\Z)")
+
+
+def _epoch_visto(valor):
+    """LastSeen (ISO 8601, sufixo Z, fracao de ate 9 digitos) -> epoch int; None se vazio, zero ou invalido."""
+    if not isinstance(valor, str) or not 10 <= len(valor) <= 64 or not valor.isascii():
+        return None
+    t = valor.strip()
+    if t.endswith(("Z", "z")):
+        t = t[:-1] + "+00:00"
+    t = _RE_FRACAO.sub(lambda m: (m.group(1) + "000000")[:7], t, count=1)  # fromisoformat antigo so aceita 3 ou 6
+    try:
+        d = datetime.datetime.fromisoformat(t)
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=datetime.timezone.utc)
+        n = int(d.timestamp())
+    except (ValueError, OverflowError, OSError):
+        return None
+    return n if n > 946684800 else None  # antes de 2000 = "0001-01-01" do Tailscale (nunca visto) ou lixo
+
+
+def _dns_sem_ponto(v):
+    """DNSName em minusculas e sem o ponto final; None se nao for texto."""
+    if not isinstance(v, str):
+        return None
+    v = v.strip().lower()
+    return v[:-1] if v.endswith(".") else v
+
+
+def _sufixo_tailnet(dados):
+    """Sufixo MagicDNS da propria tailnet (`<tailnet>.ts.net`) ou None.
+
+    Vem do nome do proprio no (`Self.DNSName` sem o 1o rotulo); sem ele, de `CurrentTailnet.MagicDNSSuffix` ou
+    `MagicDNSSuffix`. Um no compartilhado de outra tailnet tem outro sufixo e nao pode valer como aparelho meu."""
+    eu = dados.get("Self")
+    dns = _dns_sem_ponto(eu.get("DNSName")) if isinstance(eu, dict) else None
+    if dns:
+        suf = dns.partition(".")[2]
+        if suf:
+            return suf
+    atual = dados.get("CurrentTailnet")
+    for v in (atual.get("MagicDNSSuffix") if isinstance(atual, dict) else None, dados.get("MagicDNSSuffix")):
+        suf = _dns_sem_ponto(v)
+        if suf:
+            return suf
+    return None
+
+
+def parse_tailscale(texto, catalogo, agora=None):
+    """Saida de `tailscale status --json` -> aparelhos.json (E7). Pura; NUNCA levanta.
+
+    `catalogo` = lista validada por validar_aparelhos. So sai o que o catalogo pede e so id, online, visto_em e
+    conexao: nenhum IP, chave, e-mail, usuario, SO ou nome de peer de fora do catalogo. So vale peer cujo DNSName
+    e `<nome>.<sufixo MagicDNS da minha tailnet>`; sem como saber o sufixo, e erro. Entrada ruim vira `erro`
+    curto (ASCII, <= 40) com todos online null.
+    """
+    ids = [(a["id"], a["nome"]) for a in catalogo]
+    vazio = {i: {"online": None, "visto_em": None, "conexao": None} for i, _ in ids}
+    try:
+        gerado = int((agora or time.time)())
+    except Exception:
+        gerado = 0
+
+    def doc(erro, aparelhos):
+        return {"versao": 1, "gerado": gerado, "erro": erro, "aparelhos": aparelhos}
+
+    if not isinstance(texto, str) or not texto.strip():
+        return doc("saida vazia", vazio)
+    if len(texto) > TAILSCALE_MAX:
+        return doc("saida grande demais", vazio)
+    try:
+        dados = json.loads(texto)
+    except (ValueError, RecursionError):
+        return doc("json invalido", vazio)
+    peers = dados.get("Peer") if isinstance(dados, dict) else None
+    if not isinstance(peers, dict):
+        return doc("formato inesperado", vazio)
+    sufixo = _sufixo_tailnet(dados)
+    if not sufixo:
+        return doc("sem sufixo da tailnet", vazio)  # sem ele nao da para separar meus aparelhos dos alheios
+    achados = {}
+    for p in peers.values():
+        if not isinstance(p, dict) or not isinstance(p.get("DNSName"), str):
+            continue
+        rotulo, _, resto = _dns_sem_ponto(p["DNSName"]).partition(".")
+        if resto != sufixo:
+            continue  # no de outra tailnet (compartilhado) com o mesmo 1o rotulo
+        online = p.get("Online") if isinstance(p.get("Online"), bool) else None
+        if rotulo in achados and not (online is True and achados[rotulo]["online"] is not True):
+            continue  # nome repetido: o primeiro vale, a nao ser que o novo esteja online e o antigo nao
+        cur, relay = p.get("CurAddr"), p.get("Relay")
+        if isinstance(cur, str) and cur:
+            conexao = "direto"
+        elif isinstance(relay, str) and relay:
+            conexao = "relay"
+        else:
+            conexao = None
+        achados[rotulo] = {"online": online, "visto_em": _epoch_visto(p.get("LastSeen")), "conexao": conexao}
+    return doc(None, {i: dict(achados.get(nome, vazio[i])) for i, nome in ids})
+
+
+def _agora_int(agora):
+    try:
+        return int(agora())
+    except Exception:
+        return 0
+
+
+def rotinas_desconhecidas(catalogo, agora=time.time):
+    """rotinas.json de quando nada pode ser lido: todas `desconhecido`, sem unidades em falha."""
+    return {"versao": 1, "gerado": _agora_int(agora),
+            "rotinas": {r["id"]: {"resultado": "desconhecido", "ultima_em": None, "detalhe": "sem dados"}
+                        for r in catalogo},
+            "unidades_falhas": {"n": 0, "nomes": []}}
+
+
+_SHOW_CHAVES = ("Id", "Result", "LoadState", "ExecMainStatus", "ExecMainExitTimestamp")
+
+
+def parse_show(texto):
+    """Saida de `systemctl show -p ...` (blocos `Chave=valor` separados por linha em branco) -> {Id: {chave: valor}}.
+
+    Pura; so as chaves pedidas; texto nao confiavel (limitado, nunca levanta)."""
+    saida = {}
+    if not isinstance(texto, str):
+        return saida
+    bloco = {}
+
+    def fecha():
+        i = bloco.get("Id")
+        if i and i not in saida:
+            saida[i] = dict(bloco)
+        bloco.clear()
+
+    for linha in texto[:SAIDA_ROTINAS_MAX].splitlines():
+        if not linha.strip():
+            fecha()
+            continue
+        k, sep, v = linha.partition("=")
+        if sep and k in _SHOW_CHAVES:
+            bloco[k] = v.strip()[:80]
+    fecha()
+    return saida
+
+
+def _epoch_unix(valor):
+    """`@1795054082` (--timestamp=unix) -> int; None se vazio, zero, antes de 2000 ou invalido."""
+    if not isinstance(valor, str) or not re.match(r"^@\d{1,12}\Z", valor):
+        return None
+    n = int(valor[1:])
+    return n if n > 946684800 else None
+
+
+def _resultado_timer(info):
+    """info do `show` de uma unit (ou None) -> {"resultado", "ultima_em", "detalhe"}."""
+    def r(res, ultima, det):
+        return {"resultado": res, "ultima_em": ultima, "detalhe": _curto(det, 24)}
+    if info is None or info.get("LoadState") == "not-found":
+        return r("desconhecido", None, "sem unidade")
+    if info.get("LoadState") != "loaded":
+        return r("desconhecido", None, "nao carregada")
+    ultima = _epoch_unix(info.get("ExecMainExitTimestamp"))
+    res = info.get("Result")
+    if not isinstance(res, str) or not RE_RESULTADO_UNIT.match(res):
+        return r("desconhecido", ultima, "sem resultado")
+    if res == "success":
+        return r("ok", ultima, "ok") if ultima is not None else r("desconhecido", None, "nunca rodou")
+    status = info.get("ExecMainStatus")
+    if res == "exit-code" and isinstance(status, str) and re.match(r"^\d{1,3}\Z", status):
+        return r("falha", ultima, "exit %s" % status)
+    return r("falha", ultima, res)
+
+
+_O_CAMINHO = getattr(os, "O_PATH", 0)  # Linux: fd so para caminho (sem permissao de leitura, nao bloqueia em FIFO)
+_FLAGS_COMPONENTE = _O_CAMINHO | os.O_NOFOLLOW | os.O_CLOEXEC
+_FLAGS_LISTAR = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0)
+
+
+class _SemLink(Exception):
+    """Componente do alvo e um link simbolico."""
+
+
+def _abrir_componente(nome, dir_fd):
+    """Abre `nome` dentro de `dir_fd` sem seguir link (O_PATH|O_NOFOLLOW); devolve (fd, fstat). Link vira _SemLink."""
+    fd = os.open(nome, _FLAGS_COMPONENTE, dir_fd=dir_fd)
+    try:
+        st = os.fstat(fd)
+        if _stat.S_ISLNK(st.st_mode):
+            raise _SemLink()
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, st
+
+
+def _mtime_arquivo(alvo):
+    """(ultima_em|None, detalhe). Sem seguir symlink em NENHUM componente, sem ler conteudo, sem recursao.
+
+    Roda como root sobre caminhos que outros usuarios podem alterar: desce de "/" por descritores
+    (openat com O_NOFOLLOW em cada componente), decide o tipo com fstat no descritor final e lista o
+    diretorio pelo proprio descritor, entao trocar um componente por link entre as etapas nao desvia a leitura."""
+    partes = alvo.split("/") if isinstance(alvo, str) and alvo.startswith("/") else []
+    partes = partes[1:]
+    if not partes or any(p in ("", ".", "..") or "\0" in p for p in partes):
+        return None, "erro de leitura"
+    abertos = []
+
+    def abre(nome, base):
+        fd, st = _abrir_componente(nome, base)
+        abertos.append(fd)
+        return fd, st
+
+    try:
+        atual = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        abertos.append(atual)
+        for nome in partes[:-1]:
+            atual, st = abre(nome, atual)
+            if not _stat.S_ISDIR(st.st_mode):
+                return None, "erro de leitura"
+        fd, st = abre(partes[-1], atual)
+        modo = st.st_mode
+        if _stat.S_ISREG(modo):
+            return _mtime_valido(st.st_mtime)
+        if not _stat.S_ISDIR(modo):
+            return None, "tipo inesperado"
+        # reabre "." a partir do proprio descritor (mesmo inodo, agora listavel); confere o tipo de novo
+        dfd = os.open(".", _FLAGS_LISTAR, dir_fd=fd)
+        abertos.append(dfd)
+        if not _stat.S_ISDIR(os.fstat(dfd).st_mode):
+            return None, "tipo inesperado"
+        melhor, vistas = None, 0
+        with os.scandir(dfd) as it:
+            for e in it:
+                vistas += 1
+                if vistas > ARQUIVO_ENTRADAS_MAX:
+                    break
+                try:
+                    if e.is_symlink():
+                        continue
+                    m = e.stat(follow_symlinks=False).st_mtime
+                except OSError:
+                    continue
+                if melhor is None or m > melhor:
+                    melhor = m
+        if melhor is None:
+            return None, "vazio"
+        return _mtime_valido(melhor)
+    except _SemLink:
+        return None, "link ignorado"
+    except FileNotFoundError:
+        return None, "sem arquivo"
+    except (OSError, ValueError):
+        return None, "erro de leitura"
+    finally:
+        for fd in abertos:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _mtime_valido(m):
+    try:
+        n = int(m)
+    except (TypeError, ValueError, OverflowError):
+        return None, "data invalida"
+    return (n, "ok") if 946684800 < n < 4102444800 else (None, "data invalida")  # 2000 .. 2100
+
+
+def parse_falhas(texto):
+    """Saida de `systemctl list-units --failed --plain --no-legend` -> {"n", "nomes"}.
+
+    1a coluna de cada linha; `n` conta as linhas (limitado a 9999); `nomes` so tem as que passam em
+    ^[A-Za-z0-9_.@:-]{1,40}$ (ate 5). Linha que cita "empresa-x" (qualquer caixa) nao conta nem aparece.
+    Pura; nunca levanta."""
+    n, nomes = 0, []
+    if not isinstance(texto, str):
+        return {"n": 0, "nomes": []}
+    for linha in texto[:SAIDA_ROTINAS_MAX].splitlines():
+        col = linha.split(None, 1)
+        if not col or "empresa-x" in linha.lower():  # nada da empresa-x vai para a tela (nem na contagem)
+            continue
+        n += 1
+        if len(nomes) < FALHAS_NOMES_MAX and RE_UNIDADE_FALHA.match(col[0]):
+            nomes.append(col[0])
+    return {"n": min(n, FALHAS_N_MAX), "nomes": nomes}
+
+
+def coletar_rotinas(catalogo, executar, agora=time.time):
+    """Catalogo validado -> rotinas.json (E7). Dependencias injetadas; so o argv fixo e os alvos ja validados
+    (argumentos separados, depois de `--`) chegam ao systemctl. Comando com saida != 0 ou que levanta: a excecao
+    sobe e o chamador grava tudo `desconhecido`. Erro em arquivo vira `desconhecido` so naquela rotina."""
+    timers = []
+    for r in catalogo:
+        if r["tipo"] == "timer" and r["alvo"] not in timers:
+            timers.append(r["alvo"])
+    infos = {}
+    if timers:
+        rc, out, _ = executar(SHOW_ROTINAS + timers, TIMEOUT_ROTINAS)
+        if rc != 0:
+            raise RuntimeError("systemctl show rc=%s" % rc)
+        infos = parse_show(out)
+    rc, out, _ = executar(list(LISTA_FALHAS), TIMEOUT_ROTINAS)
+    if rc != 0:
+        raise RuntimeError("systemctl list-units rc=%s" % rc)
+    falhas = parse_falhas(out)
+    rotinas = {}
+    for r in catalogo:
+        if r["tipo"] == "timer":
+            rotinas[r["id"]] = _resultado_timer(infos.get(r["alvo"]))
+        else:
+            ultima, det = _mtime_arquivo(r["alvo"])
+            rotinas[r["id"]] = {"resultado": "ok" if ultima is not None else "desconhecido",
+                                "ultima_em": ultima, "detalhe": _curto(det, 24)}
+    return {"versao": 1, "gerado": _agora_int(agora), "rotinas": rotinas, "unidades_falhas": falhas}
+
+
 def carregar_cfg(caminho):
     """Le e valida a secao "comandos". OSError/ValueError com a causa."""
     with open(caminho, "r", encoding="utf-8") as f:
@@ -809,6 +1286,17 @@ def carregar_cfg(caminho):
     cfg = validar_cfg(dict(dados.get("comandos", {})) if isinstance(dados.get("comandos", {}), dict)
                       else dados.get("comandos"))
     cfg["catalogo"] = validar_catalogo(dados.get("servicos_kindle", []))
+    # aparelhos invalidos nao derrubam o resto: lista vazia (nada a fazer) e o motivo para o main registrar
+    try:
+        cfg["aparelhos"] = validar_aparelhos(dados.get("aparelhos", []))
+    except ValueError as e:
+        cfg["aparelhos"] = []
+        cfg["aparelhos_erro"] = str(e)
+    try:
+        cfg["rotinas"] = validar_rotinas(dados.get("rotinas", []))
+    except ValueError as e:
+        cfg["rotinas"] = []
+        cfg["rotinas_erro"] = str(e)
     return cfg
 
 
@@ -824,6 +1312,10 @@ def main(argv=None, log=_log_padrao):
         # exit 0: config ruim nao pode virar laco de falhas disparado pela .path
         log("config invalida, nada feito: %s" % _curto(e, 120))
         return 0
+    if args.inventario and cfg.get("aparelhos_erro"):
+        log("aparelhos invalidos, aparelhos.json nao gravado: %s" % _curto(cfg["aparelhos_erro"], 120))
+    if args.inventario and cfg.get("rotinas_erro"):
+        log("rotinas invalidas, rotinas.json nao gravado: %s" % _curto(cfg["rotinas_erro"], 120))
     signal.signal(signal.SIGTERM, _sigterm)
     try:
         ex = Executor(cfg, log=log)

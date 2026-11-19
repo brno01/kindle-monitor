@@ -2,6 +2,7 @@
 import unicodedata
 from datetime import datetime
 
+import alertas
 import botoes
 import coletores
 import formato
@@ -111,7 +112,7 @@ def _linhas_io(io, cols):
     return linhas
 
 
-def _secao(m, cols, compacto, nome=None):
+def _secao(m, cols, compacto, nome=None, kindle=None):
     linhas = ["== %s ==" % (nome or m.get("host", "?"))]
     cpu, ram, swap, gpu = m.get("cpu"), m.get("ram"), m.get("swap"), m.get("gpu")
 
@@ -221,6 +222,12 @@ def _secao(m, cols, compacto, nome=None):
         elif svcs is not None:
             linhas.append("Servicos n/d")
         linhas += _linhas_catalogo(m, cols)
+        linhas += _linhas_rotinas(m, cols)
+        atencao = _linhas_atencao(m, cols, kindle)
+        dev = _linhas_dev_resumo(m)
+        while dev and 2 + len(linhas) + len(dev) + len(atencao) > MAX_LINHAS:
+            dev.pop()  # o ATENCAO tem prioridade sobre as linhas de resumo do Dev (GitHub sai primeiro)
+        linhas += dev + atencao
     return linhas
 
 
@@ -234,9 +241,54 @@ def _linhas_catalogo(m, cols):
     aviso = {"velho": "estados desatualizados", "ausente": "sem inventario"}.get(sk.get("inventario"))
     if aviso:
         linhas.append("! " + aviso)
-    for i in servicos.resumo(itens)["atencao"][:6]:
-        linhas.append("%s %s" % (str(i.get("rotulo", "?"))[:max(1, cols - 8)].ljust(max(1, cols - 8)),
-                                 "FALHA" if i.get("estado") == "falha" else "parado"))
+    return linhas
+
+
+FORMA_ECO_TXT = {"ativo": "[#]", "parado": "[ ]", "falha": "[X]", "aviso": "[!]", None: "[?]"}
+ECO_PROBLEMAS_MAX = 4  # linhas de problema por secao (aparelhos ou rotinas), com "+N" no lugar da ultima se sobrar
+
+
+def _problemas(itens, estado):
+    """Linhas "[forma] rotulo texto" so dos itens que pedem atencao (nao ok), no maximo ECO_PROBLEMAS_MAX; o resto
+    vira "  +N". Os piores primeiro quando precisa cortar."""
+    ruins = [i for i in itens if estado(i)[0] != "ativo"]
+    vis, resto = render_png._cortar(ruins, ECO_PROBLEMAS_MAX, estado)
+    linhas = []
+    for it in vis:
+        forma, txt = estado(it)
+        linhas.append("  %s %s %s" % (FORMA_ECO_TXT.get(forma, "[?]"), render_png._rotulo(it), txt))
+    if resto:
+        linhas.append("  +%d" % resto)
+    return linhas
+
+
+def _linhas_rotinas(m, cols):
+    """Secao de rotinas da tela principal, uma linha so ("Rotinas: N de M ok", como "Servicos: ..."): o que esta
+    com problema (falha, atrasada, unidades em falha, inventario velho) ja sai no ATENCAO, que o motor de alertas
+    alimenta. Vazia sem o bloco `rotinas`."""
+    fonte = render_png._fonte_itens(m, "rotinas")
+    if fonte is None:
+        return []
+    ok, its = fonte
+    if not ok or not its:
+        return ["Rotinas: sem dados"]
+    return ["Rotinas: %d de %d ok" % (sum(1 for i in its if render_png._rotina_ok(i)), len(its))]
+
+
+ATENCAO_MAX = 6
+PREFIXO_NIVEL = {"critico": "[X]", "aviso": "[!]", "leve": "[ ]"}
+
+
+def _linhas_atencao(m, cols, kindle=None):
+    """Alertas do motor (os mesmos do cartao ATENCAO da imagem): ate 6 e '+N' com o resto; vazio sem alertas."""
+    lista = alertas.avaliar(m, None, kindle)
+    if not lista:
+        return []
+    linhas = ["ATENCAO (%d)" % len(lista)]
+    for a in lista[:ATENCAO_MAX]:
+        linhas.append("%s %s" % (PREFIXO_NIVEL.get(a.get("nivel"), "[?]"), a.get("texto", "?")))
+    if len(lista) > ATENCAO_MAX:
+        linhas.append("+%d" % (len(lista) - ATENCAO_MAX))
     return linhas
 
 
@@ -304,47 +356,163 @@ def _linhas_comandos(m, cols):
 
 
 def _linhas_claude(m, cols):
-    """Pagina claude em texto: limites e tokens do Claude Code e o estado do S10 (so leitura)."""
-    tem_c, tem_s = "claude" in m, "s10" in m
-    if not (tem_c or tem_s):
-        return ["Claude/S10 desligado na config"]
+    """Pagina claude (Dev) em texto: limites e tokens do Claude Code, mais SESSOES e GITHUB."""
+    if "claude" not in m:
+        return ["Claude desligado na config"]
     agora, tz = render_png._agora(m)
     num, ok = render_png._num, render_png._ok
     linhas = []
-    if tem_c:
-        cl = m["claude"] if isinstance(m["claude"], dict) else {}
-        lim, tok = cl.get("limites"), cl.get("tokens")
-        linhas.append("CLAUDE")
-        if not ok(lim):
-            linhas.append("  limites n/d")
+    cl = m["claude"] if isinstance(m["claude"], dict) else {}
+    lim, tok = cl.get("limites"), cl.get("tokens")
+    linhas.append("CLAUDE")
+    if not ok(lim):
+        linhas.append("  limites n/d")
+    else:
+        for chave, nome in (("cinco_horas", "5h"), ("semanal", "Semanal")):
+            j = lim.get(chave)
+            j = j if isinstance(j, dict) else {}
+            pct = num(j.get("pct"))
+            if pct is None:
+                linhas.append("  %-7s n/d" % nome)
+                continue
+            ren = j.get("renovado") is True
+            pct = 0.0 if ren else min(100.0, max(0.0, float(pct)))
+            sub = "renovado" if ren else render_png._volta_txt(j.get("volta_em"), agora, tz)
+            linhas.append(("  %-7s %3d%% %s" % (nome, round(pct), sub)).rstrip())
+        if lim.get("velho") is True:
+            linhas.append("  limites %s" % render_png._idade_txt(lim.get("idade_s")))
+    if not ok(tok):
+        linhas.append("  tokens n/d")
+    else:
+        for chave, nome in (("hoje", "Hoje"), ("sete_dias", "7 dias")):
+            t = tok.get(chave)
+            t = t if isinstance(t, dict) else {}
+            linhas.append("  %-7s %s tok %s" % (nome, render_png._tokens_txt(t.get("total")),
+                                                render_png._custo_txt(t.get("custo_usd"))))
+        if tok.get("velho") is True:
+            linhas.append("  tokens %s" % render_png._idade_txt(tok.get("idade_s")))
+    linhas += [""] + _linhas_sessoes(m, cols) + [""] + _linhas_github(m, cols)
+    return [l.rstrip() for l in linhas]
+
+
+FORMA_SESSAO_TXT = {"ativo": "[#]", "parado": "[ ]", "aviso": "[!]", "falha": "[X]", render_png.SESSAO_ABERTA: "[-]",
+                    None: "[?]"}
+FORMA_PR_TXT = {"ativo": "[#]", "parado": "[ ]", "falha": "[X]", None: "   "}
+SESSOES_TXT_MAX = 4   # linhas de sessao na pagina em texto (o resto vira "+N"): o limite de linhas e curto
+PRS_TXT_MAX = 4
+CI_TXT_MAX = 2
+
+
+def _linhas_sessoes(m, cols):
+    """SESSOES em texto: "SESSOES N sessoes, M esperando" e uma linha por sessao (ate 4, "+N" com o resto)."""
+    cl = m.get("claude") if isinstance(m.get("claude"), dict) else {}
+    limite = render_png._limite_sessao_s(m)
+    d = render_png._sessoes_visiveis(cl, SESSOES_TXT_MAX + 1, limite)
+    if d is None:
+        return ["SESSOES", "  sem dados"]
+    vis, resto, total, esp = d
+    if not total:
+        return ["SESSOES", "  nenhuma sessao aberta"]
+    linhas = ["SESSOES " + render_png._sessoes_txt(total, esp)]
+    for it in vis:
+        forma, txt = render_png._sessao_txt(it, limite)
+        proj = render_png._limpar(it.get("projeto")).strip() if isinstance(it.get("projeto"), str) else ""
+        cabeca = "  %s " % FORMA_SESSAO_TXT.get(forma, "[?]")
+        livre = max(4, cols - len(cabeca) - len(txt) - 1)  # so o projeto encolhe (o estado e o que importa)
+        proj = (proj if len(proj) <= livre else proj[:livre - 3] + "...") or "?"
+        linhas.append("%s%s %s" % (cabeca, proj, txt))
+    if resto:
+        linhas.append("  +%d" % resto)
+    return linhas
+
+
+def _linha_pr(pr, cols):
+    """"  [X] repo#7 titulo cortado (rascunho)" cabendo em `cols`: so o titulo encolhe."""
+    forma = FORMA_PR_TXT.get(render_png._estado_pr(pr)[0], "   ")
+    cabeca = "  %s %s" % (forma, render_png._pr_ref(pr))
+    cauda = " (rascunho)" if pr.get("rascunho") is True else ""
+    titulo = render_png._limpar(pr.get("titulo")).strip() if isinstance(pr.get("titulo"), str) else ""
+    livre = cols - len(cabeca) - len(cauda) - 1
+    if livre >= 4 and titulo:
+        titulo = titulo if len(titulo) <= livre else titulo[:livre - 3] + "..."
+        return "%s %s%s" % (cabeca, titulo, cauda)
+    return cabeca + cauda
+
+
+def _linhas_github(m, cols):
+    """GITHUB em texto: "GITHUB N PRs abertos", ate 4 PRs e o CI (so o que nao esta ok, e "N ok")."""
+    d = render_png._github_dados(m.get("github"), PRS_TXT_MAX)
+    if d is None:
+        return ["GITHUB", "  sem dados"]
+    titulo = "GITHUB " + render_png._plural(d["abertos"], "PR aberto", "PRs abertos") if d["abertos"] else "GITHUB"
+    linhas = [titulo]
+    if d["velho"] and render_png._idade_txt(d["idade_s"]):
+        linhas.append("  dados " + render_png._idade_txt(d["idade_s"]))
+    if not d["abertos"]:
+        linhas.append("  nenhum PR aberto")
+    linhas += [_linha_pr(pr, cols) for pr in d["prs"]]
+    if d["resto"]:
+        linhas.append("  +%d" % d["resto"])
+    ruins = d["ci_ruins"]
+    vis = ruins if len(ruins) <= CI_TXT_MAX + 1 else ruins[:CI_TXT_MAX]
+    linhas += ["  " + render_png._ci_txt(i) for i in vis]
+    if len(vis) < len(ruins):
+        linhas.append("  +%d" % (len(ruins) - len(vis)))
+    if d["ci_ok"]:
+        linhas.append("  CI %d ok" % d["ci_ok"])
+    return linhas
+
+
+def _linhas_dev_resumo(m):
+    """Tela principal: no maximo uma linha por fonte nova ("Claude: N sessoes, M esperando", "GitHub: N PRs, CI ok");
+    os detalhes e o que pede atencao saem na pagina Dev e no ATENCAO."""
+    linhas = []
+    ses = render_png._sessoes_dados(m.get("claude") if isinstance(m.get("claude"), dict) else {})
+    if ses is not None and ses[1] > 0:
+        linhas.append("Claude: " + render_png._sessoes_txt(ses[1], ses[2]))
+    if "github" in m:
+        d = render_png._github_dados(m["github"], PRS_TXT_MAX)
+        if d is None:
+            linhas.append("GitHub: sem dados")
         else:
-            for chave, nome in (("cinco_horas", "5h"), ("semanal", "Semanal")):
-                j = lim.get(chave)
-                j = j if isinstance(j, dict) else {}
-                pct = num(j.get("pct"))
-                if pct is None:
-                    linhas.append("  %-7s n/d" % nome)
-                    continue
-                ren = j.get("renovado") is True
-                pct = 0.0 if ren else min(100.0, max(0.0, float(pct)))
-                sub = "renovado" if ren else render_png._volta_txt(j.get("volta_em"), agora, tz)
-                linhas.append(("  %-7s %3d%% %s" % (nome, round(pct), sub)).rstrip())
-            if lim.get("velho") is True:
-                linhas.append("  limites %s" % render_png._idade_txt(lim.get("idade_s")))
-        if not ok(tok):
-            linhas.append("  tokens n/d")
-        else:
-            for chave, nome in (("hoje", "Hoje"), ("sete_dias", "7 dias")):
-                t = tok.get(chave)
-                t = t if isinstance(t, dict) else {}
-                linhas.append("  %-7s %s tok %s" % (nome, render_png._tokens_txt(t.get("total")),
-                                                    render_png._custo_txt(t.get("custo_usd"))))
-            if tok.get("velho") is True:
-                linhas.append("  tokens %s" % render_png._idade_txt(tok.get("idade_s")))
-    if tem_s:
+            ci = ("falhou" if any(i.get("estado") == "falha" for i in d["ci_ruins"])
+                  else "pendente" if d["ci_ruins"] else "ok" if d["ci_ok"] else "sem dados")
+            linhas.append("GitHub: %s, CI %s" % (render_png._plural(d["abertos"], "PR", "PRs"), ci))
+    return linhas
+
+
+def _linhas_kindle(kv):
+    """Cartao do Kindle em texto (a vista de `kindle_status`); sem vista, "sem dados"."""
+    if not isinstance(kv, dict):
+        return ["KINDLE", "  sem dados"]
+    bat, det, pares = render_png._campos_kindle(kv)
+    nivel = render_png._num(bat)
+    linhas = ["KINDLE", "  bateria %s %s" % ("n/d" if nivel is None else "%d%%" % round(nivel), det)]
+    for k, v in pares:
+        linhas.append("  %s %s" % (k.lower(), v))
+    return linhas
+
+
+def _linhas_tailnet(m):
+    """Cartao TAILNET em texto: "TAILNET N de M online" e so os aparelhos que pedem atencao (offline, falha, sem
+    dado); sem o bloco, ou com inventario velho/ausente, "sem dados"."""
+    fonte = render_png._fonte_itens(m, "aparelhos")
+    if fonte is None or (fonte[0] and not fonte[1]):
+        return ["TAILNET", "  sem dados"]
+    ok, its = fonte
+    if not ok:
+        return ["TAILNET", "  sem dados (" + render_png.INVENTARIO_SEM + ")"]
+    on = sum(1 for i in its if i.get("online") is True)
+    return ["TAILNET %d de %d online" % (on, len(its))] + _problemas(its, render_png._estado_aparelho)
+
+
+def _linhas_aparelhos(m, cols, kv=None):
+    """Pagina aparelhos em texto: TAILNET, Kindle e S10 (se houver na config)."""
+    ok, num = render_png._ok, render_png._num
+    linhas = _linhas_tailnet(m) + [""] + _linhas_kindle(kv)
+    if "s10" in m:
         s = m["s10"] if ok(m["s10"]) else {}
-        if linhas:
-            linhas.append("")
+        linhas.append("")
         if not s:
             linhas += ["S10", "  n/d"]
             return linhas
@@ -370,10 +538,11 @@ def _linhas_claude(m, cols):
     return [l.rstrip() for l in linhas]
 
 
-def render_texto(metricas, colunas, pagina="resumo", p=1):
+def render_texto(metricas, colunas, pagina="resumo", p=1, kindle=None):
     """Monta a tela: lista de linhas ASCII, cada uma com no maximo `colunas` caracteres.
 
-    `pagina`: "resumo" e "detalhes" mostram a tela completa (o texto ja e um resumo denso); "comandos" so lista os rotulos.
+    `pagina`: "resumo" e "detalhes" mostram a tela completa (o texto ja e um resumo denso); "servicos", "aparelhos",
+    "claude" e "comandos" tem texto proprio (ver `botoes.PAGINAS`); `p` pagina a lista de "servicos".
     """
     cols = max(1, int(colunas))
     m = metricas if isinstance(metricas, dict) else {}
@@ -384,12 +553,15 @@ def render_texto(metricas, colunas, pagina="resumo", p=1):
     if pagina == "claude":
         linhas += _linhas_claude(m, cols)
         return [ascii_seguro(l)[:cols] for l in linhas][:MAX_LINHAS]
+    if pagina == "aparelhos":
+        linhas += _linhas_aparelhos(m, cols, kindle)
+        return [ascii_seguro(l)[:cols] for l in linhas][:MAX_LINHAS]
     if pagina == "comandos":
         linhas += _linhas_comandos(m, cols)
         linhas = [ascii_seguro(l)[:cols] for l in linhas]
         return linhas[:MAX_LINHAS]
     try:
-        linhas += _secao(m, cols, compacto=False)
+        linhas += _secao(m, cols, compacto=False, kindle=kindle)
     except Exception:
         linhas.append("n/d")
 
