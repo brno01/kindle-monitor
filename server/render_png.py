@@ -834,19 +834,37 @@ def _sessoes_dados(cl):
     return itens, total, esp
 
 
+def _push_txt(dias):
+    """"push hoje" / "push ha 3 d"; "" sem dado."""
+    return "" if dias is None else "push hoje" if dias == 0 else "push ha %d d" % dias
+
+
 def _l_github(m, kv, itens):
+    """GITHUB da tela inicial. Valor: "11 PRs  3 issues" (sem issues no arquivo, so os PRs). Detalhe, por prioridade:
+    CI falhou, conflito, mudancas pedidas, CI pendente (se nao houve falha) ou CI ok, e o push mais recente."""
     d = _github_dados(m.get("github"), PRS_MAX)
     if d is None:
         return "", "", False
-    valor = _plural(d["abertos"], "PR aberto", "PRs abertos")
+    valor = _plural(d["abertos"], "PR", "PRs")
+    if d["issues"] is not None:
+        valor += "  " + _plural(d["issues"]["n"], "issue", "issues")
     falha = next((i for i in d["ci_ruins"] if i.get("estado") == "falha"), None)
+    det = []
     if falha is not None:
-        det = "CI falhou: " + _repo(falha)
-    elif d["ci_ruins"]:
-        det = "CI pendente: " + _repo(d["ci_ruins"][0])
-    else:
-        det = "CI ok" if d["ci_ok"] else ""
-    return valor, det, True
+        det.append("CI falhou: " + _repo(falha))
+    if d["conflitos"]:
+        pr = d["conflitos"][0]
+        n = _num(pr.get("numero"))
+        det.append("conflito: " + _repo(pr) + (" #%d" % n if n is not None and n >= 0 else ""))
+    if d["mudancas"]:
+        det.append("mudancas pedidas: %d" % d["mudancas"])
+    if falha is None:
+        if d["ci_ruins"]:
+            det.append("CI pendente: " + _repo(d["ci_ruins"][0]))
+        elif d["ci_ok"]:
+            det.append("CI ok")
+    det.append(_push_txt(d["push_d"]))
+    return valor, SEP.join(x for x in det if x), True
 
 
 ROTINAS_SEM = "rotinas sem dado"
@@ -1041,7 +1059,8 @@ def _linha_sistema(c, caixa, linha):
     cap_v, cap_d = _cap(NEG, 34), _cap(REG, 26)
     topo = y + (h - (cap_v + 16 + cap_d)) // 2
     base1 = topo + cap_v
-    ajustar = _ajustar_itens if linha.get("id") == "jogos" else _ajustar  # JOGOS lista nomes: so corta entre itens
+    # JOGOS e GITHUB listam itens: so cortam entre itens
+    ajustar = _ajustar_itens if linha.get("id") in ("jogos", "github") else _ajustar
     c.texto(xt, base1, _ajustar(c, linha.get("titulo", ""), NEG, 26, xv - xt - 8), NEG, 26, ESCURO)
     c.texto(xv, base1, ajustar(c, linha.get("valor", ""), NEG, 34, fim - xv), NEG, 34, MEDIO if sem else PRETO)
     det = linha.get("detalhe") or ""
@@ -1793,22 +1812,73 @@ def _estado_pr(pr):
     return {"ok": "ativo", "falha": "falha", "pendente": "parado"}.get(pr.get("ci")), ""
 
 
+ISSUES_MAX = 5
+REPOS_MAX = 6
+
+
+def _dias(v):
+    """Dias 0..9999 de um campo opcional do GitHub, ou None (ausente, bool, fora da faixa)."""
+    n = _num(v)
+    return int(n) if n is not None and not isinstance(v, bool) and float(n).is_integer() and 0 <= n <= 9999 else None
+
+
+def _revisao_pr(pr):
+    r = pr.get("revisao")
+    return r if r in ("aprovado", "mudancas", "pendente") else None
+
+
+def _grav_pr(pr):
+    """Gravidade de um PR para decidir quem fica no corte: CI em falha ou conflito primeiro, depois CI pendente ou
+    mudancas pedidas, depois o resto (mesma escala de `_GRAVIDADE`)."""
+    g = _GRAVIDADE.get(_estado_pr(pr)[0], 1)
+    if pr.get("conflito") is True:
+        g = max(g, 3)
+    if _revisao_pr(pr) == "mudancas":
+        g = max(g, 2)
+    return g
+
+
+def _issues_dados(g):
+    """{"n", "itens"} (ate ISSUES_MAX itens validos) de g["issues"], ou None se falta ou tem forma errada."""
+    b = g.get("issues")
+    if not isinstance(b, dict) or not isinstance(b.get("itens"), list):
+        return None
+    itens = [i for i in b["itens"] if isinstance(i, dict)][:ISSUES_MAX]
+    n = _dias(b.get("n"))
+    return {"n": n if n is not None and n >= len(itens) else len(itens), "itens": itens}
+
+
+def _repos_dados(g):
+    """Repos com push (ate REPOS_MAX, mais recente primeiro) de g["repos"]; sem `push_d` valido o repo some."""
+    if not isinstance(g.get("repos"), list):
+        return []
+    itens = [r for r in g["repos"] if isinstance(r, dict) and _dias(r.get("push_d")) is not None]
+    return sorted(itens[:REPOS_MAX], key=lambda r: _dias(r.get("push_d")))
+
+
 def _github_dados(g, max_prs):
     """Resumo de m["github"] para o cartao e as linhas, ou None se a chave falta, e "n/d" ou o bloco e invalido:
-    {"prs": ate `max_prs` PRs (os com CI em falha primeiro quando precisa cortar), "resto": PRs que ficaram de fora,
-     "abertos", "ci_ruins": entradas de CI com falha e depois pendentes, "ci_ok": quantas ok, "velho", "idade_s"}."""
+    {"prs": ate `max_prs` PRs (os de maior gravidade primeiro quando precisa cortar), "resto": PRs que ficaram de
+     fora, "abertos", "ci_ruins": entradas de CI com falha e depois pendentes, "ci_ok": quantas ok, "velho",
+     "idade_s", "conflitos": todos os PRs com conflito, "mudancas": PRs com mudancas pedidas, "issues": None ou
+     {"n","itens"}, "repos": repos com push e "push_d": dias desde o push mais recente (None sem repos)}.
+    Os campos de revisao, conflito, idade, issues e repos sao opcionais (arquivos antigos): faltando, ficam neutros."""
     if not _ok(g) or not isinstance(g.get("prs"), list):
         return None
     prs = [p for p in g["prs"] if isinstance(p, dict)][:20]
     ci = [i for i in g.get("ci", []) if isinstance(i, dict)][:30] if isinstance(g.get("ci"), list) else []
     abertos = _num(g.get("abertos"))
     abertos = int(abertos) if abertos is not None and abertos >= len(prs) else len(prs)
+    conflitos = [p for p in prs if p.get("conflito") is True]
+    mudancas = sum(1 for p in prs if _revisao_pr(p) == "mudancas")
     if len(prs) > max_prs:
-        prs = sorted(prs, key=lambda p: -_GRAVIDADE.get(_estado_pr(p)[0], 1))[:max(0, max_prs)]
+        prs = sorted(prs, key=lambda p: -_grav_pr(p))[:max(0, max_prs)]
     ruins = [i for i in ci if i.get("estado") == "falha"] + [i for i in ci if i.get("estado") == "pendente"]
+    repos = _repos_dados(g)
     return {"prs": prs, "resto": abertos - len(prs), "abertos": abertos, "ci_ruins": ruins,
             "ci_ok": sum(1 for i in ci if i.get("estado") == "ok"), "velho": g.get("velho") is True,
-            "idade_s": g.get("idade_s")}
+            "idade_s": g.get("idade_s"), "conflitos": conflitos, "mudancas": mudancas,
+            "issues": _issues_dados(g), "repos": repos, "push_d": _dias(repos[0].get("push_d")) if repos else None}
 
 
 def _ci_linhas(d):

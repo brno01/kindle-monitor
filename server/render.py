@@ -511,7 +511,7 @@ def _linhas_github(m, cols):
 
 
 def _linhas_dev_resumo(m):
-    """Tela principal: no maximo uma linha por fonte nova ("Claude: N sessoes, M esperando", "GitHub: N PRs, CI ok");
+    """Tela principal: no maximo uma linha por fonte nova ("Claude: N sessoes, M esperando", "GitHub: N PRs, M issues, CI ok");
     os detalhes e o que pede atencao saem na pagina Dev e no ATENCAO."""
     linhas = []
     ses = render_png._sessoes_dados(m.get("claude") if isinstance(m.get("claude"), dict) else {})
@@ -524,7 +524,12 @@ def _linhas_dev_resumo(m):
         else:
             ci = ("falhou" if any(i.get("estado") == "falha" for i in d["ci_ruins"])
                   else "pendente" if d["ci_ruins"] else "ok" if d["ci_ok"] else "sem dados")
-            linhas.append("GitHub: %s, CI %s" % (render_png._plural(d["abertos"], "PR", "PRs"), ci))
+            partes = [render_png._plural(d["abertos"], "PR", "PRs")]
+            if d["issues"] is not None:
+                partes.append(render_png._plural(d["issues"]["n"], "issue", "issues"))
+            if d["conflitos"]:
+                partes.append(render_png._plural(len(d["conflitos"]), "conflito", "conflitos"))
+            linhas.append("GitHub: %s, CI %s" % (", ".join(partes), ci))
     return linhas
 
 

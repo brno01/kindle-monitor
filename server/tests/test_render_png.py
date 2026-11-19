@@ -1101,13 +1101,24 @@ def sx(projeto, estado="trabalhando", desde_s=120):
     return {"projeto": projeto, "estado": estado, "desde_s": desde_s}
 
 
-def prx(repo, numero, titulo="Titulo", rascunho=False, ci="ok"):
-    return {"repo": repo, "numero": numero, "titulo": titulo, "rascunho": rascunho, "ci": ci}
+def prx(repo, numero, titulo="Titulo", rascunho=False, ci="ok", **novos):
+    """PR no formato antigo; `novos` acrescenta revisao, conflito, idade_d e atualizado_d (aditivos)."""
+    return dict({"repo": repo, "numero": numero, "titulo": titulo, "rascunho": rascunho, "ci": ci}, **novos)
 
 
-def gh(prs=(), ci=(), abertos=None, velho=False, idade_s=30):
-    return {"prs": list(prs), "ci": list(ci), "abertos": len(prs) if abertos is None else abertos,
-            "ci_falhas": sum(1 for i in ci if isinstance(i, dict) and i.get("estado") == "falha"), "idade_s": idade_s, "velho": velho}
+def gh(prs=(), ci=(), abertos=None, velho=False, idade_s=30, **novos):
+    """github no formato do coletor; `novos` acrescenta issues e repos (aditivos)."""
+    return dict({"prs": list(prs), "ci": list(ci), "abertos": len(prs) if abertos is None else abertos,
+                 "ci_falhas": sum(1 for i in ci if isinstance(i, dict) and i.get("estado") == "falha"),
+                 "idade_s": idade_s, "velho": velho}, **novos)
+
+
+def isx(repo, numero, titulo="Titulo da issue", idade_d=3):
+    return {"repo": repo, "numero": numero, "titulo": titulo, "idade_d": idade_d}
+
+
+def rpx(repo, push_d=0):
+    return {"repo": repo, "push_d": push_d}
 
 
 def cix(repo, estado="ok", branch="main"):
@@ -1386,23 +1397,73 @@ class LinhasClaudeGithubTest(unittest.TestCase):
 
     def test_github_com_ci_ok(self):
         l = self._ls(dev(ses(), gh([prx("a", 1), prx("b", 2)], [cix("a"), cix("b")])))["github"]
-        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("2 PRs abertos", "CI ok", "ok"))
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("2 PRs", "CI ok", "ok"))
 
     def test_github_ci_falhou_nomeia_o_primeiro(self):
         ci = [cix("a"), cix("cerberus", "falha"), cix("dotfiles", "falha")]
         l = self._ls(dev(ses(), gh([prx("a", 1)], ci)), [{"nivel": "aviso", "sistema": "github"}])["github"]
-        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("1 PR aberto", "CI falhou: cerberus", "aviso"))
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("1 PR", "CI falhou: cerberus", "aviso"))
 
     def test_github_zero_prs_e_pendente(self):
         l = self._ls(dev(ses(), gh([], [cix("a", "pendente")])))["github"]
-        self.assertEqual((l["valor"], l["detalhe"]), ("0 PRs abertos", "CI pendente: a"))
+        self.assertEqual((l["valor"], l["detalhe"]), ("0 PRs", "CI pendente: a"))
         l = self._ls(dev(ses(), gh()))["github"]
-        self.assertEqual((l["valor"], l["detalhe"]), ("0 PRs abertos", ""))
+        self.assertEqual((l["valor"], l["detalhe"]), ("0 PRs", ""))
 
     def test_github_velho_usa_o_estado_dos_alertas(self):
         g = gh([prx("a", 1)], [cix("a")], velho=True)
         l = self._ls(dev(ses(), g), [{"nivel": "aviso", "sistema": "github"}])["github"]
-        self.assertEqual((l["valor"], l["estado"]), ("1 PR aberto", "aviso"))
+        self.assertEqual((l["valor"], l["estado"]), ("1 PR", "aviso"))
+
+    def test_github_valor_com_issues(self):
+        g = gh([prx("a", i) for i in range(11)], [cix("a")], issues={"n": 3, "itens": [isx("a", 1)]})
+        l = self._ls(dev(ses(), g))["github"]
+        self.assertEqual((l["valor"], l["estado"]), ("11 PRs  3 issues", "ok"))
+        l = self._ls(dev(ses(), gh([prx("a", 1)], issues={"n": 1, "itens": []})))["github"]
+        self.assertEqual(l["valor"], "1 PR  1 issue")
+        l = self._ls(dev(ses(), gh([prx("a", 1)], issues={"n": 0, "itens": []})))["github"]
+        self.assertEqual(l["valor"], "1 PR  0 issues")
+
+    def test_github_formato_antigo_so_mostra_o_que_existe(self):
+        g = gh([prx("a", 1), prx("b", 2)], [cix("a")])  # sem revisao, conflito, idade, issues, repos
+        l = self._ls(dev(ses(), g))["github"]
+        self.assertEqual((l["valor"], l["detalhe"], l["estado"]), ("2 PRs", "CI ok", "ok"))
+
+    def test_github_detalhe_prioridade_e_push(self):
+        prs = [prx("a", 1), prx("kindle", 12, conflito=True), prx("b", 3, conflito=True, revisao="mudancas"),
+               prx("c", 4, revisao="mudancas"), prx("d", 5, revisao="aprovado"), prx("e", 6, revisao="pendente")]
+        g = gh(prs, [cix("a"), cix("cerberus", "falha")], repos=[rpx("a", 0), rpx("b", 3)])
+        l = self._ls(dev(ses(), g))["github"]
+        self.assertEqual(l["detalhe"], "CI falhou: cerberus  \u00b7  conflito: kindle #12  \u00b7  mudancas pedidas: 2"
+                                       "  \u00b7  push hoje")
+        g = gh(prs, [cix("a")], repos=[rpx("b", 3), rpx("a", 9)])
+        l = self._ls(dev(ses(), g))["github"]
+        self.assertEqual(l["detalhe"], "conflito: kindle #12  \u00b7  mudancas pedidas: 2  \u00b7  CI ok  \u00b7  push ha 3 d")
+
+    def test_github_detalhe_so_push_ou_so_ci(self):
+        l = self._ls(dev(ses(), gh([prx("a", 1)], repos=[rpx("a", 0)])))["github"]
+        self.assertEqual(l["detalhe"], "push hoje")
+        l = self._ls(dev(ses(), gh([prx("a", 1)], [cix("a", "pendente")], repos=[rpx("a", 1)])))["github"]
+        self.assertEqual(l["detalhe"], "CI pendente: a  \u00b7  push ha 1 d")
+
+    def test_github_conflito_vira_aviso_pelo_alerta_do_motor(self):
+        import alertas
+        m = dev(ses(), gh([prx("a", 7, conflito=True)], [cix("a")]))
+        l = {x["id"]: x for x in render_png._linhas_resumo(m, [], None, alertas.avaliar(m))}["github"]
+        self.assertEqual(l["estado"], "aviso")
+        m = dev(ses(), gh([prx("a", 7, revisao="mudancas", idade_d=400)], [cix("a")], issues={"n": 50, "itens": []}))
+        l = {x["id"]: x for x in render_png._linhas_resumo(m, [], None, alertas.avaliar(m))}["github"]
+        self.assertEqual(l["estado"], "ok")
+
+    def test_github_campos_novos_hostis_nao_levantam_nem_quebram_a_linha(self):
+        ruins = [gh([prx("a", 1, conflito="x", revisao=7, idade_d=True)], issues="x", repos=5),
+                 gh([prx("a", 1)], issues={"n": "x", "itens": "y"}, repos=[None, 3, {"push_d": True}]),
+                 gh([prx("a", 1)], issues={"n": -5, "itens": [None, 3]}, repos=[{"repo": 3, "push_d": -1}]),
+                 gh([prx("a", 1)], issues={"n": 10 ** 400, "itens": []}, repos=[{"repo": "r", "push_d": 10 ** 400}])]
+        for g in ruins:
+            l = self._ls(dev(ses(), g))["github"]
+            self.assertTrue(l["valor"].startswith("1 PR"), l)
+            self.assertNotIn("push", l["detalhe"])
 
     def test_github_sem_dados_cinza(self):
         for g in ({"erro": "n/d"}, None, 5, {"prs": "x"}):

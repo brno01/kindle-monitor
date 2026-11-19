@@ -367,9 +367,10 @@ def _prx(repo, numero, titulo="Titulo", rascunho=False, ci="ok"):
     return {"repo": repo, "numero": numero, "titulo": titulo, "rascunho": rascunho, "ci": ci}
 
 
-def _gh(prs=(), ci=(), velho=False, abertos=None):
-    return {"prs": list(prs), "ci": list(ci), "abertos": len(prs) if abertos is None else abertos,
-            "ci_falhas": sum(1 for i in ci if i["estado"] == "falha"), "idade_s": 2000 if velho else 30, "velho": velho}
+def _gh(prs=(), ci=(), velho=False, abertos=None, **novos):
+    return dict({"prs": list(prs), "ci": list(ci), "abertos": len(prs) if abertos is None else abertos,
+                 "ci_falhas": sum(1 for i in ci if i["estado"] == "falha"), "idade_s": 2000 if velho else 30,
+                 "velho": velho}, **novos)
 
 
 def _dev(sessoes=None, github=None, **extra):
@@ -454,6 +455,24 @@ class TextoDevTest(unittest.TestCase):
         self.assertEqual([l for l in linhas if l.startswith("GitHub:")], ["GitHub: 1 PR, CI ok"])
         m = _dev([_sx("a")], _gh([_prx("r", 1), _prx("s", 2)], [{"repo": "r", "branch": "m", "estado": "falha"}]))
         self.assertIn("GitHub: 2 PRs, CI falhou", self._t(m))
+
+    def test_tela_principal_github_com_issues_e_conflitos(self):
+        ok = [{"repo": "r", "branch": "m", "estado": "ok"}]
+        prs = [_prx("r", i) for i in range(11)]
+        m = _dev([], _gh(prs, ok, issues={"n": 3, "itens": []}))
+        self.assertIn("GitHub: 11 PRs, 3 issues, CI ok", self._t(m))
+        prs[2] = dict(prs[2], conflito=True)
+        prs[5] = dict(prs[5], conflito=True)
+        m = _dev([], _gh(prs, ok, issues={"n": 1, "itens": []}))
+        self.assertIn("GitHub: 11 PRs, 1 issue, 2 conflitos, CI ok", self._t(m, 60))
+        prs[5] = dict(prs[5], conflito=False)
+        self.assertIn("GitHub: 11 PRs, 1 conflito, CI ok", self._t(_dev([], _gh(prs, ok)), 60))
+        m = _dev([], _gh(prs, [{"repo": "r", "branch": "m", "estado": "falha"}], issues={"n": 0, "itens": []}))
+        self.assertIn("GitHub: 11 PRs, 0 issues, 1 conflito, CI falhou", self._t(m, 60))
+
+    def test_tela_principal_github_formato_antigo_nao_muda(self):
+        ok = [{"repo": "r", "branch": "m", "estado": "ok"}]
+        self.assertIn("GitHub: 2 PRs, CI ok", self._t(_dev([], _gh([_prx("r", 1), _prx("s", 2)], ok))))
 
     def test_tela_principal_sem_sessao_ou_sem_github(self):
         linhas = self._t(_dev([], None))
