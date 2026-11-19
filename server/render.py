@@ -320,14 +320,13 @@ def _linhas_comandos(m, cols):
 
 
 def _linhas_claude(m, cols):
-    """Pagina claude em texto: limites e tokens do Claude Code e o estado do S10 (so leitura)."""
-    tem_c, tem_s = "claude" in m, "s10" in m
-    if not (tem_c or tem_s):
-        return ["Claude/S10 desligado na config"]
+    """Pagina claude (Dev) em texto: limites e tokens do Claude Code, mais SESSOES e GITHUB (sem dados ainda)."""
+    if "claude" not in m:
+        return ["Claude desligado na config"]
     agora, tz = render_png._agora(m)
     num, ok = render_png._num, render_png._ok
     linhas = []
-    if tem_c:
+    if True:
         cl = m["claude"] if isinstance(m["claude"], dict) else {}
         lim, tok = cl.get("limites"), cl.get("tokens")
         linhas.append("CLAUDE")
@@ -357,10 +356,29 @@ def _linhas_claude(m, cols):
                                                     render_png._custo_txt(t.get("custo_usd"))))
             if tok.get("velho") is True:
                 linhas.append("  tokens %s" % render_png._idade_txt(tok.get("idade_s")))
-    if tem_s:
+    linhas += ["", "SESSOES", "  sem dados", "", "GITHUB", "  sem dados"]
+    return [l.rstrip() for l in linhas]
+
+
+def _linhas_kindle(kv):
+    """Cartao do Kindle em texto (a vista de `kindle_status`); sem vista, "sem dados"."""
+    if not isinstance(kv, dict):
+        return ["KINDLE", "  sem dados"]
+    bat, det, pares = render_png._campos_kindle(kv)
+    nivel = render_png._num(bat)
+    linhas = ["KINDLE", "  bateria %s %s" % ("n/d" if nivel is None else "%d%%" % round(nivel), det)]
+    for k, v in pares:
+        linhas.append("  %s %s" % (k.lower(), v))
+    return linhas
+
+
+def _linhas_aparelhos(m, cols, kv=None):
+    """Pagina aparelhos em texto: TAILNET (sem dados ainda), Kindle e S10 (se houver na config)."""
+    ok, num = render_png._ok, render_png._num
+    linhas = ["TAILNET", "  sem dados", ""] + _linhas_kindle(kv)
+    if "s10" in m:
         s = m["s10"] if ok(m["s10"]) else {}
-        if linhas:
-            linhas.append("")
+        linhas.append("")
         if not s:
             linhas += ["S10", "  n/d"]
             return linhas
@@ -386,7 +404,7 @@ def _linhas_claude(m, cols):
     return [l.rstrip() for l in linhas]
 
 
-def render_texto(metricas, colunas, pagina="resumo", p=1):
+def render_texto(metricas, colunas, pagina="resumo", p=1, kindle=None):
     """Monta a tela: lista de linhas ASCII, cada uma com no maximo `colunas` caracteres.
 
     `pagina`: "resumo" e "detalhes" mostram a tela completa (o texto ja e um resumo denso); "comandos" so lista os rotulos.
@@ -399,6 +417,9 @@ def render_texto(metricas, colunas, pagina="resumo", p=1):
         return [ascii_seguro(l)[:cols] for l in linhas][:MAX_LINHAS]
     if pagina == "claude":
         linhas += _linhas_claude(m, cols)
+        return [ascii_seguro(l)[:cols] for l in linhas][:MAX_LINHAS]
+    if pagina == "aparelhos":
+        linhas += _linhas_aparelhos(m, cols, kindle)
         return [ascii_seguro(l)[:cols] for l in linhas][:MAX_LINHAS]
     if pagina == "comandos":
         linhas += _linhas_comandos(m, cols)

@@ -228,10 +228,34 @@ class PaginaClaudeTextoTest(unittest.TestCase):
                 self.assertLessEqual(len(l), cols, l)
         t = "\n".join(render.render_texto(m, 60, pagina="claude"))
         self.assertIn("5h", t)
-        self.assertIn("S10", t)
+        self.assertIn("SESSOES", t)
+        self.assertIn("GITHUB", t)
+        self.assertNotIn("S10", t)  # o S10 mora na pagina Aparelhos
+
+    def test_pagina_aparelhos_so_ascii_com_kindle_e_s10(self):
+        m = local() | {"s10": {"bateria": {"nivel": 87, "status": "charging", "temperatura_c": 36.5, "saude": "good"},
+                               "caminhos": {"usb": True, "vnc": None}, "avisos": ["temperatura", "carga_cheia"],
+                               "idade_s": 5, "velho": False}}
+        kv = {"bateria": 86, "carregando": False, "temp_c": 29, "autonomia": "2 d 4 h", "wifi": 3, "wifi_ok": True,
+              "aviao": False, "bt": False, "bt_conectados": 0, "tailscale": "direto", "latencia": "38 ms",
+              "relogio": "ok", "whispersync": None}
+        for cols in (20, 38, 60):
+            linhas = render.render_texto(m, cols, pagina="aparelhos", kindle=kv)
+            self.assertLessEqual(len(linhas), 26)
+            for l in linhas:
+                self.assertTrue(l.isascii() and l.isprintable(), repr(l))
+                self.assertLessEqual(len(l), cols, l)
+        t = "\n".join(render.render_texto(m, 60, pagina="aparelhos", kindle=kv))
+        for esperado in ("TAILNET", "KINDLE", "bateria 86%", "S10", "87%"):
+            self.assertIn(esperado, t)
+        sem = "\n".join(render.render_texto(local(), 60, pagina="aparelhos"))
+        self.assertIn("sem dados", sem)
+        self.assertNotIn("S10", sem)
+        for ruim in ({"erro": "n/d"}, "x", 5, None):
+            render.render_texto(local() | {"s10": ruim}, 38, pagina="aparelhos", kindle=ruim if ruim != 5 else {})
 
     def test_pagina_claude_desligada_e_erros(self):
-        self.assertIn("desligado", "\n".join(render.render_texto(local(), 38, pagina="claude")))
+        self.assertIn("Claude desligado na config", "\n".join(render.render_texto(local(), 38, pagina="claude")))
         render.render_texto(local() | {"claude": {"erro": "n/d"}, "s10": {"erro": "n/d"}}, 38, pagina="claude")
         render.render_texto(local() | {"claude": 3, "s10": "x"}, 38, pagina="claude")
 

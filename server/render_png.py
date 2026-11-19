@@ -995,24 +995,21 @@ def _blocos_detalhes(c, m, itens, w, hist):
     return blocos
 
 
-H_KINDLE = 44 + 4 * 48 + 8
+H_KINDLE = 64 + 4 * 48 + 12
+H_SEM_DADOS = 64 + 60
 
 
 def _sim_nao(v, sim, nao):
     return "n/d" if v is None else (sim if v else nao)
 
 
-def _card_kindle(c, kv, x, y, w, h):
-    """BATERIA com barra (como MEMORIA) e mais tres linhas em duas colunas: radios, elo e sincronizacao."""
-    _card(c, x, y, w, h)
-    c.texto(x + PAD, y + 14 + _cap(NEG, 26), "KINDLE", NEG, 26, ESCURO)
-    bat = kv.get("bateria")
+def _campos_kindle(kv):
+    """(bateria %, detalhe da bateria, [(rotulo, valor)] de radios, elo, relogio e sincronizacao) da vista do Kindle."""
     det = ["carregando" if kv.get("carregando") else "na bateria"]
     if kv.get("temp_c") is not None:
         det.append("%d°C" % kv["temp_c"])
     if kv.get("autonomia"):
         det.append(kv["autonomia"])
-    _linha_barra(c, x + PAD, y + 44 + 24, w - 2 * PAD, "BATERIA", bat, " · ".join(det), 160)
     if kv.get("wifi_ok"):
         wifi = "%d/5" % kv["wifi"] if kv.get("wifi") is not None else "conectado"
     else:
@@ -1030,9 +1027,27 @@ def _card_kindle(c, kv, x, y, w, h):
     pares = (("WI-FI", wifi), ("BLUETOOTH", bt),
              ("AVIAO", _sim_nao(kv.get("aviao"), "ligado", "desligado")), ("ELO", elo),
              ("RELOGIO", kv.get("relogio") or "n/d"), ("WHISPERSYNC", kv.get("whispersync") or "n/d"))
+    return kv.get("bateria"), " · ".join(det), pares
+
+
+def _card_sem_dados(c, x, y, w, h, titulo, icone):
+    """Cartao de titulo com icone e a linha "sem dados" (fontes que chegam na Entrega 2, ou ausentes)."""
+    _card(c, x, y, w, h)
+    yy = _cabecalho_card(c, x, y, w, titulo, icone=icone)
+    _texto_c(c, x + PAD, yy + 30, SEM_DADOS, NEG, 34, MEDIO)
+
+
+def _card_kindle(c, kv, x, y, w, h):
+    """Kindle: BATERIA com barra (como MEMORIA) e mais tres linhas em duas colunas: radios, elo e sincronizacao."""
+    if not isinstance(kv, dict):
+        return _card_sem_dados(c, x, y, w, h, "Kindle", "leitor")
+    _card(c, x, y, w, h)
+    yy = _cabecalho_card(c, x, y, w, "Kindle", icone="leitor")
+    bat, det, pares = _campos_kindle(kv)
+    _linha_barra(c, x + PAD, yy + 24, w - 2 * PAD, "BATERIA", bat, det, 160)
     cw = (w - 2 * PAD) // 2
     for i, (k, v) in enumerate(pares):
-        _kv(c, x + PAD + (i % 2) * cw, y + 44 + 48 + (i // 2) * 48 + 24, cw - 16, k, v, tam=26 if len(v) > 14 else 34)
+        _kv(c, x + PAD + (i % 2) * cw, yy + 48 + (i // 2) * 48 + 24, cw - 16, k, v, tam=26 if len(v) > 14 else 34)
 
 
 def _card_par(c, par, x, y, w, h):
@@ -1194,11 +1209,12 @@ def _custo_txt(v):
     return "n/d" if v is None else ("US$ %.2f" % v).replace(".", ",")
 
 
-def _cabecalho_card(c, x, y, w, titulo, velho=False, idade_s=None, icone=False):
-    """Linha de titulo de um cartao (64 px): icone opcional, titulo e, se os dados estao velhos, a idade em cinza."""
+def _cabecalho_card(c, x, y, w, titulo, velho=False, idade_s=None, icone=None):
+    """Linha de titulo de um cartao (64 px): icone opcional (nome em `icones_dados`), titulo e, se os dados estao
+    velhos, a idade em cinza."""
     tx = x + PAD
     if icone:
-        tx += (c.icone(x + PAD, y + 12, "claude", 40, PRETO) or 0) + 12
+        tx += (c.icone(x + PAD, y + 12, icone, 40, PRETO) or 0) + 12
     _texto_c(c, tx, y + 32, titulo, NEG, 34, PRETO)
     if velho and _idade_txt(idade_s):
         _texto_c(c, x + w - PAD, y + 32, _idade_txt(idade_s), REG, 26, MEDIO, "dir")
@@ -1245,7 +1261,7 @@ def _card_claude(c, cl, x, y, w, h, agora=None):
     lim = lim if _ok(lim) else None
     tok = tok if _ok(tok) else None
     velho = bool(lim and lim.get("velho") is True)
-    yy = _cabecalho_card(c, x, y, w, "Claude", velho, lim.get("idade_s") if lim else None, icone=True)
+    yy = _cabecalho_card(c, x, y, w, "Claude", velho, lim.get("idade_s") if lim else None, icone="claude")
     agora, tz = agora or _agora({})
     if lim is None:
         _texto_c(c, x + PAD, yy + 50, "limites n/d", REG, 34, ESCURO)
@@ -1284,12 +1300,12 @@ def _card_s10(c, s, x, y, w, h):
     """Cartao S10: bateria (nivel, estado, temperatura), cinco caminhos de acesso e avisos."""
     _card(c, x, y, w, h)
     if not _ok(s):
-        _cabecalho_card(c, x, y, w, "S10", False)
+        _cabecalho_card(c, x, y, w, "S10", False, icone="celular")
         _texto_c(c, x + PAD, y + 64 + 40, "n/d", REG, 34, ESCURO)
         return
     velho = s.get("velho") is True
     titulo = "S10 sem dados %s" % _idade_txt(s.get("idade_s")) if velho else "S10"
-    yy = _cabecalho_card(c, x, y, w, titulo.strip(), False)
+    yy = _cabecalho_card(c, x, y, w, titulo.strip(), False, icone="celular")
     bat = s.get("bateria") if isinstance(s.get("bateria"), dict) else None
     yc = yy + 45
     if velho or bat is None:
@@ -1330,29 +1346,42 @@ def _card_s10(c, s, x, y, w, h):
         yy += 44
 
 
-def _desenhar_claude(c, m):
-    w = c.largura - 2 * MARGEM
-    limite = botoes.limite(c.altura)
-    tem_c, tem_s = "claude" in m, "s10" in m
-    if not (tem_c or tem_s):
-        c.texto(c.largura // 2, (botoes.TOPO + limite) // 2 + _cap(NEG, 34) // 2, "Claude/S10 desligado na config",
-                NEG, 34, ESCURO, "centro")
-        return
-    y = botoes.TOPO
-    if tem_c:
-        h = min(CLAUDE_H, limite - y)
-        _card_claude(c, m["claude"], MARGEM, y, w, h, _agora(m))
+def _empilhar(c, blocos):
+    """Desenha [(altura, desenhar(c, x, y, h))] de cima para baixo a partir do topo; o que nao cabe acima da
+    navegacao fica de fora (o espaco livre fica so no fim)."""
+    y, limite = botoes.TOPO, botoes.limite(c.altura)
+    for h, fn in blocos:
+        if y + h > limite:
+            break
+        fn(c, MARGEM, y, h)
         y += h + GAP
-    if tem_s:
-        h = min(_h_s10(m["s10"]), limite - y)
-        if h >= 140:
-            _card_s10(c, m["s10"], MARGEM, y, w, h)
 
 
-def _desenhar_aparelhos(c, m):
-    """Provisorio (Tarefa 9 desenha a pagina de verdade)."""
-    y = (botoes.TOPO + botoes.limite(c.altura)) // 2 + _cap(NEG, 34) // 2
-    c.texto(c.largura // 2, y, "Aparelhos", NEG, 34, ESCURO, "centro")
+def _desenhar_claude(c, m):
+    """Dev: cartao do Claude Code mais SESSOES e GITHUB (sem dados ate a Entrega 2)."""
+    w = c.largura - 2 * MARGEM
+    if "claude" not in m:
+        c.texto(c.largura // 2, (botoes.TOPO + botoes.limite(c.altura)) // 2 + _cap(NEG, 34) // 2,
+                "Claude desligado na config", NEG, 34, ESCURO, "centro")
+        return
+    agora = _agora(m)
+    _empilhar(c, [
+        (CLAUDE_H, lambda c, x, y, h: _card_claude(c, m["claude"], x, y, w, h, agora)),
+        (H_SEM_DADOS, lambda c, x, y, h: _card_sem_dados(c, x, y, w, h, "Sessoes", "dev")),
+        (H_SEM_DADOS, lambda c, x, y, h: _card_sem_dados(c, x, y, w, h, "GitHub", "github"))])
+
+
+def _desenhar_aparelhos(c, m, kv=None):
+    """Aparelhos: TAILNET (sem dados ate a Entrega 2), o proprio Kindle, o S10 (se houver na config) e os pares."""
+    w = c.largura - 2 * MARGEM
+    blocos = [(H_SEM_DADOS, lambda c, x, y, h: _card_sem_dados(c, x, y, w, h, "Tailnet", "tailscale")),
+              (H_KINDLE if isinstance(kv, dict) else H_SEM_DADOS, lambda c, x, y, h: _card_kindle(c, kv, x, y, w, h))]
+    if "s10" in m:
+        blocos.append((_h_s10(m["s10"]), lambda c, x, y, h: _card_s10(c, m["s10"], x, y, w, h)))
+    pares = m.get("pares")
+    for par in [p for p in pares if isinstance(p, dict)] if isinstance(pares, list) else []:
+        blocos.append((76, lambda c, x, y, h, par=par: _card_par(c, par, x, y, w, h)))
+    _empilhar(c, blocos)
 
 
 # --------------------------------------------------------------------- entrada
@@ -1377,7 +1406,7 @@ def desenhar(c, metricas, historico=None, pagina="resumo", armado=None, p=1, mod
     elif pagina == "claude":
         _desenhar_claude(c, m)
     elif pagina == "aparelhos":
-        _desenhar_aparelhos(c, m)
+        _desenhar_aparelhos(c, m, kv)
     else:
         _desenhar_comandos(c, m, modo)
     _desenhar_botoes(c, pagina, armado, p, itens, modo)

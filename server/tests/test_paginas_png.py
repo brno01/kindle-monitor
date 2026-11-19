@@ -200,7 +200,7 @@ def dados_claude(**extra):
 
 
 def textos(m, w=1236, h=1648):
-    """Textos desenhados na pagina claude (canvas estrito: nada fora da imagem)."""
+    """Textos desenhados nas paginas Dev (claude) e Aparelhos, onde o S10 mora (canvas estrito: nada fora da imagem)."""
     caps = []
     original = cv.Canvas.texto
 
@@ -211,6 +211,7 @@ def textos(m, w=1236, h=1648):
     cv.Canvas.texto = espia
     try:
         tela(m, "claude", w=w, h=h)
+        tela(m, "aparelhos", w=w, h=h)
     finally:
         cv.Canvas.texto = original
     return caps

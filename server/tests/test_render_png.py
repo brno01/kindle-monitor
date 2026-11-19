@@ -597,3 +597,51 @@ class DesenhoResumoTest(unittest.TestCase):
                     if cx["y"] <= y < cx["y"] + cx["h"]:
                         fora = fora[:cx["x"]] + fora[cx["x"] + cx["w"]:]
                     self.assertEqual(min(fora, default=255), 255, (cx["id"], ln["estado"], y))
+
+
+class PaginasAparelhosDevTest(unittest.TestCase):
+    KV = {"bateria": 86, "carregando": False, "temp_c": 29, "autonomia": "2 d 4 h", "wifi": 3, "wifi_ok": True,
+          "aviao": False, "bt": False, "bt_conectados": 0, "tailscale": "direto", "latencia": "38 ms",
+          "relogio": "ok", "whispersync": None}
+
+    def _ver(self, m, pagina, kv=None):
+        textos, icones = [], []
+        orig_t, orig_i = cv.Canvas.texto, cv.Canvas.icone
+
+        def espia_t(self, x, y, t, *a, **k):
+            textos.append(t)
+            return orig_t(self, x, y, t, *a, **k)
+
+        def espia_i(self, x, y, nome, tam, cor):
+            icones.append(nome)
+            return orig_i(self, x, y, nome, tam, cor)
+        cv.Canvas.texto, cv.Canvas.icone = espia_t, espia_i
+        try:
+            render_png.desenhar(cv.Canvas(1236, 1648, estrito=True), m, historico(), pagina=pagina, kindle=kv)
+        finally:
+            cv.Canvas.texto, cv.Canvas.icone = orig_t, orig_i
+        return textos, icones
+
+    def test_aparelhos_tem_tailnet_kindle_s10_e_pares_com_icones(self):
+        tx, ic = self._ver(completo(s10=S10), "aparelhos", self.KV)
+        for t in ("Tailnet", "Kindle", "S10", "sem dados", "BATERIA", "nomad"):
+            self.assertIn(t, tx)
+        for i in ("tailscale", "leitor", "celular"):
+            self.assertIn(i, ic)
+
+    def test_aparelhos_sem_s10_e_sem_vista_do_kindle(self):
+        tx, _ = self._ver(completo(), "aparelhos")
+        self.assertNotIn("S10", tx)
+        self.assertEqual(tx.count("sem dados"), 3)  # barra do Kindle, cartao Tailnet e cartao Kindle
+
+    def test_dev_tem_claude_sessoes_e_github(self):
+        tx, ic = self._ver(completo(claude=CL), "claude")
+        for t in ("Claude", "Sessoes", "GitHub"):
+            self.assertIn(t, tx)
+        for i in ("claude", "dev", "github"):
+            self.assertIn(i, ic)
+        self.assertNotIn("S10", tx)
+
+    def test_dev_sem_claude_na_config(self):
+        tx, _ = self._ver(completo(s10=S10), "claude")
+        self.assertIn("Claude desligado na config", tx)
