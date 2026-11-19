@@ -2,7 +2,9 @@
 
 Puro, sem I/O. O servico web roda como `nobody` e so le JSON; todo texto que vem do arquivo e dado nao
 confiavel (vira ASCII com tamanho maximo). As regras de `validar_aparelhos` e `validar_rotinas` repetem as do
-executor (deploy/kindle-monitor-executor.py); um teste confere a paridade. Nada aqui levanta com entrada ruim.
+executor (deploy/kindle-monitor-executor.py), que e a referencia (roda como root): chave desconhecida e `id` ou
+`nome` repetido tambem descartam a lista; a unica diferenca intencional e o icone (aqui confere `icones_dados.ICONES`).
+`tests/test_paridade_catalogos.py` confere a paridade. Nada aqui levanta com entrada ruim.
 """
 import json
 import os
@@ -17,6 +19,8 @@ APARELHOS_ARQ = "aparelhos.json"
 ROTINAS_ARQ = "rotinas.json"
 
 MAX_ITENS = 16
+CHAVES_APARELHO = frozenset(("id", "nome", "rotulo", "icone", "alerta_offline_min"))
+CHAVES_ROTINA = frozenset(("id", "rotulo", "tipo", "alvo", "max_idade_h"))
 RE_ID = re.compile(r"^[a-z0-9-]{1,24}\Z")
 RE_NOME = re.compile(r"^[a-z0-9-]{1,63}\Z")
 RE_ROTULO_APARELHO = re.compile(r"^[\x20-\x7e]{1,16}\Z")
@@ -49,7 +53,7 @@ def sanear(v, tam):
 # ------------------------------------------------------------------- validacao (E8)
 
 def _aparelho(it):
-    if not isinstance(it, dict):
+    if not isinstance(it, dict) or set(it) - CHAVES_APARELHO:
         return None
     i, nome, rotulo, icone = it.get("id"), it.get("nome"), it.get("rotulo"), it.get("icone")
     if not isinstance(i, str) or not RE_ID.match(i):
@@ -61,7 +65,7 @@ def _aparelho(it):
     if not isinstance(icone, str) or icone not in icones_dados.ICONES:
         return None
     r = {"id": i, "nome": nome, "rotulo": rotulo, "icone": icone}
-    if "alerta_offline_min" in it and it["alerta_offline_min"] is not None:
+    if "alerta_offline_min" in it:
         a = it["alerta_offline_min"]
         if not _inteiro(a) or not 1 <= a <= 10080:
             return None
@@ -75,13 +79,17 @@ def validar_aparelhos(lista):
         if not isinstance(lista, list) or len(lista) > MAX_ITENS:
             return []
         saida = [_aparelho(it) for it in lista]
-        return [] if any(x is None for x in saida) else saida
+        if any(x is None for x in saida):
+            return []
+        if len({x["id"] for x in saida}) != len(saida) or len({x["nome"] for x in saida}) != len(saida):
+            return []  # id ou nome repetido
+        return saida
     except Exception:
         return []
 
 
 def _rotina(it):
-    if not isinstance(it, dict):
+    if not isinstance(it, dict) or set(it) - CHAVES_ROTINA:
         return None
     i, rotulo, tipo, alvo, idade = (it.get("id"), it.get("rotulo"), it.get("tipo"), it.get("alvo"),
                                     it.get("max_idade_h"))
@@ -109,7 +117,11 @@ def validar_rotinas(lista):
         if not isinstance(lista, list) or len(lista) > MAX_ITENS:
             return []
         saida = [_rotina(it) for it in lista]
-        return [] if any(x is None for x in saida) else saida
+        if any(x is None for x in saida):
+            return []
+        if len({x["id"] for x in saida}) != len(saida):
+            return []  # id repetido
+        return saida
     except Exception:
         return []
 

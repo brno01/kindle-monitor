@@ -48,9 +48,23 @@ class ValidarAparelhosTest(unittest.TestCase):
     def test_tipos_e_tamanho(self):
         for v in (None, "x", {}, 5):
             self.assertEqual(eco.validar_aparelhos(v), [])
-        cheio = [aparelho(id="a%d" % i) for i in range(16)]
+        cheio = [aparelho(id="a%d" % i, nome="n%d" % i) for i in range(16)]
         self.assertEqual(len(eco.validar_aparelhos(cheio)), 16)
-        self.assertEqual(eco.validar_aparelhos(cheio + [aparelho(id="z")]), [])
+        self.assertEqual(eco.validar_aparelhos(cheio + [aparelho(id="z", nome="z")]), [])
+
+    def test_chave_desconhecida_descarta_a_lista(self):
+        for extra in ({"extra": 1}, {"extra": None}, {"Id": "x"}):
+            with self.subTest(extra=extra):
+                self.assertEqual(eco.validar_aparelhos([aparelho(**extra)]), [])
+
+    def test_id_ou_nome_repetido_descarta_a_lista(self):
+        self.assertEqual(eco.validar_aparelhos([aparelho(), aparelho(nome="outro")]), [])
+        self.assertEqual(eco.validar_aparelhos([aparelho(), aparelho(id="outro")]), [])
+        distintos = [aparelho(), aparelho(id="outro", nome="outro")]
+        self.assertEqual(eco.validar_aparelhos(distintos), distintos)
+
+    def test_alerta_nulo_e_recusado_como_no_executor(self):
+        self.assertEqual(eco.validar_aparelhos([aparelho(alerta_offline_min=None)]), [])
 
 
 class ValidarRotinasTest(unittest.TestCase):
@@ -83,6 +97,16 @@ class ValidarRotinasTest(unittest.TestCase):
             self.assertEqual(eco.validar_rotinas(v), [])
         self.assertEqual(eco.validar_rotinas([rotina(id="a%d" % i) for i in range(17)]), [])
 
+    def test_chave_desconhecida_descarta_a_lista(self):
+        for extra in ({"extra": 1}, {"extra": None}, {"nome": "x"}):
+            with self.subTest(extra=extra):
+                self.assertEqual(eco.validar_rotinas([rotina(**extra)]), [])
+
+    def test_id_repetido_descarta_a_lista(self):
+        self.assertEqual(eco.validar_rotinas([rotina(), rotina(alvo="outro.service")]), [])
+        distintas = [rotina(), rotina(id="outra")]
+        self.assertEqual(eco.validar_rotinas(distintas), distintas)
+
 
 def ap_doc(gerado=AGORA - 5, aparelhos=None):
     if aparelhos is None:
@@ -97,7 +121,7 @@ def ro_doc(gerado=AGORA - 5, rotinas=None, falhas=None):
                        "unidades_falhas": falhas if falhas is not None else {"n": 0, "nomes": []}})
 
 
-CAT_A = eco.validar_aparelhos([aparelho(), aparelho(id="s10", nome="s10", rotulo="Galaxy S10", icone="celular", alerta_offline_min=None)])
+CAT_A = eco.validar_aparelhos([aparelho(), {"id": "s10", "nome": "s10", "rotulo": "Galaxy S10", "icone": "celular"}])
 CAT_R = eco.validar_rotinas([rotina()])
 
 
