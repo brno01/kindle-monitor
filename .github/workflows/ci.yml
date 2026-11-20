@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The server runs on Python 3.13 with the standard library only.
+      - name: Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      # umask 022: the executor refuses files that are writable by the group.
+      - name: Server tests
+        working-directory: server
+        run: |
+          umask 022
+          python3 -I -m unittest discover -s tests
+
+      - name: Kindle scripts parse as POSIX sh
+        run: |
+          set -euo pipefail
+          for f in kindle/kindle-monitor/*.sh kindle/*.sh; do
+            [ -f "$f" ] || continue
+            sh -n "$f"
+          done

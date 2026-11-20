@@ -71,6 +71,7 @@ read_modo() {
   if [ -f "$MODOF" ]; then IFS= read -r m < "$MODOF"; fi
   case "$m" in desempenho|balanceado|economia) MODO=$m ;; esac
   INTERVAL=$INTERVAL0; FULL_EVERY=$FULL_EVERY0
+  # shellcheck disable=SC2154  # PERFIL_* come from config.sh, sourced at the top
   case "$MODO" in
     desempenho) v=$PERFIL_desempenho ;;
     balanceado) v=$PERFIL_balanceado ;;
