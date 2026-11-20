@@ -21,13 +21,13 @@ def carregar(rel):
 
 class CatalogoTest(unittest.TestCase):
     def test_catalogos_reais_sao_validos(self):
-        for rel in ("deploy/config.atheron.json", "server/config.exemplo.json"):
+        for rel in ("deploy/config.atheron.example.json", "server/config.exemplo.json"):
             cat = servicos.validar_catalogo(carregar(rel))
             self.assertEqual(len(cat), 48)
             self.assertEqual(len({c["id"] for c in cat}), 48)
 
     def test_catalogo_atheron_conteudo(self):
-        cat = {c["id"]: c for c in servicos.validar_catalogo(carregar("deploy/config.atheron.json"))}
+        cat = {c["id"]: c for c in servicos.validar_catalogo(carregar("deploy/config.atheron.example.json"))}
         self.assertEqual(cat["cerberus-updater"]["protegido"], True)
         self.assertEqual(cat["onion-gw"]["projeto"], "onion")
         self.assertEqual(cat["ro-client-build"]["projeto"], "sandbox")

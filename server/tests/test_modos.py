@@ -18,7 +18,7 @@ from test_paginas_png import completo, px
 from test_servidor import coletor_fake
 
 RAIZ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CONFIG_SH = os.path.join(RAIZ, "kindle", "kindle-monitor", "config.sh")
+CONFIG_SH = os.path.join(RAIZ, "kindle", "kindle-monitor", "config.example.sh")
 TAMANHOS = ((1236, 1648), (800, 1300), (1072, 1448))
 
 

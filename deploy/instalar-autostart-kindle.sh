@@ -11,16 +11,20 @@ set -euo pipefail
 K=${KINDLE:-root@kindle-monitor}
 AQUI=$(cd "$(dirname "$0")/.." && pwd)
 MODO=${1:-aplicar}
+# Origem LAN liberada na 22 do Kindle: ATHERON_LAN (env) ou SSH_FROM do kindle/kindle-monitor/config.local.sh (não versionado).
+# shellcheck disable=SC1090,SC1091  # arquivo local, não versionado
+ATHERON_LAN=${ATHERON_LAN:-$( (SSH_FROM=; . "$AQUI/kindle/kindle-monitor/config.local.sh" >/dev/null 2>&1; printf '%s' "$SSH_FROM") 2>/dev/null)}
 k() { ssh -o ConnectTimeout=20 "$K" "$@"; }
 
 echo "==> Kindle: $K"
+case "$ATHERON_LAN" in ''|*[!0-9.]*) echo "erro: defina SSH_FROM em kindle/kindle-monitor/config.local.sh (ou ATHERON_LAN=<IPv4>)" >&2; exit 2 ;; esac
 case "$MODO" in
   --desfazer)
     # shellcheck disable=SC2016  # expande no Kindle, de propósito
     k 'touch /mnt/us/kindle-monitor/SEM_AUTOSTART; rm -f /mnt/us/emergency.sh /mnt/us/kindle-monitor/autostart.sh
        P=/var/tmp/kindle-autostart/autostart.pid; [ -f $P ] && kill "$(cat $P)" 2>/dev/null; rm -f $P
        pkill -f "/var/tmp/kindle-autostart/dropbearmulti dropbear" 2>/dev/null
-       while iptables -D INPUT -i wlan0 -s 192.0.2.10 -p tcp --dport 22 -j ACCEPT 2>/dev/null; do :; done
+       while iptables -D INPUT -i wlan0 -s '"$ATHERON_LAN"' -p tcp --dport 22 -j ACCEPT 2>/dev/null; do :; done
        echo "desfeito: laço e dropbear parados, regra da 22 removida, arquivos apagados (o tailscaled segue com o monitor)"'
     exit 0 ;;
   --check|aplicar) ;;
@@ -51,7 +55,7 @@ echo "  sha256 Kindle: $(k 'sha256sum /mnt/us/kindle-monitor/autostart.sh /mnt/u
 echo "==> Rodando uma vez agora (sem reiniciar)"
 # shellcheck disable=SC2016  # expande no Kindle, de propósito
 k 'P=/var/tmp/kindle-autostart/autostart.pid; [ -f $P ] && kill "$(cat $P)" 2>/dev/null; rm -f $P   # para o laço antigo (código velho)
-   sh /mnt/us/emergency.sh; sleep 8; iptables -C INPUT -i wlan0 -s 192.0.2.10 -p tcp --dport 22 -j ACCEPT 2>/dev/null && echo "22 liberada no wlan0 para o atheron" || echo "22 NÃO liberada"; echo "-- log:"; tail -5 /var/tmp/kindle-autostart.log; netstat -tln | grep -qE "[:.]22[[:space:]]" && echo "porta 22 ouvindo" || echo "porta 22 FECHADA"'
+   sh /mnt/us/emergency.sh; sleep 8; iptables -C INPUT -i wlan0 -s '"$ATHERON_LAN"' -p tcp --dport 22 -j ACCEPT 2>/dev/null && echo "22 liberada no wlan0 para o atheron" || echo "22 NÃO liberada"; echo "-- log:"; tail -5 /var/tmp/kindle-autostart.log; netstat -tln | grep -qE "[:.]22[[:space:]]" && echo "porta 22 ouvindo" || echo "porta 22 FECHADA"'
 echo
 echo "Agora, no nomad (chave do root no agent): ssh kindle-lan true && echo ok-kindle-lan"
 echo "Depois teste o boot: reinicie o Kindle SEM tocar na tela durante 'Jobman Recovery' (10 s) e espere ~3 min."

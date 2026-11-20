@@ -1,5 +1,8 @@
 # kindle-monitor settings (sourced by loop.sh). Plain POSIX sh.
-SERVER="100.64.0.1:8765"   # atheron on the tailnet; the Kindle reaches it through the Tailscale SOCKS5 proxy
+# Example file: copy it to config.local.sh (git-ignored), put your real addresses there and copy THAT to
+# /mnt/us/kindle-monitor/config.sh on the Kindle. The release zip carries this example only.
+SERVER="100.64.0.1:8765"     # the server on the tailnet; the Kindle reaches it through the Tailscale SOCKS5 proxy
+SSH_FROM="192.0.2.10"        # only this LAN address may reach the Kindle's port 22 (used by autostart.sh); empty = port stays closed
 # power profiles (the "Ajustes" block on the Acoes page): "<seconds between updates> <updates between full flash refreshes>".
 # The chosen one lives in /var/local/kindle-monitor/modo; server/perfis.py has the same numbers (a test checks they agree).
 PERFIL_desempenho="1 600"    # 1 s, flash every ~10 min

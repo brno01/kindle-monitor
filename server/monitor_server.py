@@ -28,6 +28,7 @@ import kindle_status  # noqa: E402
 import render  # noqa: E402
 import render_png  # noqa: E402
 import servicos  # noqa: E402
+import termos  # noqa: E402
 
 PORTA_PADRAO = 8765
 COLUNAS_PADRAO = 38
@@ -60,6 +61,7 @@ def carregar_config(caminho):
         "intervalo_coleta_s": coletores.INTERVALO_COLETA_PADRAO,
         "intervalo_lento_s": coletores.INTERVALO_LENTO_PADRAO,
         "comandos": {},
+        "termos_bloqueados": [],
     }
     if caminho:
         with open(caminho, "r", encoding="utf-8") as f:
@@ -68,6 +70,7 @@ def carregar_config(caminho):
             raise ValueError("config: a raiz deve ser um objeto JSON")
         cfg.update({k: v for k, v in lido.items() if not str(k).startswith("_")})
     _validar(cfg)
+    termos.definir(cfg["termos_bloqueados"])  # filtro de privacidade do processo
     return cfg
 
 
@@ -113,6 +116,7 @@ def _validar(cfg):
         v = cfg[chave]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
             raise ValueError("config: %s deve estar entre %s e %s" % (chave, lo, hi))
+    cfg["termos_bloqueados"] = list(termos.validar(cfg["termos_bloqueados"]))  # ValueError com a causa
     cfg["comandos"] = comandos.validar_config(cfg["comandos"])  # ValueError com a causa
     cfg["servicos_kindle"] = servicos.validar_catalogo(cfg["servicos_kindle"])  # ValueError com a causa
 

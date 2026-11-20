@@ -232,7 +232,7 @@ class PoliticaCatalogoTest(unittest.TestCase):
 
     def test_infraestrutura_sem_ligar_nem_parar(self):
         raiz = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        for rel in ("deploy/config.atheron.json", "server/config.exemplo.json"):
+        for rel in ("deploy/config.atheron.example.json", "server/config.exemplo.json"):
             with open(os.path.join(raiz, rel)) as f:
                 cat = {c["id"]: c for c in servicos.validar_catalogo(json.load(f)["servicos_kindle"])}
             for i in self.INFRA:

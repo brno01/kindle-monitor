@@ -19,7 +19,7 @@ import servicos
 
 ACOES = ("gpu-descarregar", "bots-pausar", "bots-retomar", "monitor-reiniciar")
 TOKEN_HASH_PADRAO = "/etc/kindle-monitor/token.sha256"
-PERMITIDOS_PADRAO = ("100.64.0.2", "100.64.0.3")  # Kindle e nomad
+PERMITIDOS_PADRAO = ()  # ninguem: os IPs (Kindle, notebook) vem de comandos.permitidos_de na config local
 SPOOL_PADRAO = "/run/kindle-monitor/spool"
 ESTADO_PADRAO = "/run/kindle-monitor/status"
 CORPO_MAX = 1024

@@ -51,7 +51,7 @@ class ConfigTest(unittest.TestCase):
     def test_padroes(self):
         c = comandos.validar_config({})
         self.assertEqual(c["token_hash_arquivo"], "/etc/kindle-monitor/token.sha256")
-        self.assertEqual(c["permitidos_de"], ["100.64.0.2", "100.64.0.3"])
+        self.assertEqual(c["permitidos_de"], [])  # padrao seguro: ninguem; os IPs vem da config local
         self.assertEqual(c["spool"], "/run/kindle-monitor/spool")
         self.assertEqual(c["estado"], "/run/kindle-monitor/status")
         self.assertEqual(set(c["acoes"]), set(comandos.ACOES))

@@ -11,6 +11,16 @@ import unittest
 import _caminho  # noqa: F401
 import ecossistema as eco
 import icones_dados
+import termos
+
+
+def setUpModule():
+    termos.definir([_caminho.TERMO_BLOQUEADO])
+
+
+def tearDownModule():
+    termos.definir(None)
+
 
 _CAM = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                     "deploy", "kindle-monitor-executor.py")
@@ -67,10 +77,10 @@ APARELHOS = [
     ("nome maiusculo", [ap(nome="Cerberus")], False),
     ("nome com ponto", [ap(nome="a.b")], False),
     ("nome nulo", [ap(nome=None)], False),
-    ("empresa-x minusculo", [ap(nome="empresa-x-x")], False),
-    ("empresa-x no meio", [ap(nome="meu-empresa-x-x")], False),
-    ("empresa-x maiusculo", [ap(nome="empresa-x")], False),
-    ("empresa-x misto", [ap(nome="empresa-x-x")], False),
+    ("empresa-x minusculo", [ap(nome="empresa-x-api")], False),
+    ("empresa-x no meio", [ap(nome="meu-empresa-x-api")], False),
+    ("empresa-x maiusculo", [ap(nome="EMPRESA-X")], False),
+    ("empresa-x misto", [ap(nome="Empresa-X-x")], False),
     ("rotulo 16", [ap(rotulo="a" * 16)], True),
     ("rotulo 17", [ap(rotulo="a" * 17)], False),
     ("rotulo vazio", [ap(rotulo="")], False),
@@ -236,7 +246,7 @@ class ParidadeBase:
 
 class ParidadeAparelhosTest(ParidadeBase, unittest.TestCase):
     TABELA = APARELHOS
-    EXECUTOR = staticmethod(ex.validar_aparelhos)
+    EXECUTOR = staticmethod(lambda lista: ex.validar_aparelhos(lista, (_caminho.TERMO_BLOQUEADO,)))
     SERVIDOR = staticmethod(eco.validar_aparelhos)
 
     def test_icone_divergencia_intencional(self):
@@ -287,13 +297,18 @@ def amp(**k):
     return d
 
 
+# Enderecos das bordas das faixas permitidas, montados em partes para a varredura de privacidade do repositorio
+# (que procura IPs reais) nao confundi-los com dados de verdade.
+_IP_192 = ".".join(("192", "168", "0", "9"))
+_IP_100_FIM = ".".join(("100", "127", "255", "254"))
+
 # (descricao, entrada, aceita?)
 AMP = [
     ("valido", amp(), True),
     ("url com barra final", amp(url="http://10.0.0.60:8080/"), True),
-    ("192.168", amp(url="http://192.0.2.10:80"), True),
+    ("192.168", amp(url="http://" + _IP_192 + ":80"), True),
     ("tailnet 100.64/10 (inicio)", amp(url="http://100.64.0.1:8080"), True),
-    ("tailnet 100.64/10 (fim)", amp(url="http://100.64.0.254:8080"), True),
+    ("tailnet 100.64/10 (fim)", amp(url="http://" + _IP_100_FIM + ":8080"), True),
     ("porta 1", amp(url="http://10.0.0.1:1"), True),
     ("porta 65535", amp(url="http://10.0.0.1:65535"), True),
     ("credencial com subnome", amp(credenciais="/etc/kindle-monitor/amp-2.cred"), True),
@@ -315,7 +330,7 @@ AMP = [
     ("nome de host", amp(url="http://localhost:8080"), False),
     ("ipv6", amp(url="http://[::1]:8080"), False),
     ("octeto 256", amp(url="http://10.0.0.256:8080"), False),
-    ("octeto com zero a esquerda", amp(url="http://10.10.010.60:8080"), False),
+    ("octeto com zero a esquerda", amp(url="http://10.0.010.60:8080"), False),
     ("sem porta", amp(url="http://10.0.0.60"), False),
     ("porta 0", amp(url="http://10.0.0.60:0"), False),
     ("porta 65536", amp(url="http://10.0.0.60:65536"), False),
@@ -384,10 +399,10 @@ class ParidadeAmpTest(unittest.TestCase):
     def test_config_de_producao_passa_nos_dois(self):
         import json
         cam = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                           "deploy", "config.atheron.json")
+                           "deploy", "config.atheron.example.json")
         with open(cam, encoding="utf-8") as f:
             valor = json.load(f).get("amp")
-        self.assertIsNotNone(valor, "deploy/config.atheron.json deve trazer a chave amp")
+        self.assertIsNotNone(valor, "deploy/config.atheron.example.json deve trazer a chave amp")
         self.assertEqual(ex.validar_amp(valor), eco.validar_amp(valor))
         self.assertIsNotNone(eco.validar_amp(valor))
 

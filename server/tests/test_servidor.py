@@ -294,9 +294,9 @@ class ConfigTierStateTest(unittest.TestCase):
                 self._carregar(discos)
 
     def test_config_atheron_valida(self):
-        caminho = os.path.join(_caminho.RAIZ, "..", "deploy", "config.atheron.json")
+        caminho = os.path.join(_caminho.RAIZ, "..", "deploy", "config.atheron.example.json")
         if not os.path.exists(caminho):  # deploy copy on the server has no repo layout
-            self.skipTest("deploy/config.atheron.json fora do layout do repositório")
+            self.skipTest("deploy/config.atheron.example.json fora do layout do repositório")
         cfg = ms.carregar_config(caminho)
         rotulos = [d["rotulo"] for d in cfg["discos"]]
         self.assertEqual(rotulos, ["/", "NAS HD", "NAS SSD", "SSD"])

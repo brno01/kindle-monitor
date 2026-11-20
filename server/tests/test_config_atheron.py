@@ -1,4 +1,4 @@
-"""Config de producao deploy/config.atheron.json: chaves E8 validas pelo servidor (e pelo executor, se existir)."""
+"""Config de producao deploy/config.atheron.example.json: chaves E8 validas pelo servidor (e pelo executor, se existir)."""
 import importlib.util
 import json
 import os
@@ -9,7 +9,7 @@ import ecossistema as eco
 import icones_dados
 
 RAIZ_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CONFIG = os.path.join(RAIZ_REPO, "deploy", "config.atheron.json")
+CONFIG = os.path.join(RAIZ_REPO, "deploy", "config.atheron.example.json")
 EXECUTOR = os.path.join(RAIZ_REPO, "deploy", "kindle-monitor-executor.py")
 
 CHAVES_ANTIGAS = ["host", "discos", "servicos", "servicos_kindle", "claude", "limiares", "s10", "balanceador",
@@ -57,7 +57,7 @@ class ConfigAtheronTest(unittest.TestCase):
                          [("senhas", "timer"), ("senhas-arq", "arquivo")])
         self.assertFalse([r for r in self.cfg["rotinas"] if r["alvo"].endswith("/tokens.json")])
 
-    def test_nenhum_nome_empresa-x(self):
+    def test_nenhum_nome_empresa_x(self):
         for a in self.cfg["aparelhos"]:
             self.assertNotIn("empresa-x", a["nome"].lower())
 

@@ -280,7 +280,7 @@ class ValidarIoTest(unittest.TestCase):
     def test_exemplo_e_atheron_tem_io(self):
         exemplo = os.path.join(_caminho.RAIZ, "config.exemplo.json")
         self.assertTrue(ms.carregar_config(exemplo)["io"]["discos"])
-        atheron = os.path.join(_caminho.RAIZ, "..", "deploy", "config.atheron.json")
+        atheron = os.path.join(_caminho.RAIZ, "..", "deploy", "config.atheron.example.json")
         if os.path.exists(atheron):
             cfg = ms.carregar_config(atheron)
             self.assertEqual([d["dev"] for d in cfg["io"]["discos"]], ["nvme0n1", "sda"])

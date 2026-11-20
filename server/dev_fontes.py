@@ -8,6 +8,7 @@ import json
 import math
 import re
 
+import termos
 from ecossistema import sanear
 
 ND = {"erro": "n/d"}
@@ -50,8 +51,8 @@ def _dias(v):
 
 
 def _proibido(*textos):
-    """True se algum texto (depois de sanear) cita a empresa-x: defesa em profundidade, o publicador ja filtra."""
-    return any("empresa-x" in sanear(t, 10000).lower() for t in textos if isinstance(t, str))
+    """True se algum texto (depois de sanear) cita um termo bloqueado (`termos`): defesa em profundidade, o publicador ja filtra."""
+    return any(termos.cita(sanear(t, 10000)) for t in textos if isinstance(t, str))
 
 
 def _json_dict(texto, max_bytes):
@@ -218,7 +219,7 @@ def coletar_github(caminho, ler, agora):
     ou None, "repos": [{"repo","push_d"}] (max 6, mais recente primeiro), "abertos", "ci_falhas", "idade_s", "velho"}.
     Os campos aditivos (revisao, conflito, idade_d, atualizado_d, issues, repos) faltam em arquivos antigos: ficam
     neutros ("nenhuma", False, None, None, []). Ausente, invalido ou com forma errada -> {"erro": "n/d"}.
-    Item invalido e descartado sem derrubar o resto; item que cita a empresa-x tambem.
+    Item invalido e descartado sem derrubar o resto; item que cita um termo bloqueado tambem.
     """
     try:
         dados = _json_dict(ler(caminho), GITHUB_BYTES_MAX)

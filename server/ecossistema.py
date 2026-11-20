@@ -13,6 +13,7 @@ import re
 import unicodedata
 
 import icones_dados
+import termos
 
 INVENTARIO_VALIDADE_S = 60
 FUTURO_TOLERADO_S = 5
@@ -70,7 +71,7 @@ def _aparelho(it):
     i, nome, rotulo, icone = it.get("id"), it.get("nome"), it.get("rotulo"), it.get("icone")
     if not isinstance(i, str) or not RE_ID.match(i):
         return None
-    if not isinstance(nome, str) or not RE_NOME.match(nome) or "empresa-x" in nome:
+    if not isinstance(nome, str) or not RE_NOME.match(nome) or termos.cita(nome):
         return None
     if not isinstance(rotulo, str) or not RE_ROTULO_APARELHO.match(rotulo):
         return None
@@ -238,9 +239,9 @@ def _unidades_falhas(d):
     n = min(max(n, 0), 9999) if _inteiro(n) else 0
     nomes = u.get("nomes")
     nomes = [x for x in nomes if isinstance(x, str)] if isinstance(nomes, list) else []
-    # defesa em profundidade: nome da empresa-x nunca vai para a tela e sai da contagem
+    # defesa em profundidade: nome com termo bloqueado nunca vai para a tela e sai da contagem
     # (testa o original e o saneado: controles no meio do nome nao escondem a palavra)
-    seguros = [x for x in nomes if "empresa-x" not in x.lower() and "empresa-x" not in sanear(x, 400).lower()]
+    seguros = [x for x in nomes if not termos.cita(x, sanear(x, 400))]
     n = max(0, n - (len(nomes) - len(seguros)))
     seguros = [sanear(x, NOME_FALHA_TAM) for x in seguros]
     return {"n": n, "nomes": [x for x in seguros if x][:NOMES_FALHAS_MAX]}

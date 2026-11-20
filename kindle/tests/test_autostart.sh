@@ -23,11 +23,12 @@ novo_ambiente() {
   printf '#!/bin/sh\necho "$*" > "%s/dropbear.args"\n' "$T" > "$T/us/jobman/bin/dropbearmulti"
   chmod +x "$T"/bin/* "$T/us/tailscale/tailscaled" "$T/us/jobman/bin/dropbearmulti"
   echo "ssh-ed25519 AAAATESTE nomad-kindle-monitor" > "$T/us/jobman/ssh/etc/dropbear/authorized_keys"
+  printf 'SERVER="100.64.0.1:8765"\nSSH_FROM="192.0.2.10"\n' > "$T/us/kindle-monitor/config.sh"
   echo "HOSTKEY-FALSA" > "$T/us/jobman/ssh/etc/dropbear/dropbear_ed25519_host_key"
   chmod 777 "$T/us/jobman/ssh/etc/dropbear/authorized_keys"
   export PATH="$T/bin:$PATH" AUTOSTART_TS="$T/us/tailscale" AUTOSTART_JOBMAN="$T/us/jobman" \
     AUTOSTART_STOP="$T/us/kindle-monitor/SEM_AUTOSTART" AUTOSTART_RUNDIR="$T/var/kindle-autostart" \
-    AUTOSTART_LOG="$T/var/autostart.log" AUTOSTART_ROOT_HOME="$T/root" AUTOSTART_UMA_VEZ=1 \
+    AUTOSTART_CONFIG="$T/us/kindle-monitor/config.sh" AUTOSTART_LOG="$T/var/autostart.log" AUTOSTART_ROOT_HOME="$T/root" AUTOSTART_UMA_VEZ=1 \
     AUTOSTART_ESPERA_WIFI=0 AUTOSTART_SRC="$HERE/kindle-monitor/autostart.sh" AUTOSTART_RUN="$T/var/run.sh"
 }
 modo() { stat -c %a "$1"; }
@@ -52,6 +53,19 @@ rm -rf "$T"
 # 1b. origem configurável
 novo_ambiente; AUTOSTART_SSH_DE=10.9.9.9 sh "$HERE/kindle-monitor/autostart.sh"
 check "firewall: AUTOSTART_SSH_DE muda a origem" grep -q -- "-s 10.9.9.9 " "$T/iptables.args"
+rm -rf "$T"
+
+# 1c. sem SSH_FROM (nem env): nada de regra, a 22 fica fechada e o log avisa
+novo_ambiente; echo 'SERVER="100.64.0.1:8765"' > "$T/us/kindle-monitor/config.sh"
+sh "$HERE/kindle-monitor/autostart.sh"
+check "sem origem: nenhuma regra de firewall" test ! -f "$T/iptables.args"
+check "sem origem: avisa no log" grep -q 'SSH_FROM não definido' "$T/var/autostart.log"
+rm -rf "$T"
+
+# 1d. origem malformada no config.sh: tratada como ausente
+novo_ambiente; echo 'SSH_FROM="1.2.3.4; reboot"' > "$T/us/kindle-monitor/config.sh"
+sh "$HERE/kindle-monitor/autostart.sh"
+check "origem malformada: nenhuma regra de firewall" test ! -f "$T/iptables.args"
 rm -rf "$T"
 
 # 2. já está tudo de pé: não sobe nada de novo

@@ -105,7 +105,7 @@ class ValidarTest(unittest.TestCase):
         for ok in ("/srv/x", "/var/lib/a/b.json", "/var/backups/pg", "/srv/nas/dir"):
             self.assertEqual(len(ex.validar_rotinas([arq(alvo=ok)])), 1)
         for ruim in ("srv/x", "/srv", "/etc/passwd", "/srv/../etc/passwd", "/srv//x", "/srv/./x", "/srv/x/",
-                     "/var/libx/y", "~/x", "/tmp/srv/x", 3, None, "",
+                     "/var/libx/y", "/home/usuario/x", "/tmp/srv/x", 3, None, "",
                      "/var/lib/claude-uso", "/var/lib/claude-uso/tokens.json", "/var/lib/claude-uso/sessoes/a"):
             self.ruim([arq(alvo=ruim)], "alvo")
         for ok in ("/var/lib/claude-usox/a", "/var/lib/claude-us/a", "/srv/claude-uso/a"):
@@ -190,17 +190,19 @@ class ParseFalhasTest(unittest.TestCase):
         self.assertEqual(ex.parse_falhas(t)["nomes"], ["u%d.service" % i for i in range(5)])
 
 
-    def test_unidade_empresa-x_fica_fora_do_nome_e_da_contagem(self):
+    def test_unidade_empresa_x_fica_fora_do_nome_e_da_contagem(self):
         t = ("empresa-x-sync.service loaded failed failed x\n"
              "srv-empresa-x-repo.mount loaded failed failed x\n"
-             "empresa-x-API.service loaded failed failed x\n"
-             "rclone-nas-sync.service loaded failed failed empresa-x sync\n")
-        r = ex.parse_falhas(t)
+             "Empresa-X-API.service loaded failed failed x\n"
+             "rclone-nas-sync.service loaded failed failed Empresa-X sync\n")
+        r = ex.parse_falhas(t, (_caminho.TERMO_BLOQUEADO,))
         self.assertEqual(r, {"n": 0, "nomes": []})
         t = ("empresa-x-sync.service loaded failed failed x\n"
              "srv-empresa-x-repo.mount loaded failed failed x\n"
              "rclone-nas-sync.service loaded failed failed x\n")
-        self.assertEqual(ex.parse_falhas(t), {"n": 1, "nomes": ["rclone-nas-sync.service"]})
+        self.assertEqual(ex.parse_falhas(t, (_caminho.TERMO_BLOQUEADO,)), {"n": 1, "nomes": ["rclone-nas-sync.service"]})
+        # padrao neutro: sem termos bloqueados nada e descartado
+        self.assertEqual(ex.parse_falhas(t)["n"], 3)
 
 
 class FakeEntrada:
@@ -849,7 +851,7 @@ class ParidadeTest(unittest.TestCase):
     def test_arquivos_de_config_do_repo_passam(self):
         aqui = os.path.dirname(os.path.abspath(__file__))
         raiz = os.path.dirname(aqui)
-        for rel in (("..", "deploy", "config.atheron.json"), ("config.exemplo.json",)):
+        for rel in (("..", "deploy", "config.atheron.example.json"), ("config.exemplo.json",)):
             with open(os.path.join(raiz, *rel), encoding="utf-8") as f:
                 dados = json.load(f)
             if "rotinas" in dados:

@@ -357,7 +357,7 @@ class GpuTest(Base):
         self.assertEqual(self.resultados()["10-gpu-descarregar.json"]["estado"], "falhou")
 
     def test_url_padrao(self):
-        self.assertEqual(ex.OLLAMA_PADRAO, "http://10.0.0.1:11435")
+        self.assertEqual(ex.OLLAMA_PADRAO, "http://127.0.0.1:11434")
 
 
 NS = 1_000_000_000
