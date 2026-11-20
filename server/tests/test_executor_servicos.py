@@ -168,7 +168,7 @@ class CatalogoParidadeTest(unittest.TestCase):
 
     def test_config_real(self):
         raiz = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        with open(os.path.join(raiz, "deploy", "config.atheron.json")) as f:
+        with open(os.path.join(raiz, "deploy", "config.atheron.example.json")) as f:
             lista = json.load(f)["servicos_kindle"]
         self.assertEqual(ex.validar_catalogo(lista), servicos.validar_catalogo(lista))
 

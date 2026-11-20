@@ -58,7 +58,7 @@ def sem_ip_nem_segredo(teste, texto):
 class ValidarTest(unittest.TestCase):
     def ruim(self, lista, trecho=None):
         with self.assertRaises(ValueError) as c:
-            ex.validar_aparelhos(lista)
+            ex.validar_aparelhos(lista, (_caminho.TERMO_BLOQUEADO,))
         if trecho:
             self.assertIn(trecho, str(c.exception))
 
@@ -86,9 +86,13 @@ class ValidarTest(unittest.TestCase):
         for v in ("", "Gw", "a_b", "a" * 64, "a.b", "a\n", None, 1):
             self.ruim([ap(nome=v)])
 
-    def test_nome_com_empresa-x_recusado(self):
-        for v in ("empresa-x-x", "meu-empresa-x", "empresa-x", "empresa-x"):
+    def test_nome_com_empresa_x_recusado(self):
+        for v in ("empresa-x-api", "meu-empresa-x", "empresa-x", "EMPRESA-X"):
             self.ruim([ap(nome=v)])
+
+    def test_sem_termos_nada_e_bloqueado(self):
+        # padrao neutro: sem `termos_bloqueados` a lista nao filtra nome nenhum
+        self.assertEqual(ex.validar_aparelhos([ap(nome="empresa-x-api")]), [ap(nome="empresa-x-api")])
 
     def test_rotulo(self):
         for v in ("", "a" * 17, "café", "a\nb", "a\x00", None, 1):
@@ -152,9 +156,9 @@ class ParseTest(unittest.TestCase):
 
     def test_peer_fora_do_catalogo_nunca_aparece(self):
         txt = fixture()
-        self.assertIn("empresa-x-x", txt)
+        self.assertIn("empresa-x-api", txt)
         d = self.parse(txt)
-        self.assertNotIn("empresa-x-x", json.dumps(d))
+        self.assertNotIn("empresa-x-api", json.dumps(d))
         self.assertNotIn("empresa-x", json.dumps(d))
         self.assertNotIn("nomad", d["aparelhos"])
         self.assertNotIn("games", json.dumps(d))
@@ -348,7 +352,7 @@ class InventarioTest(Base):
         self.assertEqual([n for n in os.listdir(self.estado) if n.startswith(".")], [])
         self.assertIn("servicos.json", os.listdir(self.estado))
 
-    def test_arquivo_gravado_sem_empresa-x_nem_ip(self):
+    def test_arquivo_gravado_sem_empresa_x_nem_ip(self):
         self.inv((0, fixture(), "")).inventariar()
         txt = self.ler("aparelhos.json")
         self.assertNotIn("empresa-x", txt)
@@ -441,7 +445,8 @@ class CfgTest(unittest.TestCase):
         self.assertNotIn("aparelhos_erro", c)
 
     def test_invalida_vira_lista_vazia_com_motivo_e_nao_derruba_servicos(self):
-        c = self.cfg({"aparelhos": [ap(nome="empresa-x-x")], "servicos_kindle": []})
+        c = self.cfg({"aparelhos": [ap(nome="empresa-x-api")], "servicos_kindle": [],
+                       "termos_bloqueados": [_caminho.TERMO_BLOQUEADO]})
         self.assertEqual(c["aparelhos"], [])
         self.assertIn("aparelhos", c["aparelhos_erro"])
 
@@ -449,7 +454,7 @@ class CfgTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cam = os.path.join(d, "c.json")
             with open(cam, "w") as f:
-                json.dump({"aparelhos": [ap(nome="empresa-x-x")]}, f)
+                json.dump({"aparelhos": [ap(nome="empresa-x-api")], "termos_bloqueados": [_caminho.TERMO_BLOQUEADO]}, f)
             logs, vistos = [], []
 
             class Falso:
@@ -473,7 +478,7 @@ class CfgTest(unittest.TestCase):
 class ParidadeTest(unittest.TestCase):
     def test_arquivos_de_config_do_repo_passam(self):
         raiz = os.path.dirname(AQUI)
-        for rel in (("..", "deploy", "config.atheron.json"), ("config.exemplo.json",)):
+        for rel in (("..", "deploy", "config.atheron.example.json"), ("config.exemplo.json",)):
             with open(os.path.join(raiz, *rel), encoding="utf-8") as f:
                 dados = json.load(f)
             if "aparelhos" in dados:

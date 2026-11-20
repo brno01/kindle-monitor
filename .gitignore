@@ -1,2 +1,8 @@
 __pycache__/
 *.pyc
+
+# Configuração local com valores reais (IPs, nomes de rede, termos bloqueados): nunca versionar.
+# O repositório traz só os *.example.* com valores fictícios.
+/deploy/config.atheron.local.json
+/kindle/kindle-monitor/config.local.sh
+/CLAUDE.local.md

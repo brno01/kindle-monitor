@@ -320,8 +320,8 @@
       "ID": "nodeid08",
       "NodeID": 1008,
       "PublicKey": "nodekey:0808080808080808080808080808080808080808080808080808080808080808",
-      "HostName": "empresa-x-x",
-      "DNSName": "empresa-x-x.example-tailnet.ts.net.",
+      "HostName": "empresa-x-api",
+      "DNSName": "empresa-x-api.example-tailnet.ts.net.",
       "OS": "windows",
       "UserID": 1,
       "TailscaleIPs": [

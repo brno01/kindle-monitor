@@ -14,7 +14,7 @@ O porquê: o limite do plano é o que interrompe o trabalho; ver a porcentagem e
 ## Decisões do dono
 
 - **Onde**: página nova (5º botão de navegação, rótulo "Claude/S10") com os cartões completos **e** uma linha fixa no rodapé do Resumo para ver de relance.
-- **Contas**: **só a conta pessoal** (`~/.claude` do usuário `claude` no atheron). As contas empresa-x do nomad ficam de fora; o formato dos arquivos deve permitir acrescentar contas depois sem quebrar. O dono escolheu sabendo que "nada novo no nomad": os limites são da conta inteira, mas só sessões **no atheron** atualizam o retrato (o atheron é o servidor de desenvolvimento onde as sessões do Claude rodam). Sessões da conta pessoal abertas no nomad não publicam nada; o cartão mostra a idade do dado.
+- **Contas**: **só a conta pessoal** (`~/.claude` do usuário `claude` no atheron). As contas de trabalho do nomad ficam de fora; o formato dos arquivos deve permitir acrescentar contas depois sem quebrar. O dono escolheu sabendo que "nada novo no nomad": os limites são da conta inteira, mas só sessões **no atheron** atualizam o retrato (o atheron é o servidor de desenvolvimento onde as sessões do Claude rodam). Sessões da conta pessoal abertas no nomad não publicam nada; o cartão mostra a idade do dado.
 - **Hora sem segundos** no cabeçalho de todas as páginas (já feito à parte: `_cabecalho` usa `%H:%M`).
 
 ## Objetivos
@@ -26,7 +26,7 @@ O porquê: o limite do plano é o que interrompe o trabalho; ver a porcentagem e
 
 ## Não objetivos
 
-- Contas empresa-x / nomad (pode vir depois).
+- Contas de trabalho / nomad (pode vir depois).
 - Limite semanal por modelo e saldo de uso extra: **não existem** em fonte documentada; não inventar.
 - Ações (botões) na página nova: ela só mostra.
 
@@ -75,7 +75,7 @@ kindle-monitor (nobody) lê os três ──► m["claude"], m["s10"] ──► p
 ```
 
 ### 1. Limites (dotfiles, `claude/statusline.sh`)
-- Só quando a conta é a pessoal (`CLAUDE_CONFIG_DIR` vazio ou `~/.claude`) **e** `/var/lib/claude-uso` existe e é gravável; senão não faz nada (assim o nomad e as contas empresa-x seguem iguais).
+- Só quando a conta é a pessoal (`CLAUDE_CONFIG_DIR` vazio ou `~/.claude`) **e** `/var/lib/claude-uso` existe e é gravável; senão não faz nada (assim o nomad e as contas de trabalho seguem iguais).
 - Grava só se algum valor mudou ou se o arquivo tem mais de 60 s, de forma atômica (temporário + `mv`), em segundo plano, sem atrasar a linha.
 - Sessões simultâneas (escolha do desenho): por janela, `volta_em` maior sempre vence; com o mesmo `volta_em`, a porcentagem nunca recua (uma sessão parada não sobrescreve um valor mais novo com um mais velho); `volta_em` menor que o gravado é ignorado. A comparação é feita ao gravar (ler o arquivo atual antes).
 - Formato (`limites.json`, 0644):
@@ -109,7 +109,7 @@ kindle-monitor (nobody) lê os três ──► m["claude"], m["s10"] ──► p
 - Teste obrigatório: o resumo gerado a partir de um estado completo (fixture) não contém nenhuma chave ou valor fora da lista.
 
 ### 5. kindle-monitor
-- Config: `"claude": {"limites": "/var/lib/claude-uso/limites.json", "tokens": "/var/lib/claude-uso/tokens.json"}` e `"s10": {"resumo": "/run/cerberus-s10-publico/resumo.json"}`; chave ausente = recurso desligado (a linha do Resumo some; o botão da página continua, para a barra não mudar de forma, e a página mostra "Claude/S10 desligado na config"). Vai em `config.exemplo.json` e `deploy/config.atheron.json`.
+- Config: `"claude": {"limites": "/var/lib/claude-uso/limites.json", "tokens": "/var/lib/claude-uso/tokens.json"}` e `"s10": {"resumo": "/run/cerberus-s10-publico/resumo.json"}`; chave ausente = recurso desligado (a linha do Resumo some; o botão da página continua, para a barra não mudar de forma, e a página mostra "Claude/S10 desligado na config"). Vai em `config.exemplo.json` e `deploy/config.atheron.example.json`.
 - Coletores puros e testados com fixtures, isolados como os demais (`_isolado`): arquivo ausente/inválido vira `n/d`, nunca exceção.
 - Regras de exibição:
   - Limite com `volta_em` no passado: mostra `0%` e "renovado" (a janela reiniciou; a próxima sessão atualiza o valor real).

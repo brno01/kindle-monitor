@@ -17,11 +17,17 @@ O Kindle só busca e desenha. Quem calcula é o servidor.
 
 ## Estrutura
 - `server/`: servidor, coletores, render do PNG e testes.
-- `kindle/`: o que vai para o Kindle (`kindle-monitor/loop.sh`, `config.sh`, scriptlets em `documents/`; `emergency.sh` + `kindle-monitor/autostart.sh`: Tailscale e SSH no boot; testes em `kindle/tests/`).
-- `deploy/`: unit systemd, config e instalador do atheron; `instalar-autostart-kindle.sh` (roda no nomad: `--check`, instalar, `--desfazer`).
+- `kindle/`: o que vai para o Kindle (`kindle-monitor/loop.sh`, `config.example.sh`, scriptlets em `documents/`; `emergency.sh` + `kindle-monitor/autostart.sh`: Tailscale e SSH no boot; testes em `kindle/tests/`).
+- `deploy/`: unit systemd, config de exemplo (`config.atheron.example.json`) e instalador do atheron; `instalar-autostart-kindle.sh` (roda no nomad: `--check`, instalar, `--desfazer`).
 - `tools/`: `gerar_fonte.py` (fonte embutida) e `preview.py`.
 
 Detalhes de arquitetura, acessos, cuidados e pendências: `CLAUDE.md`. No Obsidian: `projects/nomad/notes/Kindle monitor - *.md`.
+
+## Configuração local
+Valores reais (IPs, nomes de rede, termos que nunca podem aparecer na tela) ficam em arquivos **locais, fora do git** (`.gitignore`); o repositório traz só exemplos com valores fictícios:
+- `deploy/config.atheron.example.json` -> copie para `deploy/config.atheron.local.json` e preencha (o `instalar-atheron.sh` instala esse arquivo em `/etc/kindle-monitor/config.json`; sem ele o instalador para). Chaves próprias: `bind` (IP onde o serviço escuta), `ollama_url` e `termos_bloqueados` (ver `server/README.md`).
+- `kindle/kindle-monitor/config.example.sh` -> copie para `kindle/kindle-monitor/config.local.sh`, ajuste `SERVER` e `SSH_FROM`, e grave no Kindle como `/mnt/us/kindle-monitor/config.sh`. O zip da release leva só o exemplo: renomeie para `config.sh` e edite.
+- `server/config.exemplo.json`: exemplo comentado de todas as chaves do servidor.
 
 ## Testes e CI
 ```bash
@@ -42,7 +48,7 @@ Cada tag `v*` cria uma release com o arquivo `kindle-monitor-kindle.zip`: o que 
 O jailbreak é o **moderno** (KPM, Jobman e Scriptlets). KUAL, MRPI e USBNetwork são legado e não funcionam nele. O Wi-Fi pode atualizar o firmware e apagar o jailbreak, então o bloqueio de atualização do Jobman precisa ficar ligado. Não use `;kpm install/uninstall`, `freset`, `;shpm`, "atualizar ambiente" nem recovery do Jobman. Guia oficial: <https://kindlemodding.org>.
 
 ## Estado
-No ar desde 15/11/2026. Repositório privado `brno01/kindle-monitor`, branch `master`.
+No ar desde 15/11/2026. Repositório `brno01/kindle-monitor`, branch `master`.
 
 ## Licença
-Repositório privado, todos os direitos reservados. Veja [LICENSE](LICENSE).
+[MIT](LICENSE)

@@ -108,7 +108,7 @@ class ConfigWebTest(unittest.TestCase):
     def test_config_atheron_e_exemplo_carregam(self):
         import os
         raiz = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        for rel in ("deploy/config.atheron.json", "server/config.exemplo.json"):
+        for rel in ("deploy/config.atheron.example.json", "server/config.exemplo.json"):
             cfg = ms.carregar_config(os.path.join(raiz, rel))
             self.assertEqual(len(cfg["servicos_kindle"]), 48)
 

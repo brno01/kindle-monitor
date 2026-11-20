@@ -1,5 +1,8 @@
 {
   "host": "atheron",
+  "bind": "100.64.0.1",
+  "ollama_url": "http://10.0.0.1:11434",
+  "termos_bloqueados": ["empresa-x"],
   "discos": [
     {"rotulo": "/", "caminho": "/"},
     {"rotulo": "NAS HD", "caminho": "/srv/nas-hd"},

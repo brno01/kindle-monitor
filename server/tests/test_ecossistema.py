@@ -6,6 +6,16 @@ import _caminho  # noqa: F401
 import alertas
 import coletores
 import ecossistema as eco
+import termos
+
+
+def setUpModule():
+    termos.definir([_caminho.TERMO_BLOQUEADO])
+
+
+def tearDownModule():
+    termos.definir(None)
+
 
 AGORA = 1_700_000_000.0
 
@@ -39,7 +49,7 @@ class ValidarAparelhosTest(unittest.TestCase):
 
     def test_invalidos_descartam_a_lista(self):
         ruins = [aparelho(id="Gw"), aparelho(id=""), aparelho(id="a" * 25), aparelho(id=3),
-                 aparelho(nome="CERB"), aparelho(nome="empresa-x-x"), aparelho(nome="a" * 64), aparelho(nome=None),
+                 aparelho(nome="CERB"), aparelho(nome="empresa-x-api"), aparelho(nome="a" * 64), aparelho(nome=None),
                  aparelho(rotulo=""), aparelho(rotulo="x" * 17), aparelho(rotulo="Gatewayé"), aparelho(rotulo=5),
                  aparelho(icone="nao-existe"), aparelho(icone=None),
                  aparelho(alerta_offline_min=0), aparelho(alerta_offline_min=10081),
@@ -250,7 +260,7 @@ class MontarAparelhosTest(unittest.TestCase):
 
     def test_id_fora_do_catalogo_ignorado(self):
         d = ap_doc(aparelhos={"gw": {"online": True, "visto_em": 1, "conexao": "direto"},
-                              "empresa-x-x": {"online": True, "visto_em": 1, "conexao": "direto"}})
+                              "empresa-x-api": {"online": True, "visto_em": 1, "conexao": "direto"}})
         r = eco.montar_aparelhos(CAT_A, d, AGORA)
         self.assertEqual([i["id"] for i in r["itens"]], ["gw", "s10"])
 
@@ -361,8 +371,8 @@ class MontarRotinasTest(unittest.TestCase):
         self.assertTrue(all(n.isascii() and len(n) <= 40 and n.isprintable() for n in u["nomes"]))
         self.assertEqual(u["nomes"][2], "z" * 40)
 
-    def test_unidades_falhas_sem_empresa-x(self):
-        falhas = {"n": 4, "nomes": ["empresa-x-sync.service", "srv-empresa-x-repo.mount", "club\x00petro.service", "rclone-nas-sync.service"]}
+    def test_unidades_falhas_sem_empresa_x(self):
+        falhas = {"n": 4, "nomes": ["empresa-x-sync.service", "srv-Empresa-X-repo.mount", "empresa\x00-x.service", "rclone-nas-sync.service"]}
         u = eco.montar_rotinas(CAT_R, ro_doc(falhas=falhas), AGORA)["unidades_falhas"]
         self.assertEqual(u, {"n": 1, "nomes": ["rclone-nas-sync.service"]})
         falhas = {"n": 1, "nomes": ["empresa-x-sync.service"]}

@@ -5,10 +5,10 @@
 ## Contexto
 
 - **Objetivo:** o Kindle vira painel do ecossistema. A tela inicial mostra só exceções: cartão ATENÇÃO alimentado por um motor de alertas único (hoje o disco `/` a 91% sai como "Tudo em ordem") e uma linha por sistema.
-- **Fonte da verdade:** plano aprovado `~/.claude/plans/floofy-cuddling-nova.md`, Parte B (a Parte A já foi feita). Desenho: `docs/superpowers/specs/2026-11-18-painel-ecossistema-design.md`. Não reabrir decisões.
-- **Worktrees:** kindle-monitor em `~/development/worktrees/kindle-monitor-ecossistema` (`feat/painel-ecossistema`); dotfiles em `~/development/worktrees/dotfiles-bypass-sessoes` (`feat/bypass-e-painel-dev`).
+- **Fonte da verdade:** plano aprovado o plano aprovado (arquivo local, fora do repositório), Parte B (a Parte A já foi feita). Desenho: `docs/superpowers/specs/2026-11-18-painel-ecossistema-design.md`. Não reabrir decisões.
+- **Worktrees:** kindle-monitor em `<worktree>` (`feat/painel-ecossistema`); dotfiles em `<worktree-dotfiles>` (`feat/bypass-e-painel-dev`).
 - **Testes:** kindle-monitor, um módulo: `cd server && (umask 022; python3 -I -m unittest discover -s tests -p <modulo>.py -v)` (a forma `tests.<modulo>` citada nas tarefas não funciona com `-I`: `tests` não é pacote). Suíte inteira (648 testes, ~45 s): `discover -s tests`, em segundo plano, log em `<scratchpad>/km-*.log`. dotfiles: `uv run --no-project --with pytest pytest tests`. Scripts do Kindle: `busybox sh -n` e `shellcheck`.
-- **Restrições:** servidor só com stdlib, roda como `nobody` e só lê; fonte ASCII (sem acento na tela); texto de fora vira ASCII com tamanho máximo em quem grava e em quem lê; nada da empresa-x (a tailnet tem um peer `empresa-x-*`); o root só roda comandos de leitura com argv fixo, `shell=False` e timeout.
+- **Restrições:** servidor só com stdlib, roda como `nobody` e só lê; fonte ASCII (sem acento na tela); texto de fora vira ASCII com tamanho máximo em quem grava e em quem lê; nada de trabalho (a tailnet pode ter um peer cujo nome cita um termo bloqueado); o root só roda comandos de leitura com argv fixo, `shell=False` e timeout.
 - **Gargalo:** `server/render_png.py`. As tarefas 4–9 e 22–23 mexem nele e são estritamente sequenciais.
 
 ## Escolhas deste plano (o desenho deixou em aberto)
@@ -54,7 +54,7 @@
   - `/run/kindle-monitor/status/rotinas.json` (root): `{"versao":1,"gerado":int,"rotinas":{"<id>":{"resultado":"ok"|"falha"|"desconhecido","ultima_em":int|null,"detalhe":str<=24}},"unidades_falhas":{"n":int,"nomes":[str<=40] (máx. 5)}}`.
   - `/var/lib/claude-uso/sessoes/<id>.json` (usuário `claude`): `{"versao":1,"id":str,"projeto":str<=40,"estado":"aberta"|"trabalhando"|"esperando","desde":int,"atualizado_em":int}`. O `id` casa com `^[0-9a-f-]{8,64}$`; `projeto` é o basename do `cwd` com `[A-Za-z0-9._-]`.
   - `/var/lib/claude-uso/github.json` (usuário `claude`): `{"versao":1,"gerado_em":int,"dono":"brno01","prs":[{"repo":str<=40,"numero":int,"titulo":str<=80,"rascunho":bool,"ci":"ok"|"falha"|"pendente"|null}] (máx. 20),"ci":[{"repo":str,"branch":str<=40,"estado":"ok"|"falha"|"pendente"}] (máx. 30)}`.
-- **E8. Chaves novas da config** (`deploy/config.atheron.json`, `server/config.exemplo.json`):
+- **E8. Chaves novas da config** (`deploy/config.atheron.example.json`, `server/config.exemplo.json`):
 
   ```json
   "limiares": {"disco_aviso": 85, "disco_critico": 93, "ram": 90, "swap": 50, "temp_cpu_c": 85, "kindle_bateria": 15,
@@ -67,7 +67,7 @@
   ```
 
   Validação (igual no executor e no servidor; um teste confere a paridade):
-  - `aparelhos` (máx. 16): `id` `^[a-z0-9-]{1,24}$`; `nome` `^[a-z0-9-]{1,63}$` e sem `empresa-x`; `rotulo` ASCII de 1 a 16; `icone` em `icones_dados.ICONES`; `alerta_offline_min` opcional, inteiro de 1 a 10080.
+  - `aparelhos` (máx. 16): `id` `^[a-z0-9-]{1,24}$`; `nome` `^[a-z0-9-]{1,63}$` e sem termo bloqueado; `rotulo` ASCII de 1 a 16; `icone` em `icones_dados.ICONES`; `alerta_offline_min` opcional, inteiro de 1 a 10080.
   - `rotinas` (máx. 16): `rotulo` de 1 a 20; `timer` → `alvo` `^[A-Za-z0-9_.@-]{1,64}\.service$`; `arquivo` → `alvo` absoluto, com `normpath(alvo) == alvo`, sob `/srv/`, `/var/lib/` ou `/var/backups/`; `max_idade_h` de 0.1 a 720.
   - Config inválida não derruba nada: o servidor descarta a lista; o executor registra uma linha e não grava aquele arquivo.
 - **E9. Ícones** em `tools/icones/<nome>.svg`, gerados em 30, 40 e 56 px.
@@ -77,7 +77,7 @@
   - Eventos: `UserPromptSubmit` → `trabalhando`; `Stop` e `Notification` → `esperando`; `SessionEnd` apaga o arquivo.
   - Batimento da statusline: cria como `aberta` se faltar; senão só renova `atualizado_em`, no máximo a cada 30 s. `desde` só muda quando o estado muda.
   - Leitor e gravador: o leitor ignora `atualizado_em` com mais de 12 h (o hook não tem sinal confiável de que o processo continua vivo); o gravador apaga arquivos com mais de 24 h.
-  - Só grava na conta pessoal (`CLAUDE_CONFIG_DIR` vazio ou `~/.claude`) e com `cwd` fora de caminhos com `/empresa-x`.
+  - Só grava na conta pessoal (`CLAUDE_CONFIG_DIR` vazio ou `~/.claude`) e com `cwd` fora de caminhos com `/<termo-bloqueado>`.
 - **E11. Rotinas de usuário.** `claude-uso-painel` e `second-brain` são timers de usuário do `claude`; o `systemctl` do root não os vê. Entram como `arquivo`, pela idade do que produzem.
 
 ## Roadmap
@@ -140,7 +140,7 @@
 
 ### 5. Alertas na tela, no texto e na config
 - Agente: implementador (sonnet) · Depende de: 1, 4 · Paralelo com: 3, 10
-- Arquivos: `server/render_png.py` (`_atencao`, `_card_atencao`), `server/render.py` (`_linhas_catalogo`), `server/coletores.py` (`Coletor.coletar`: `m["limiares"] = alertas.limiares(cfg.get("limiares"))`), `server/config.exemplo.json` e `deploy/config.atheron.json` (bloco `limiares` de E8), testes `test_render_png`, `test_render`, `test_coletores`
+- Arquivos: `server/render_png.py` (`_atencao`, `_card_atencao`), `server/render.py` (`_linhas_catalogo`), `server/coletores.py` (`Coletor.coletar`: `m["limiares"] = alertas.limiares(cfg.get("limiares"))`), `server/config.exemplo.json` e `deploy/config.atheron.example.json` (bloco `limiares` de E8), testes `test_render_png`, `test_render`, `test_coletores`
 - Fazer:
   - `_atencao(m, kv)` passa a ser `alertas.avaliar(m, m.get("limiares"), kv)`. O `/tela.txt` usa a mesma lista.
   - Formas: crítico ✕ (`falha`); aviso `!` (forma nova `_forma(..., "aviso")`, triângulo com "!"); leve ○ (`parado`).
@@ -222,7 +222,7 @@
   - `inventariar` chama `["tailscale","status","--json"]` (timeout 10 s) só se houver catálogo e grava `aparelhos.json` com `_gravar_arquivo`. Se o comando falhar, grava `erro` e todos com `online: null`; `servicos.json` continua sendo gravado.
   - Unit: `ReadWritePaths=-/run/tailscale/tailscaled.sock`, a validar no host. Ajustar o teste "mesmo endurecimento do executor" para aceitar essa linha só no inventário.
 - Pronto quando: os testes passam, cobrindo:
-  - JSON real anonimizado, com um peer `empresa-x-x` fora do catálogo que não aparece no arquivo; catálogo com `nome` contendo `empresa-x`, que é recusado;
+  - JSON real anonimizado, com um peer `empresa-x-api` fora do catálogo que não aparece no arquivo; catálogo com `nome` contendo `<termo-bloqueado>`, que é recusado;
   - JSON truncado; timeout; tipos errados; saída sem `@` e sem endereço IP.
 
 ### 16. Executor: rotinas
@@ -254,7 +254,7 @@
   - `statusline.sh`: no mesmo `if` do `claude-limites`, chamar `claude-sessao batimento` em segundo plano.
 - Pronto quando: `uv run --no-project --with pytest pytest tests/test_claude_sessao.py tests/test_statusline.py` passa, cobrindo:
   - cada evento, e `SessionEnd` apagando o arquivo; batimento sem mudar `estado`/`desde`; poda de 24 h;
-  - `id` `../x` e `a/b` recusados; `cwd` com `/empresa-x/` e `CLAUDE_CONFIG_DIR=~/.claude-<conta-de-trabalho>` sem gravar;
+  - `id` `../x` e `a/b` recusados; `cwd` com `/<termo-bloqueado>/` e `CLAUDE_CONFIG_DIR=~/.claude-<conta-de-trabalho>` sem gravar;
   - diretório ausente em silêncio; entradas antigas do `settings.json` preservadas.
 
 ### 19. dotfiles: `claude-github` e timer
@@ -300,12 +300,12 @@
 
 ### 24. Config de produção
 - Agente: mecanico (haiku) · Depende de: 17, 21
-- Arquivos: `deploy/config.atheron.json`, `server/config.exemplo.json` (com `_comentario_*`)
+- Arquivos: `deploy/config.atheron.example.json`, `server/config.exemplo.json` (com `_comentario_*`)
 - Fazer: E8 completo.
   - `aparelhos` (peers conferidos em 18/11; rótulo/ícone): nomad/notebook; S22/celular (`galaxy-s22`); S10/celular (`galaxy-s10`); iPhone/celular (`iphone-12`); Kindle/leitor (`kindle-monitor`); Gateway/rede (`cerberus-gw`, `alerta_offline_min: 10`); games/jogo.
   - `rotinas`: `cerberus-vault-backup.service` (26 h); arquivo `/srv/nas/backups/vaultwarden` (26 h); arquivo `/var/lib/claude-uso/tokens.json` (1 h). Syncthing do cofre e segundo cérebro: alvo a confirmar em R5 (`/srv/nas/vault` é do grupo `cofre`, 0770, e o `claude` não lista).
   - Chaves `claude.sessoes` e `github.resumo`.
-- Pronto quando: um teste carrega `config.atheron.json` com os validadores do servidor e do executor, sem erro e sem `nome` contendo `empresa-x`.
+- Pronto quando: um teste carrega `config.atheron.example.json` com os validadores do servidor e do executor, sem erro e sem `nome` contendo termo bloqueado.
 
 ### 25. Prévias da Entrega 2
 - Agente: mecanico (haiku) · Depende de: 10, 17, 21 · Paralelo com: 22, 23
@@ -330,7 +330,7 @@
 ### 28. Revisão da Entrega 2
 - Agente: revisor, python-reviewer e security-reviewer, em paralelo · Depende de: 20, 23, 24, 25, 26
 - Fazer:
-  - security-reviewer: diff do executor e da unit, `claude-sessao`, `claude-github` e a sanitização no servidor. Foco: argv fixo e sem shell; path traversal no id da sessão; symlink; prefixos de `arquivo`; peer da empresa-x; nada de IP ou e-mail nos JSON; `nobody` só lendo.
+  - security-reviewer: diff do executor e da unit, `claude-sessao`, `claude-github` e a sanitização no servidor. Foco: argv fixo e sem shell; path traversal no id da sessão; symlink; prefixos de `arquivo`; peer de trabalho; nada de IP ou e-mail nos JSON; `nobody` só lendo.
   - revisor: diff dos dois repos contra este plano.
   - Os achados voltam ao `implementador`.
 - Pronto quando: nenhum achado bloqueante em aberto.
@@ -360,7 +360,7 @@ Antes de cada instalação, a suíte passa e o dono aprovou as prévias. O coman
 - **R1. Backup (dono, root).** `sudo bash -c 'D=/root/backup/kindle-monitor-antes-ecossistema-$(date +%F-%H%M); install -d -m 0700 "$D"; cp -a /opt/kindle-monitor /etc/kindle-monitor /etc/systemd/system/kindle-monitor* /etc/tmpfiles.d/kindle-monitor*.conf "$D"/; ls -la "$D"'`.
   - Verificar: a listagem mostra os quatro itens.
   - Desfazer qualquer etapa: copiar de volta `"$D"/kindle-monitor` para `/opt/`, a config para `/etc/kindle-monitor/` e as units; depois `systemctl daemon-reload && systemctl restart kindle-monitor.service kindle-monitor-inventario.timer`.
-- **R2. Instalar o servidor (dono, root).** Comando "Atualizar o atheron" do `CLAUDE.md`, com `R=~/development/worktrees/kindle-monitor-ecossistema`.
+- **R2. Instalar o servidor (dono, root).** Comando "Atualizar o atheron" do `CLAUDE.md`, com `R=<worktree>`.
   - Verificar (eu): `systemctl is-active kindle-monitor`; `curl -s "http://100.64.0.1:8765/botoes.txt?pagina=resumo"`; `curl -so <scratchpad>/<p>.png ".../tela.png?pagina=<p>"` das 6 páginas, lendo as imagens; `journalctl -u kindle-monitor -n 20`.
   - Desfazer: R1.
 - **R3. Kindle (eu, do nomad, onde existe o apelido `kindle-lan`).**

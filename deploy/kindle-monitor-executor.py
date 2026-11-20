@@ -58,7 +58,7 @@ TIMEOUT_INCUS = 90
 TIMEOUT_EXEC = 60
 SPOOL_PADRAO = "/run/kindle-monitor/spool"
 ESTADO_PADRAO = "/run/kindle-monitor/status"
-OLLAMA_PADRAO = "http://10.0.0.1:11435"
+OLLAMA_PADRAO = "http://127.0.0.1:11434"   # porta padrao do Ollama; a config (chave `ollama_url`) troca
 GUARDAR = 20
 TIMEOUT_CMD = 40
 TIMEOUT_BOT = 20
@@ -252,8 +252,39 @@ def validar_catalogo(lista):
     return saida
 
 
-def validar_aparelhos(lista):
+RE_TERMO = re.compile(r"^[a-z0-9][a-z0-9._-]{1,39}\Z")
+TERMOS_MAX = 16
+
+
+def validar_termos(valor):
+    """Valida `termos_bloqueados` (mesmas regras do web; server/termos.py). ValueError com a causa.
+
+    Lista de ate 16 termos ^[a-z0-9][a-z0-9._-]{1,39}$ (minusculos, ASCII, sem espaco). Qualquer coisa fora
+    disso recusa a config inteira: o filtro de privacidade nunca fica ligado pela metade. Devolve tupla sem repeticao."""
+    if valor is None:
+        return ()
+    if not isinstance(valor, (list, tuple)):
+        raise ValueError("termos_bloqueados deve ser uma lista")
+    if len(valor) > TERMOS_MAX:
+        raise ValueError("termos_bloqueados: no maximo %d itens" % TERMOS_MAX)
+    saida = []
+    for i, t in enumerate(valor):
+        if not isinstance(t, str) or not RE_TERMO.match(t):
+            raise ValueError("termos_bloqueados[%d]: termo invalido" % i)
+        if t not in saida:
+            saida.append(t)
+    return tuple(saida)
+
+
+def cita_termo(texto, termos):
+    """True se `texto` (qualquer caixa) contem algum dos `termos` bloqueados (ja minusculos)."""
+    baixo = texto.lower()
+    return any(t in baixo for t in termos)
+
+
+def validar_aparelhos(lista, termos=()):
     """Valida `aparelhos` (E8; mesmas regras do web). ValueError com a causa; devolve copias novas.
+    `termos`: termos bloqueados; nome que cita um deles e recusado.
 
     `icone` so tem o formato conferido aqui: o executor (-I, root) nao importa nada de server/, e a lista
     de icones vive la; o web descarta o aparelho cujo icone nao existe.
@@ -274,7 +305,7 @@ def validar_aparelhos(lista):
         aid, nome, rot, ico = it.get("id"), it.get("nome"), it.get("rotulo"), it.get("icone")
         if not isinstance(aid, str) or not RE_APARELHO_ID.match(aid):
             raise ValueError("%s: id invalido" % r)
-        if not isinstance(nome, str) or not RE_APARELHO_NOME.match(nome) or "empresa-x" in nome.lower():
+        if not isinstance(nome, str) or not RE_APARELHO_NOME.match(nome) or cita_termo(nome, termos):
             raise ValueError("%s: nome invalido" % r)
         if not isinstance(rot, str) or not 1 <= len(rot) <= 16 or not rot.isascii() or not rot.isprintable():
             raise ValueError("%s: rotulo invalido" % r)
@@ -365,6 +396,26 @@ def validar_amp(valor):
     return {"url": "http://%s:%s" % (m.group(1), m.group(2)), "credenciais": cred}
 
 
+def validar_ollama_url(valor):
+    """Valida `ollama_url` da config: None = padrao (OLLAMA_PADRAO). `http://<IPv4>:<porta>` com o host em loopback
+    ou nas redes privadas de REDES_AMP; nada de nome de host, IP publico, usuario/senha, caminho ou query.
+    ValueError com a causa (que nunca cita o valor). Devolve a URL sem a barra final."""
+    if valor is None:
+        return None
+    m = RE_AMP_URL.match(valor) if isinstance(valor, str) else None
+    if not m:
+        raise ValueError("ollama_url invalida (http://IPv4:porta)")
+    try:
+        ip = ipaddress.IPv4Address(m.group(1))
+    except ValueError:
+        raise ValueError("ollama_url: IPv4 invalido") from None
+    if not (ip.is_loopback or any(ip in rede for rede in REDES_AMP)):
+        raise ValueError("ollama_url: o host deve ser loopback ou IPv4 privado")
+    if int(m.group(2)) > 65535:
+        raise ValueError("ollama_url: porta fora de 1 a 65535")
+    return "http://%s:%s" % (m.group(1), m.group(2))
+
+
 def acao_valida(acao):
     return acao in ACOES or bool(RE_SVC_ACAO.match(acao))
 
@@ -382,10 +433,12 @@ def validar_cfg(c):
     if not isinstance(c, dict):
         raise ValueError("comandos deve ser um objeto")
     r = {"spool": SPOOL_PADRAO, "estado": ESTADO_PADRAO, "acoes": list(ACOES), "catalogo": [], "aparelhos": [], "rotinas": [],
-         "amp": None}
+         "amp": None, "termos_bloqueados": (), "ollama": None}
     r.update({k: v for k, v in c.items() if k in r})
+    r["termos_bloqueados"] = validar_termos(r["termos_bloqueados"])
+    r["ollama"] = validar_ollama_url(r["ollama"])
     r["catalogo"] = validar_catalogo(r["catalogo"])
-    r["aparelhos"] = validar_aparelhos(r["aparelhos"])
+    r["aparelhos"] = validar_aparelhos(r["aparelhos"], r["termos_bloqueados"])
     r["rotinas"] = validar_rotinas(r["rotinas"])
     r["amp"] = validar_amp(r["amp"])
     for k in ("spool", "estado"):
@@ -437,7 +490,7 @@ def bots_ativos(texto):
 
 class Executor:
     def __init__(self, cfg, executar=executar_padrao, http=http_padrao, agora_ns=time.time_ns,
-                 ollama=OLLAMA_PADRAO, dono=None, log=_log_padrao, relogio=time.monotonic, amp_post=None):
+                 ollama=None, dono=None, log=_log_padrao, relogio=time.monotonic, amp_post=None):
         """`dono` = (uid, gid do spool) esperado; padrao (0, nogroup). Injetavel para testes sem root."""
         cfg = validar_cfg(cfg)
         self.spool = cfg["spool"]
@@ -446,13 +499,14 @@ class Executor:
         self.catalogo = {i["id"]: i for i in cfg["catalogo"]}
         self.aparelhos = list(cfg["aparelhos"])
         self.rotinas = list(cfg["rotinas"])
+        self.termos = tuple(cfg.get("termos_bloqueados", ()))
         self.amp = cfg["amp"]  # None = feature desligada; so `validar_amp` a preenche em producao
         self._amp_post = amp_post  # None = o cliente urllib `amp_post` (definido mais abaixo no modulo)
         self.agora_inv = time.time
         self.executar = executar
         self.http = http
         self.agora_ns = agora_ns
-        self.ollama = ollama.rstrip("/")
+        self.ollama = (ollama or cfg.get("ollama") or OLLAMA_PADRAO).rstrip("/")
         self.dono = dono
         self.log = log
         self.relogio = relogio
@@ -571,7 +625,7 @@ class Executor:
         """Coleta timers, arquivos e unidades em falha e grava status/rotinas.json. Comando que falha, estoura o
         tempo ou qualquer excecao: todas as rotinas `desconhecido` e `unidades_falhas` zerado. Nunca levanta."""
         try:
-            doc = coletar_rotinas(self.rotinas, self.executar, agora=self.agora_inv)
+            doc = coletar_rotinas(self.rotinas, self.executar, agora=self.agora_inv, termos=self.termos)
         except Exception as e:
             self.log("rotinas: coleta falhou (%s)" % _curto(type(e).__name__, 40))
             doc = rotinas_desconhecidas(self.rotinas, agora=self.agora_inv)
@@ -1357,18 +1411,18 @@ def _mtime_valido(m):
     return (n, "ok") if 946684800 < n < 4102444800 else (None, "data invalida")  # 2000 .. 2100
 
 
-def parse_falhas(texto):
+def parse_falhas(texto, termos=()):
     """Saida de `systemctl list-units --failed --plain --no-legend` -> {"n", "nomes"}.
 
     1a coluna de cada linha; `n` conta as linhas (limitado a 9999); `nomes` so tem as que passam em
-    ^[A-Za-z0-9_.@:-]{1,40}$ (ate 5). Linha que cita "empresa-x" (qualquer caixa) nao conta nem aparece.
+    ^[A-Za-z0-9_.@:-]{1,40}$ (ate 5). Linha que cita um dos `termos` bloqueados (qualquer caixa) nao conta nem aparece.
     Pura; nunca levanta."""
     n, nomes = 0, []
     if not isinstance(texto, str):
         return {"n": 0, "nomes": []}
     for linha in texto[:SAIDA_ROTINAS_MAX].splitlines():
         col = linha.split(None, 1)
-        if not col or "empresa-x" in linha.lower():  # nada da empresa-x vai para a tela (nem na contagem)
+        if not col or cita_termo(linha, termos):  # nada do que o dono bloqueou vai para a tela (nem na contagem)
             continue
         n += 1
         if len(nomes) < FALHAS_NOMES_MAX and RE_UNIDADE_FALHA.match(col[0]):
@@ -1376,7 +1430,7 @@ def parse_falhas(texto):
     return {"n": min(n, FALHAS_N_MAX), "nomes": nomes}
 
 
-def coletar_rotinas(catalogo, executar, agora=time.time):
+def coletar_rotinas(catalogo, executar, agora=time.time, termos=()):
     """Catalogo validado -> rotinas.json (E7). Dependencias injetadas; so o argv fixo e os alvos ja validados
     (argumentos separados, depois de `--`) chegam ao systemctl. Comando com saida != 0 ou que levanta: a excecao
     sobe e o chamador grava tudo `desconhecido`. Erro em arquivo vira `desconhecido` so naquela rotina."""
@@ -1393,7 +1447,7 @@ def coletar_rotinas(catalogo, executar, agora=time.time):
     rc, out, _ = executar(list(LISTA_FALHAS), TIMEOUT_ROTINAS)
     if rc != 0:
         raise RuntimeError("systemctl list-units rc=%s" % rc)
-    falhas = parse_falhas(out)
+    falhas = parse_falhas(out, termos)
     rotinas = {}
     for r in catalogo:
         if r["tipo"] == "timer":
@@ -1637,10 +1691,13 @@ def carregar_cfg(caminho):
         raise ValueError("config: raiz deve ser um objeto")
     cfg = validar_cfg(dict(dados.get("comandos", {})) if isinstance(dados.get("comandos", {}), dict)
                       else dados.get("comandos"))
+    # termos invalidos recusam a config toda (ValueError sobe): filtro de privacidade nao fica pela metade
+    cfg["termos_bloqueados"] = validar_termos(dados.get("termos_bloqueados"))
+    cfg["ollama"] = validar_ollama_url(dados.get("ollama_url"))
     cfg["catalogo"] = validar_catalogo(dados.get("servicos_kindle", []))
     # aparelhos invalidos nao derrubam o resto: lista vazia (nada a fazer) e o motivo para o main registrar
     try:
-        cfg["aparelhos"] = validar_aparelhos(dados.get("aparelhos", []))
+        cfg["aparelhos"] = validar_aparelhos(dados.get("aparelhos", []), cfg["termos_bloqueados"])
     except ValueError as e:
         cfg["aparelhos"] = []
         cfg["aparelhos_erro"] = str(e)

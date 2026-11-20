@@ -237,7 +237,7 @@ class ServicosLayoutTest(unittest.TestCase):
         import json
         import os
         raiz = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        with open(os.path.join(raiz, "deploy", "config.atheron.json")) as f:
+        with open(os.path.join(raiz, "deploy", "config.atheron.example.json")) as f:
             cat = servicos.validar_catalogo(json.load(f)["servicos_kindle"])
         its = servicos.ordenar([dict(c, estado="ativo", detalhe="") for c in cat])
         self.assertEqual(botoes.geometria_servicos(its, 1236, 1648, 1)["paginas"], 4)

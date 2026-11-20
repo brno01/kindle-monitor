@@ -35,7 +35,7 @@ PARADOS = ("ai-coder", "cloudflare-gateway", "microservices-old", "onion-gw", "r
 
 
 def catalogo(cheia=False):
-    with open(os.path.join(RAIZ, "deploy", "config.atheron.json"), encoding="utf-8") as f:
+    with open(os.path.join(RAIZ, "deploy", "config.atheron.example.json"), encoding="utf-8") as f:
         cat = servicos.validar_catalogo(json.load(f)["servicos_kindle"])
     if cheia:  # 52 servicos: 4 sinteticos a mais
         for n in range(4):

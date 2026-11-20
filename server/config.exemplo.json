@@ -4,6 +4,9 @@
   "_comentario_host": "Nome exibido no cabecalho e na secao deste host. Se omitido, usa o hostname da maquina.",
   "host": "atheron",
 
+  "_comentario_termos_bloqueados": "Termos que nunca aparecem na tela nem entram em contagem (nome de aparelho, unidade com falha, PR, CI, issue, repo), sem diferenciar caixa. Cada termo: minusculo, ASCII, a-z 0-9 . _ - (2 a 40 caracteres), ate 16. Termo invalido recusa a config. Omita ou use [] para nao filtrar nada.",
+  "termos_bloqueados": ["empresa-x"],
+
   "_comentario_discos": "Dois tipos de entrada. {rotulo, caminho}: ponto de montagem medido com os.statvfs. {rotulo, tier_state}: JSON do Cerberus (campos ssd_used_gib e cap_gib, em GiB; 'when' com mais de 3 h mostra o aviso 'parado'; arquivo ausente ou invalido mostra n/d). Use tier_state quando o disco e uma uniao (mergerfs) e o statvfs somaria discos errados. rotulo aparece na tela (ate ~8 caracteres).",
   "discos": [
     {"rotulo": "/", "caminho": "/"},
@@ -66,7 +69,7 @@
     {"id": "rathena-web", "rotulo": "rAthena web", "grupo": "ragnarok", "tipo": "rathena", "alvo": "rathena-web.service", "verbos": ["reiniciar"], "protegido": true}
   ],
 
-  "_comentario_aparelhos": "Catalogo de aparelhos da pagina Aparelhos (inventario root aparelhos.json, validade 60 s). Exemplo comentado; renomeie _exemplo_aparelhos para aparelhos para ligar. id a-z0-9 e '-' (1 a 24); nome: nome do peer no Tailscale (sem empresa-x); rotulo ASCII ate 16; icone: nome de icones_dados.ICONES; alerta_offline_min opcional (1 a 10080): alerta critico se ficar offline por tanto tempo. Maximo 16. Lista invalida e descartada inteira.",
+  "_comentario_aparelhos": "Catalogo de aparelhos da pagina Aparelhos (inventario root aparelhos.json, validade 60 s). Exemplo comentado; renomeie _exemplo_aparelhos para aparelhos para ligar. id a-z0-9 e '-' (1 a 24); nome: nome do peer no Tailscale (sem termo bloqueado); rotulo ASCII ate 16; icone: nome de icones_dados.ICONES; alerta_offline_min opcional (1 a 10080): alerta critico se ficar offline por tanto tempo. Maximo 16. Lista invalida e descartada inteira.",
   "_exemplo_aparelhos": [{"id": "gw", "nome": "cerberus-gw", "rotulo": "Gateway", "icone": "rede", "alerta_offline_min": 10}],
 
   "_comentario_rotinas": "Catalogo de rotinas (inventario root rotinas.json, validade 60 s). Exemplo comentado; renomeie _exemplo_rotinas para rotinas para ligar. tipo timer: alvo = unit .service; tipo arquivo: alvo = caminho absoluto sob /srv/, /var/lib/ ou /var/backups/ (vale o mtime). rotulo ASCII ate 20; max_idade_h de 0.1 a 720: acima disso a rotina fica atrasada (aviso). Maximo 16. Lista invalida e descartada inteira.",

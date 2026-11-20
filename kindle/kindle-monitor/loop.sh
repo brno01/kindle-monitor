@@ -3,6 +3,7 @@
 # Started by supervisor.sh (see monitor-ligar.sh). Pages and the armed command button come
 # from tap.sh; the power button stops everything (handled by the supervisor).
 D=/mnt/us/kindle-monitor
+[ -f "$D/config.sh" ] || { echo "kindle-monitor: $D/config.sh missing (copy config.example.sh to config.sh and set SERVER)" >&2; exit 1; }
 . "$D/config.sh"
 F=/mnt/us/libkh/bin/fbink
 TS=/mnt/us/tailscale

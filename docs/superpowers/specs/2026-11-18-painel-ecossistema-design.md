@@ -1,7 +1,7 @@
 # Painel do ecossistema no Kindle — desenho
 
 Data: 18/11/2026. Repositórios tocados: `kindle-monitor` (principal) e `dotfiles` (publicadores de sessões, GitHub e timers).
-Fonte: plano aprovado pelo dono em 18/11/2026 (`~/.claude/plans/floofy-cuddling-nova.md`, Parte B). A Parte A (configuração do Claude ao abrir) não entra neste documento.
+Fonte: plano aprovado pelo dono em 18/11/2026 (o plano aprovado (arquivo local, fora do repositório), Parte B). A Parte A (configuração do Claude ao abrir) não entra neste documento.
 
 ## Intenção
 
@@ -25,7 +25,7 @@ Problemas achados na validação das telas (`/tela.png` do servidor no ar):
 ## Não objetivos
 
 - Comandos novos pelo Kindle: o conjunto de ações não muda.
-- Dado da empresa-x e sessões do Claude no nomad.
+- Dado de trabalho (termos bloqueados) e sessões do Claude no nomad.
 - Métricas internas do nomad: lá o painel mostra só online/offline.
 
 ## Anti-objetivos (falha mesmo funcionando)
@@ -33,7 +33,7 @@ Problemas achados na validação das telas (`/tela.png` do servidor no ar):
 - Tela dizer "Tudo em ordem" com problema real.
 - Listar tudo em vez de mostrar só as exceções.
 - O serviço web ganhar privilégio.
-- Dado da empresa-x aparecer na tela.
+- Dado de trabalho (termos bloqueados) aparecer na tela.
 - Exigir nova gravação no Kindle a cada página nova.
 
 ## Restrições
@@ -44,7 +44,7 @@ Problemas achados na validação das telas (`/tela.png` do servidor no ar):
 - Serviço web roda como `nobody` e só lê JSON.
 - Inventário root roda a cada 15 s (`deploy/kindle-monitor-executor.py`, timer de 15 s) e é o único coletor com privilégio novo.
 - Texto que vem de fora (título de PR, nome de aparelho) é não confiável: vira ASCII com tamanho máximo antes de ir para a tela.
-- Sessões e GitHub da empresa-x ficam de fora.
+- Sessões e GitHub de trabalho ficam de fora.
 
 ## Abordagens consideradas
 
@@ -59,7 +59,7 @@ As quatro decisões registradas no plano:
 1. Tela inicial **só com exceções**: uma linha por sistema e a lista do que pede atenção. Os 48 serviços ficam só na página Serviços.
 2. Entram no painel: **aparelhos da tailnet, backups e rotinas, sessões do Claude, GitHub**.
 3. **Refatoração visual com ícones** (serviços, NAS, Claude, jogos etc.).
-4. Claude sem pedir permissão: **conta pessoal em todo lugar** (atheron e nomad); empresa-x continua no modo auto. *Executada na Parte A, fora deste documento.*
+4. Claude sem pedir permissão: **conta pessoal em todo lugar** (atheron e nomad); as contas de trabalho continuam no modo auto. *Executada na Parte A, fora deste documento.*
 
 Escolhas do autor (ajustáveis, não são decisões do dono):
 
@@ -133,9 +133,9 @@ O serviço web continua como `nobody` e só lê JSON. Ninguém ganha privilégio
 | Sessões do Claude no atheron (projeto = nome da pasta, estado, desde quando) | hooks `UserPromptSubmit`/`Stop`/`Notification`/`SessionEnd` + batimento do `statusline.sh`, no padrão do `claude-limites` | `/var/lib/claude-uso/sessoes/<id>.json` |
 | GitHub: PRs abertos e CI dos repos pessoais `brno01` (uma consulta `gh api graphql`) | novo `dotfiles/bin/claude-github` + timer de usuário a cada 5 min (`OnStartupSec`) | `/var/lib/claude-uso/github.json` |
 
-Catálogos novos em `/etc/kindle-monitor/config.json` (`deploy/config.atheron.json`): `aparelhos` (nome na tailnet, rótulo, ícone, `alerta_offline_min`), `rotinas` (id, rótulo, tipo `timer` ou `arquivo`, alvo, `max_idade_h`) e `limiares`. Rotinas iniciais: backup do Vaultwarden (`cerberus-vault-backup`, `/srv/nas/backups/vaultwarden`), Syncthing do cofre, segundo cérebro, `claude-uso-painel`; os nomes exatos das units são confirmados na implementação.
+Catálogos novos em `/etc/kindle-monitor/config.json` (`deploy/config.atheron.example.json`): `aparelhos` (nome na tailnet, rótulo, ícone, `alerta_offline_min`), `rotinas` (id, rótulo, tipo `timer` ou `arquivo`, alvo, `max_idade_h`) e `limiares`. Rotinas iniciais: backup do Vaultwarden (`cerberus-vault-backup`, `/srv/nas/backups/vaultwarden`), Syncthing do cofre, segundo cérebro, `claude-uso-painel`; os nomes exatos das units são confirmados na implementação.
 
-Texto que vem de fora (título de PR, nome de aparelho) é dado não confiável: vira ASCII, com tamanho máximo, antes de ir para a tela. Sessões e GitHub da empresa-x ficam de fora.
+Texto que vem de fora (título de PR, nome de aparelho) é dado não confiável: vira ASCII, com tamanho máximo, antes de ir para a tela. Sessões e GitHub de trabalho ficam de fora.
 
 ### Visual e ícones
 
@@ -165,5 +165,5 @@ Texto que vem de fora (título de PR, nome de aparelho) é dado não confiável:
 ## Fora do escopo
 
 - Métricas internas do nomad (CPU, bateria): o painel mostra só online/offline; o cartão do nomad pede um agente lá e fica para depois.
-- Sessões do Claude no nomad e qualquer dado da empresa-x.
+- Sessões do Claude no nomad e qualquer dado de trabalho (termos bloqueados).
 - Comandos novos pelo Kindle (o conjunto de ações não muda).

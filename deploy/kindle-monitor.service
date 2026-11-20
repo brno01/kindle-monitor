@@ -1,3 +1,4 @@
+# Template: instalar-atheron.sh troca @BIND@ pelo IP de `bind` da config local (deploy/config.atheron.local.json).
 [Unit]
 Description=kindle-monitor: read-only status screen served to the Kindle (tailnet only)
 After=network-online.target tailscaled.service
@@ -7,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=nobody
 Group=nogroup
-ExecStart=/usr/bin/python3 -I /opt/kindle-monitor/server/monitor_server.py --bind 100.64.0.1 --porta 8765 --config /etc/kindle-monitor/config.json
+ExecStart=/usr/bin/python3 -I /opt/kindle-monitor/server/monitor_server.py --bind @BIND@ --porta 8765 --config /etc/kindle-monitor/config.json
 Restart=always
 RestartSec=10
 NoNewPrivileges=yes

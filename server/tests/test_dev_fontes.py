@@ -9,6 +9,16 @@ import _caminho  # noqa: F401
 import alertas
 import coletores
 import dev_fontes as df
+import termos
+
+
+def setUpModule():
+    termos.definir([_caminho.TERMO_BLOQUEADO])
+
+
+def tearDownModule():
+    termos.definir(None)
+
 
 AGORA = 1_700_000_000
 DIR = "/var/lib/claude-uso/sessoes"
@@ -504,12 +514,12 @@ class GithubNovosCamposTest(unittest.TestCase):
         r = coletar_gh(gh(issues=object.__class__.__name__, repos=5))
         self.assertEqual(r["abertos"], 1)
 
-    def test_empresa-x_nunca_passa_em_nenhum_item(self):
-        suja = ["empresa-x-api", "x-empresa-x", "club\u200bpetro", "empresa-x"]
-        prs = [pr2(i + 1, repo=s) for i, s in enumerate(suja)] + [pr2(9, titulo="ver empresa-x"), pr2(10)]
+    def test_empresa_x_nunca_passa_em_nenhum_item(self):
+        suja = ["Empresa-X-api", "x-EMPRESA-X", "empresa\u200b-x", "empresa-x"]
+        prs = [pr2(i + 1, repo=s) for i, s in enumerate(suja)] + [pr2(9, titulo="ver Empresa-X"), pr2(10)]
         r = coletar_gh(gh(prs=prs, ci=[ci(s) for s in suja] + [ci("ok")],
                           issues={"n": 6, "itens": [issue(i + 1, repo=s) for i, s in enumerate(suja)]
-                                  + [issue(8, titulo="falha no empresa-x"), issue(9)]},
+                                  + [issue(8, titulo="falha no EMPRESA-X"), issue(9)]},
                           repos=[rep(s) for s in suja] + [rep("limpo", 1)]))
         self.assertEqual([p["numero"] for p in r["prs"]], [10])
         self.assertEqual([c["repo"] for c in r["ci"]], ["ok"])

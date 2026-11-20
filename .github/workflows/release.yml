@@ -2,7 +2,8 @@ name: release
 
 # Pushing a tag such as v0.2.0 creates the GitHub Release with generated notes and
 # attaches kindle-monitor-kindle.zip: the files that go to /mnt/us on the Kindle
-# (emergency.sh, documents/ and kindle-monitor/), without the tests.
+# (emergency.sh, documents/ and kindle-monitor/), without the tests. It carries config.example.sh only
+# (rename it to config.sh and edit); a local config.local.sh is never packed.
 
 on:
   push:
@@ -16,5 +17,5 @@ jobs:
       contents: write
     uses: brno01/.github/.github/workflows/release.yml@v1
     with:
-      build-command: cd kindle && zip -r -X ../kindle-monitor-kindle.zip emergency.sh documents kindle-monitor
+      build-command: cd kindle && zip -r -X ../kindle-monitor-kindle.zip emergency.sh documents kindle-monitor -x kindle-monitor/config.local.sh
       assets: kindle-monitor-kindle.zip

@@ -14,8 +14,9 @@ RUNDIR=${AUTOSTART_RUNDIR:-/var/tmp/kindle-autostart}
 LOG=${AUTOSTART_LOG:-/var/tmp/kindle-autostart.log}
 ROOT_HOME=${AUTOSTART_ROOT_HOME:-/tmp/root}
 INTERVALO=${AUTOSTART_INTERVALO:-60}
-# o firewall do Kindle é "INPUT DROP": a 22 do wlan0 só abre para o atheron (o kindle-lan sempre salta por ele)
-SSH_DE=${AUTOSTART_SSH_DE:-192.0.2.10}
+# o firewall do Kindle é "INPUT DROP": a 22 do wlan0 só abre para o servidor (o acesso sempre salta por ele).
+# A origem vem de AUTOSTART_SSH_DE ou de SSH_FROM no config.sh do Kindle; sem nenhuma das duas a 22 fica fechada.
+CONFIG=${AUTOSTART_CONFIG:-/mnt/us/kindle-monitor/config.sh}
 ESPERA_WIFI=${AUTOSTART_ESPERA_WIFI:-60}   # tentativas de 5 s (5 min)
 UMA_VEZ=${AUTOSTART_UMA_VEZ:-0}            # 1 = uma rodada só (testes)
 
@@ -82,9 +83,24 @@ garantir_dropbear() {
   "$DB" dropbear -r "$HOSTKEY" -p 22 -s -g -j -k >> "$LOG" 2>&1
 }
 
-# mesma regra que o Jobman cria ao subir o SSH dele, mas presa à origem SSH_DE. -C antes de -A: sem duplicar.
+# origem liberada na 22: env, senão SSH_FROM do config.sh (lido em subshell, a cada rodada; o USB pode tirar o arquivo).
+# Só aceita IPv4 em notação pontuada.
+origem_ssh() {
+  v=${AUTOSTART_SSH_DE:-}
+  # shellcheck disable=SC1090  # caminho dinâmico, de propósito
+  [ -n "$v" ] || v=$( (SSH_FROM=; . "$CONFIG" >/dev/null 2>&1; printf '%s' "$SSH_FROM") 2>/dev/null)
+  case $v in ''|*[!0-9.]*|.*|*.) return 1 ;; esac
+  printf '%s' "$v"
+}
+
+# mesma regra que o Jobman cria ao subir o SSH dele, mas presa à origem (origem_ssh). -C antes de -A: sem duplicar.
 # O laço confere a cada rodada, porque o Kindle pode recarregar o firewall (troca de rede, por exemplo).
+# Sem origem configurada não abre nada (padrão seguro) e avisa uma vez no log.
 garantir_firewall() {
+  SSH_DE=$(origem_ssh) || {
+    [ "$aviso_origem" = 1 ] || { log "firewall: SSH_FROM não definido no config.sh; a 22 segue fechada"; aviso_origem=1; }
+    return 0
+  }
   iptables -C INPUT -i wlan0 -s "$SSH_DE" -p tcp --dport 22 -j ACCEPT 2>/dev/null && return 0
   log "liberando a 22 no wlan0 para $SSH_DE"
   iptables -A INPUT -i wlan0 -s "$SSH_DE" -p tcp --dport 22 -j ACCEPT
@@ -95,7 +111,7 @@ i=0
 while ! wifi_ok && [ "$i" -lt "$ESPERA_WIFI" ]; do sleep 5; i=$((i + 1)); done
 wifi_ok || log "Wi-Fi ainda sem conexão; seguindo mesmo assim"
 
-falha_ts=0; falha_db=0; falha_fw=0
+falha_ts=0; falha_db=0; falha_fw=0; aviso_origem=0
 while :; do
   if [ -f "$STOP" ]; then log "SEM_AUTOSTART encontrado: saindo"; rm -f "$PIDF"; exit 0; fi
   if garantir_tailscaled; then falha_ts=0

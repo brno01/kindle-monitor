@@ -137,7 +137,7 @@ Cada item tem teste na tarefa dona (marcado **[RF n]**).
 
 **Files:**
 - Modify: `server/coletores.py` (funções novas perto de `coletar_tier_state`, ~387; integração em `Coletor.coletar`, ~804-860)
-- Modify: `server/config.exemplo.json`, `deploy/config.atheron.json`
+- Modify: `server/config.exemplo.json`, `deploy/config.atheron.example.json`
 - Test: `server/tests/test_coletores.py`
 
 **Interfaces:**
