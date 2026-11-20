@@ -35,6 +35,9 @@ No GitHub, todo PR e todo push na `master` rodam dois workflows:
 
 O `claude` é o revisor sob demanda: comente `@claude` num PR ou numa issue, ou rode o workflow à mão para uma auditoria que abre issues. Só o dono do repositório consegue acioná-lo.
 
+## Releases
+Cada tag `v*` cria uma release com o arquivo `kindle-monitor-kindle.zip`: o que vai para `/mnt/us` no Kindle (`emergency.sh`, `documents/` e `kindle-monitor/`), sem os testes.
+
 ## Jailbreak e segurança do aparelho
 O jailbreak é o **moderno** (KPM, Jobman e Scriptlets). KUAL, MRPI e USBNetwork são legado e não funcionam nele. O Wi-Fi pode atualizar o firmware e apagar o jailbreak, então o bloqueio de atualização do Jobman precisa ficar ligado. Não use `;kpm install/uninstall`, `freset`, `;shpm`, "atualizar ambiente" nem recovery do Jobman. Guia oficial: <https://kindlemodding.org>.
 
