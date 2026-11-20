@@ -29,7 +29,7 @@ Valores reais (IPs, nomes de rede, termos que nunca podem aparecer na tela) fica
 - `kindle/kindle-monitor/config.example.sh` -> copie para `kindle/kindle-monitor/config.local.sh`, ajuste `SERVER` e `SSH_FROM`, e grave no Kindle como `/mnt/us/kindle-monitor/config.sh`. O zip da release leva só o exemplo: renomeie para `config.sh` e edite.
 - `server/config.exemplo.json`: exemplo comentado de todas as chaves do servidor.
 
-Ao atualizar o Kindle, grave o `config.sh` **antes** do `autostart.sh` novo: o `autostart.sh` lê o `SSH_FROM` do `config.sh` e, sem ele, a porta 22 do Kindle fica fechada. Os comandos de cópia estão em `CLAUDE.md` ("Atualizar o Kindle").
+Ao atualizar o Kindle, grave o `config.sh` **antes** do `autostart.sh` novo: o `autostart.sh` lê o `SSH_FROM` do `config.sh` e, sem ele, a porta 22 do Kindle fica fechada até o `config.sh` chegar (ele é relido a cada rodada, 60 s por padrão). Os comandos de cópia estão em `CLAUDE.md` ("Atualizar o Kindle").
 
 ## Testes e CI
 ```bash
